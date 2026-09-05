@@ -16,6 +16,7 @@
 
 #include "components/text_field_internal.h"
 #include "components/selection_area_internal.h"
+#include "profiling_internal.h"
 
 namespace huxerui::detail {
 
@@ -386,6 +387,8 @@ void LayoutPlacedChildren(MountedNode& node, Point content_origin) {
 
 Size MeasureNode(MountedNode& node, const Constraints& constraints, PlatformAdapter& platform, Runtime& runtime,
                  EdgeInsets safe_area, const WindowTitleBarMetrics* title_bar_metrics) {
+  HUXERUI_PROFILE_SCOPE(profile_measure, Measure, node.identity);
+  HUXERUI_PROFILE_COUNT(MeasureRequests);
   // An invalidated ancestor may revisit a clean child. The child's cached result remains valid only for the exact
   // parent constraints under which it was measured.
   const std::optional<WindowTitleBarMetrics> inherited_title_bar =
@@ -393,6 +396,8 @@ Size MeasureNode(MountedNode& node, const Constraints& constraints, PlatformAdap
   if (!node.measure_dirty && node.measured_constraints.has_value() && *node.measured_constraints == constraints &&
       node.measured_safe_area.has_value() && *node.measured_safe_area == safe_area &&
       node.measured_title_bar == inherited_title_bar) {
+    HUXERUI_PROFILE_COUNT(MeasureCacheHits);
+    HUXERUI_PROFILE_FLAG(profile_measure, ProfileFlag::MeasureCacheHit);
     return node.measured_size;
   }
 
@@ -600,6 +605,7 @@ Size MeasureNode(MountedNode& node, const Constraints& constraints, PlatformAdap
 }
 
 void LayoutNode(MountedNode& node, Point offset) {
+  HUXERUI_PROFILE_SCOPE(profile_place, Place, node.identity);
   const bool size_changed =
       node.bounds.width != node.measured_size.width || node.bounds.height != node.measured_size.height;
   const bool offset_changed = node.layout_offset != offset;

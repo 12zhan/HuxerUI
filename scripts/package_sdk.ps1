@@ -205,6 +205,7 @@ Invoke-Checked $emcmake @(
     "-DCMAKE_BUILD_TYPE=$Configuration",
     "-DHUXERUI_BUILD_SHARED=OFF",
     "-DHUXERUI_BUILD_STATIC=ON",
+    "-DHUXERUI_ENABLE_PROFILING=OFF",
     "-DHUXERUI_BUILD_CLI=OFF",
     "-DHUXERUI_BUILD_EXAMPLES=OFF",
     "-DHUXERUI_BUILD_TESTS=OFF"
@@ -225,6 +226,7 @@ Copy-Item -LiteralPath $webLibrary -Destination (Join-Path $webArtifactDirectory
 $hostConfigureArguments = @(
     "-S", $sourceDirectory,
     "-B", $hostBuildDirectory,
+    "-DHUXERUI_ENABLE_PROFILING=OFF",
     "-DHUXERUI_BUILD_CLI=ON",
     "-DHUXERUI_BUILD_EXAMPLES=OFF",
     "-DHUXERUI_BUILD_TESTS=OFF",

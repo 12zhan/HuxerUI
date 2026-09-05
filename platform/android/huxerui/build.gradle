@@ -33,6 +33,7 @@ android {
                 cmake {
                     targets "huxerui"
                     arguments "-DANDROID_STL=${huxeruiStl}",
+                            "-DHUXERUI_ENABLE_PROFILING=OFF",
                             "-DHUXERUI_BUILD_SHARED=ON",
                             "-DHUXERUI_BUILD_STATIC=OFF",
                             "-DHUXERUI_BUILD_TESTS=OFF",

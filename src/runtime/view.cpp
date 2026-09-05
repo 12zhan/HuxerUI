@@ -21,6 +21,7 @@
 #include "graphics/paint_internal.h"
 #include "resources/resource_internal.h"
 #include "components/indication_internal.h"
+#include "profiling_internal.h"
 
 namespace huxerui {
 
@@ -91,6 +92,8 @@ bool NeedsDefaultShapingLocale(const ViewSpec& spec) {
 
 ViewSpec CompileViewSpec(const ViewSpec& declaration, const std::shared_ptr<const Environment>& environment,
                          AppResources& resources) {
+  HUXERUI_PROFILE_SCOPE(profile_compile, Compile, 0);
+  HUXERUI_PROFILE_COUNT(Compiles);
   std::optional<Locale> locale;
   const auto resource_locale = [&]() -> const Locale& {
     if (!locale.has_value()) {

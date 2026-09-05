@@ -13,6 +13,7 @@
 
 #include "graphics/external_texture_internal.h"
 #include "graphics/paint_internal.h"
+#include "profiling_internal.h"
 
 namespace huxerui::detail {
 
@@ -582,6 +583,8 @@ void PaintNodeWithinClip(huxerui::ViewNode& mounted_node, const Rect& clip, cons
 
   bool changed = false;
   if (node.content_paint_dirty) {
+    HUXERUI_PROFILE_SCOPE(profile_content, PaintContent, node.identity);
+    HUXERUI_PROFILE_COUNT(PaintRecords);
     const Rect bounds = node.bounds;
     const Rect canvas_bounds = node.kind == NodeKind::Canvas
                                    ? Rect{
@@ -654,6 +657,8 @@ void PaintNodeWithinClip(huxerui::ViewNode& mounted_node, const Rect& clip, cons
   }
 
   if (node.foreground_paint_dirty) {
+    HUXERUI_PROFILE_SCOPE(profile_foreground, PaintForeground, node.identity);
+    HUXERUI_PROFILE_COUNT(PaintRecords);
     PaintContext foreground{render_node.foreground, node.bounds};
     PaintNodeExtensionsAboveContent(node, foreground);
     PaintFocusRing(node, foreground);

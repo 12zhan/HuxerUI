@@ -158,6 +158,7 @@ run jar --create --file "$android_artifact_directory/HuxerUI.aar" \
   --no-manifest -C "$android_extract_directory" .
 
 run emcmake cmake -S "$source_directory" -B "$web_build_directory" \
+  -DHUXERUI_ENABLE_PROFILING=OFF \
   "-DCMAKE_BUILD_TYPE=$configuration" \
   -DHUXERUI_BUILD_SHARED=OFF \
   -DHUXERUI_BUILD_STATIC=ON \
@@ -181,6 +182,7 @@ if [ "$host_system" = Darwin ]; then
 fi
 
 run cmake -S "$source_directory" -B "$host_build_directory" \
+  -DHUXERUI_ENABLE_PROFILING=OFF \
   "-DCMAKE_BUILD_TYPE=$configuration" \
   -DHUXERUI_BUILD_CLI=ON \
   -DHUXERUI_BUILD_EXAMPLES=OFF \

@@ -50,6 +50,7 @@ add_executable(huxerui_tests
         runtime/platform_view.cpp
         runtime/presentation.cpp
         runtime/presentation_semantics.cpp
+        runtime/profiling.cpp
         runtime/render_scene.cpp
         runtime/resources.cpp
         runtime/scrolling.cpp
@@ -65,6 +66,22 @@ add_executable(huxerui_tests
         runtime/tooltip.cpp
         runtime/virtual_layout.cpp
         runtime/window.cpp
+)
+
+if (HUXERUI_ENABLE_PROFILING)
+    target_compile_definitions(huxerui_tests PRIVATE HUXERUI_ENABLE_PROFILING=1)
+endif ()
+
+add_test(NAME HuxerUIProfilingBuildTests
+        COMMAND "${CMAKE_COMMAND}"
+                "-DLIBRARY_FILE=$<TARGET_FILE:${HUXERUI_TEST_LIBRARY}>"
+                "-DTEST_EXECUTABLE=$<TARGET_FILE:huxerui_tests>"
+                "-DEXPECT_PROFILING=$<BOOL:${HUXERUI_ENABLE_PROFILING}>"
+                "-DCROSSCOMPILING=$<BOOL:${CMAKE_CROSSCOMPILING}>"
+                "-DBUILD_DIRECTORY=${PROJECT_BINARY_DIR}"
+                "-DBUILD_CONFIG=$<CONFIG>"
+                "-DSDK_INSTALL_AVAILABLE=$<BOOL:${HUXERUI_SDK_HOST_PLATFORM}>"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/profiling.cmake"
 )
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
@@ -464,7 +481,8 @@ if (TARGET huxerui_cli_core)
     endif ()
 endif ()
 
-if (TARGET huxerui_cli AND (WIN32 OR APPLE OR (UNIX AND NOT APPLE AND NOT EMSCRIPTEN)))
+if (TARGET huxerui_cli AND NOT HUXERUI_ENABLE_PROFILING
+        AND (WIN32 OR APPLE OR (UNIX AND NOT APPLE AND NOT EMSCRIPTEN)))
     if (WIN32)
         set(HUXERUI_INSTALLED_CONSUMER_PLATFORM windows)
         set(HUXERUI_INSTALLED_CONSUMER_WORK_DIRECTORY "$ENV{TEMP}")
@@ -520,7 +538,7 @@ elseif (UNIX AND NOT EMSCRIPTEN)
     )
 endif ()
 
-if (TARGET huxerui_cli AND HUXERUI_SDK_PACKAGE_FILE_NAME)
+if (TARGET huxerui_cli AND HUXERUI_SDK_PACKAGE_FILE_NAME AND NOT HUXERUI_ENABLE_PROFILING)
     if (WIN32)
         set(HUXERUI_SDK_ARCHIVE_WORK_DIRECTORY "$ENV{TEMP}")
     elseif (DEFINED ENV{TMPDIR} AND NOT "$ENV{TMPDIR}" STREQUAL "")

@@ -46,6 +46,7 @@ Useful project options:
 | `HUXERUI_BUILD_TESTS` | `ON` | Build repository tests |
 | `HUXERUI_BUILD_EXAMPLES` | `ON` | Build examples |
 | `HUXERUI_BUILD_CLI` | `ON` | Build the `huxerui` CLI |
+| `HUXERUI_ENABLE_PROFILING` | `ON` | Compile private Runtime diagnostics for source builds; excluded from SDKs |
 | `HUXERUI_WINDOWS_7_COMPAT` | `OFF` | Build the documented Windows 7 compatibility variant |
 
 ## Test
@@ -62,6 +63,53 @@ When changing that workflow or its support script, run `python -B tests/scripts/
 Android paragraph geometry tests run on a device or emulator with `./gradlew :HuxerUI:connectedDebugAndroidTest` from `platform/android` (`gradlew.bat` on Windows).
 The library's `androidTest` source set includes `tests/platform/HuxerUITextLayoutTest.java`; its platform Instrumentation runner needs no AndroidX/JUnit dependency or native HuxerUI library.
 It covers soft-wrap affinity, bidirectional hit testing, explicit line breaks, and disjoint selection geometry, and installs only the separate test package rather than replacing an example application.
+
+## Runtime profiling
+
+Source builds default to `HUXERUI_ENABLE_PROFILING=ON`, making private Runtime diagnostics available to source applications and repository examples.
+The option is independent of Debug and Release; use an optimized build for performance measurements.
+Existing build directories retain their cached value; pass `-DHUXERUI_ENABLE_PROFILING=ON` explicitly to enable diagnostics in a directory previously configured with the option off.
+Defining a macro only on an application cannot add instrumentation to a precompiled SDK.
+With the option off, the recorder source is excluded and instrumentation macros do not evaluate their arguments; there is no added capture buffer, timer, environment lookup, or per-node profiling branch.
+Existing DebugOverlay metrics are separate and retain their current behavior.
+
+```bash
+cmake -S . -B build/profile -G Ninja -DCMAKE_BUILD_TYPE=Release -DHUXERUI_ENABLE_PROFILING=ON
+cmake --build build/profile --target example_ui_gallery huxerui_tests --parallel
+ctest --test-dir build/profile -R HuxerUIProfilingBuildTests --output-on-failure
+```
+
+A profiling-enabled application records in `detailed` mode by default, including nested scope, factory, reconciliation, compilation, layout, paint-recording, and resource-resolution spans.
+The optional `HUXERUI_PROFILE` environment variable selects `overview` for frame stages and aggregate counters, `detailed` for the default detail level, or `off` to disable recording for that process.
+Leaving `HUXERUI_PROFILE` unset or empty uses `detailed`; with `off`, the compiled instrumentation still performs recorder checks but allocates no capture buffer and creates no output directory.
+Captures default to `traces/` under the current working directory, not the executable's directory.
+Set `HUXERUI_PROFILE_DIRECTORY` only to override that location; it does not change the recording mode.
+The output path is resolved when each Runtime is created, so a later working-directory change does not redirect its export.
+If the output directory cannot be resolved or created, HuxerUI reports a diagnostic and disables capture for that Runtime while allowing the application to continue.
+
+PowerShell, using the build above:
+
+```powershell
+& ./build/profile/bin/example_ui_gallery.exe
+```
+
+To disable capture for a subsequent launch, set `$env:HUXERUI_PROFILE = "off"`; remove the variable to return to the default detailed capture.
+
+Recording begins when each Runtime is created and exports a separate `runtime-<timestamp>-<identity>.json` file when that Runtime is destroyed during normal shutdown.
+The event buffer is limited to 8 MiB per recording Runtime; exhaustion stops recording and discards the incomplete final frame while preserving earlier complete frames and their counters.
+Frames aborted by exceptions are also discarded, and a stopped private recorder retains its buffer until restart or destruction.
+The capture contains framework event names, Runtime-local node identities, frame numbers, and counters; it does not collect application text, resource contents, file paths, or user-defined names.
+Scope flags identify initial composition, invalidation, and parent-driven recomposition; measure flags identify cache hits.
+
+Open the JSON with [Perfetto](https://perfetto.dev/docs/getting-started/other-formats#chrome-json-format).
+Durations describe shared Runtime CPU-side work, including scene generation; they do not include GPU execution or native presentation.
+The `huxerui` JSON field holds complete-frame counters and truncation information.
+Recording and export can affect performance, so use a profiling-disabled optimized build for the application timing baseline.
+The collector and test controls are private development tools, not an installed public API or a production capture facility.
+Capturing on platforms without a writable working directory requires an output-directory override or a source-level test harness; no platform launch integration is supplied here.
+
+SDK packaging scripts explicitly set `HUXERUI_ENABLE_PROFILING=OFF` for their target libraries, including both Windows configurations.
+Installing libraries or producing an SDK from a profiling-enabled host build is rejected; reconfigure with the option off and rebuild before packaging.
 
 ## Examples
 

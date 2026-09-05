@@ -11,6 +11,7 @@
 #include <huxerui/root.h>
 
 #include "resource_format.h"
+#include "runtime/profiling_internal.h"
 
 namespace huxerui::detail {
 
@@ -135,6 +136,8 @@ ResourceConfiguration AppResources::Configuration() const {
 }
 
 RawAsset AppResources::Resolve(RawResource resource) {
+  HUXERUI_PROFILE_SCOPE(profile_resource, Resource, 0);
+  HUXERUI_PROFILE_COUNT(Resources);
   const auto entries = FindEntries(ResourceEntryKind::Raw, resource);
   if (entries.empty()) {
     throw std::logic_error(MissingResourceMessage(resource));
@@ -181,6 +184,8 @@ RawAsset AppResources::ReadEntry(const ResourceIndexEntry& entry) {
 }
 
 ResolvedImageAsset AppResources::ResolveImage(ImageResource resource, const Locale& locale) {
+  HUXERUI_PROFILE_SCOPE(profile_resource, Resource, 0);
+  HUXERUI_PROFILE_COUNT(Resources);
   ObserveDependency(configuration_dependency_);
   const auto candidates = ResolveLocalized(resource, ResourceEntryKind::Image, locale);
   const auto selected =
@@ -225,6 +230,8 @@ VectorAsset AppResources::ResolveVector(ImageResource resource, const Locale& lo
 }
 
 ResolvedStringResource AppResources::Resolve(const StringResource& resource, const Locale& locale) const {
+  HUXERUI_PROFILE_SCOPE(profile_resource, Resource, 0);
+  HUXERUI_PROFILE_COUNT(Resources);
   const ResourceIndexEntry& entry = ResolveLocalized(resource, ResourceEntryKind::String, locale).front();
   return {entry.value, entry.argument_count};
 }

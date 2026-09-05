@@ -10,6 +10,7 @@
 #include "task_internal.h"
 #include "text/text_input_internal.h"
 #include "application/window_internal.h"
+#include "profiling_internal.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -1136,6 +1137,11 @@ Runtime::Runtime(const Application& application, PlatformAdapter& platform, Appl
   const ResourceConfiguration resource_configuration = state_->app_resources_->Configuration();
   state_->root_environment_->Set(resource_configuration.locale);
   root.Provide(state_->app_resources_);
+#if defined(HUXERUI_ENABLE_PROFILING) && HUXERUI_ENABLE_PROFILING
+  if (auto profiler = CreateRuntimeProfiler()) {
+    root.Provide(std::move(profiler));
+  }
+#endif
   state_->application_service_ = std::make_shared<ApplicationService>(
       *this,
       std::move(startup_activation),
@@ -1576,6 +1582,8 @@ void Runtime::UpdateResourceConfiguration(ResourceConfiguration configuration) {
 }
 
 const FrameCommit& Runtime::BuildFrame(FrameInfo frame) {
+  HUXERUI_PROFILE_FRAME(*state_->root_environment_);
+  HUXERUI_PROFILE_STAGE(profile_stage, Compose);
   detail::DebugMetricsState* const debug_metrics = state_->debug_metrics_.get();
   const double build_started_at = debug_metrics != nullptr ? state_->platform_->Now() : 0.0;
   const auto record_debug_commit = [&] {
@@ -1613,12 +1621,15 @@ const FrameCommit& Runtime::BuildFrame(FrameInfo frame) {
 
   if (!state_->mounted_root_ || state_->window_->metrics.viewport.width <= 0.0F ||
       state_->window_->metrics.viewport.height <= 0.0F) {
+    HUXERUI_PROFILE_NEXT(profile_stage, Input);
     state_->pointer_->RefreshCursor();
     state_->pointer_->RefreshHover(false);
     RefreshInteractionTree();
     state_->file_drop_->AdvanceFileDrop(frame);
     state_->text_->RefreshTextInputSession();
+    HUXERUI_PROFILE_NEXT(profile_stage, Semantics);
     BuildSemantics();
+    HUXERUI_PROFILE_NEXT(profile_stage, Commit);
     state_->frame_commit_.render_frame.scene.root = nullptr;
     state_->frame_commit_.render_frame.damage = {};
     DeactivateExternalTextures(
@@ -1635,6 +1646,7 @@ const FrameCommit& Runtime::BuildFrame(FrameInfo frame) {
     return state_->frame_commit_;
   }
 
+  HUXERUI_PROFILE_NEXT(profile_stage, MeasureStage);
   bool needs_frame = false;
   if (state_->scroll_motion_active_) {
     state_->scroll_motion_active_ = detail::AdvanceMountedNodeFrame(*state_->mounted_root_, frame);
@@ -1655,14 +1667,18 @@ const FrameCommit& Runtime::BuildFrame(FrameInfo frame) {
       state_->window_->metrics.safe_area,
       state_->window_->metrics.title_bar ? &*state_->window_->metrics.title_bar : nullptr
   );
+  HUXERUI_PROFILE_NEXT(profile_stage, PlaceStage);
   LayoutNode(*state_->mounted_root_, {0.0F, 0.0F});
+  HUXERUI_PROFILE_NEXT(profile_stage, Interaction);
   RefreshInteractionTree();
 
+  HUXERUI_PROFILE_NEXT(profile_stage, Extensions);
   std::optional<double> next_wakeup;
   UpdateNodeExtensions(*state_->mounted_root_, frame, needs_frame, next_wakeup, state_->extension_tree_dirty_);
   state_->extension_tree_dirty_ = false;
   ResolvePresentationTree(*state_->mounted_root_);
 
+  HUXERUI_PROFILE_NEXT(profile_stage, Geometry);
   // The first layout establishes resolved caret geometry. Revealing that caret can change ancestor scroll offsets and
   // virtual realization, so the incremental layout pipeline must settle those changes before geometry is published.
   if (state_->text_->BringTextInputIntoView()) {
@@ -1706,6 +1722,7 @@ const FrameCommit& Runtime::BuildFrame(FrameInfo frame) {
   if (state_->mounted_root_->measure_dirty) {
     RequestFrame();
   }
+  HUXERUI_PROFILE_NEXT(profile_stage, Input);
   state_->pointer_->RefreshCursor();
   state_->pointer_->RefreshHover(false);
   state_->text_->RefreshTextInputSession();
@@ -1717,8 +1734,10 @@ const FrameCommit& Runtime::BuildFrame(FrameInfo frame) {
   // A completed long press can focus a client and change its selection. Resolve it before building the shared overlay
   // so the handles and editing toolbar use the resulting selection geometry in this commit.
   state_->pointer_->AdvanceTextSelectionLongPress(frame.timestamp);
+  HUXERUI_PROFILE_NEXT(profile_stage, Semantics);
   BuildSemantics();
 
+  HUXERUI_PROFILE_NEXT(profile_stage, Scene);
   state_->text_->AdvanceTextSelectionOverlay(frame);
   state_->text_->PaintTextSelectionOverlay();
   CommitWindowAppearance();
@@ -1737,6 +1756,7 @@ const FrameCommit& Runtime::BuildFrame(FrameInfo frame) {
   }
   scene_root = state_->scene_transition_service_->Compose(scene_root);
   state_->frame_commit_.render_frame.scene.root = scene_root;
+  HUXERUI_PROFILE_NEXT(profile_stage, Damage);
   state_->frame_commit_.render_frame.damage = ComputeDamageRegion(
       state_->frame_commit_.render_frame.scene.root,
       state_->window_->metrics.viewport,
@@ -1749,6 +1769,7 @@ const FrameCommit& Runtime::BuildFrame(FrameInfo frame) {
     state_->frame_commit_.render_frame.damage.full = true;
     state_->frame_commit_.render_frame.damage.rects.clear();
   }
+  HUXERUI_PROFILE_NEXT(profile_stage, Commit);
   ++state_->frame_commit_.render_frame.revision;
   if (needs_frame) {
     RequestFrame();
@@ -2764,6 +2785,13 @@ bool Runtime::ComposeScope(detail::MountedNode& mounted) {
     mounted.measure_dirty = mounted.measure_dirty || layout_changed;
     return layout_changed;
   }
+  HUXERUI_PROFILE_SCOPE(profile_scope, Scope, mounted.identity);
+  HUXERUI_PROFILE_FLAG(
+      profile_scope,
+      !mounted.recompose_scope ? ProfileFlag::InitialComposition
+          : mounted.recompose_scope->IsDirty() ? ProfileFlag::Invalidated : ProfileFlag::ParentRecomposition
+  );
+  HUXERUI_PROFILE_COUNT(Scopes);
   if (!mounted.recompose_scope) {
     mounted.recompose_scope = std::make_shared<RecomposeScope>(*this, state_->next_scope_identity_++);
   }
@@ -2776,7 +2804,9 @@ bool Runtime::ComposeScope(detail::MountedNode& mounted) {
     Composer composer{mounted.recompose_scope, mounted.environment ? mounted.environment : state_->root_environment_};
     Composer::Guard guard{composer};
 
+    HUXERUI_PROFILE_SCOPE(profile_factory, Factory, mounted.identity);
     View content = mounted.scope_factory();
+    HUXERUI_PROFILE_END(profile_factory);
 
     std::vector<View> children;
     if (content) {
@@ -2800,6 +2830,8 @@ bool Runtime::ComposeScope(detail::MountedNode& mounted) {
 
 bool Runtime::Reconcile(std::unique_ptr<detail::MountedNode>& mounted, const std::shared_ptr<ViewSpec>& incoming,
                         const std::shared_ptr<const Environment>& environment) {
+  HUXERUI_PROFILE_SCOPE(profile_reconcile, Reconcile, mounted ? mounted->identity : 0);
+  HUXERUI_PROFILE_COUNT(Reconciles);
   state_->text_->InvalidateOverlay();
   const bool compatible = mounted && IsCompatibleNode(*mounted, *incoming) && mounted->key == incoming->key;
   if (!compatible) {
@@ -2884,6 +2916,8 @@ bool Runtime::Reconcile(std::unique_ptr<detail::MountedNode>& mounted, const std
 
 std::unique_ptr<detail::MountedNode>
 Runtime::Mount(const std::shared_ptr<ViewSpec>& incoming, const std::shared_ptr<const Environment>& environment) {
+  HUXERUI_PROFILE_SCOPE(profile_mount, Mount, 0);
+  HUXERUI_PROFILE_COUNT(Mounts);
   std::shared_ptr<Environment> owned_environment;
   std::shared_ptr<const Environment> mounted_environment = environment;
   if (incoming->kind == NodeKind::Environment) {
@@ -2896,6 +2930,7 @@ Runtime::Mount(const std::shared_ptr<ViewSpec>& incoming, const std::shared_ptr<
   auto mounted = std::make_unique<detail::MountedNode>();
   mounted->runtime = this;
   mounted->identity = state_->next_node_identity_++;
+  HUXERUI_PROFILE_NODE(profile_mount, mounted->identity);
   mounted->owned_environment = std::move(owned_environment);
   ApplyViewDeclaration(*mounted, compiled, mounted_environment);
   if (mounted->kind == NodeKind::ScrollView || mounted->kind == NodeKind::VirtualLayout) {

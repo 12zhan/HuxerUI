@@ -3,6 +3,13 @@ include_guard(GLOBAL)
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
+if (HUXERUI_ENABLE_PROFILING)
+    install(CODE
+            "message(FATAL_ERROR \"HuxerUI SDK installation requires HUXERUI_ENABLE_PROFILING=OFF\")"
+            COMPONENT HuxerUILibraries
+    )
+endif ()
+
 set(HUXERUI_WEB_EMSCRIPTEN_VERSION "4.0.19")
 
 if (ANDROID)

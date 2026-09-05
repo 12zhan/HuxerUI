@@ -1,5 +1,9 @@
 # SDK Packaging
 
+SDK libraries are built with `HUXERUI_ENABLE_PROFILING=OFF`, independently of their Debug or Release configuration.
+The packaging scripts and release workflow explicitly disable the option, and SDK library installation rejects a profiling-enabled host build.
+Source builds include the private diagnostics described in [Runtime profiling](building.md#runtime-profiling) and record in `detailed` mode by default; application macros cannot enable diagnostics in a released SDK.
+
 Repository packaging scripts build a complete SDK for the current desktop host and include the Android and Web target artifacts consumed by generated projects.
 Release CI additionally cross-builds the Android arm64-v8a host SDK for Termux with the Android NDK.
 The macOS SDK additionally contains the static iOS XCFramework for device and Simulator application-core builds.

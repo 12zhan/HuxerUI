@@ -43,6 +43,7 @@ simulator_library="$simulator_build_directory/lib/$configuration/libhuxerui_stat
 headers_directory="$build_directory/headers"
 
 cmake -S "$source_directory" -B "$device_build_directory" -G Xcode \
+  -DHUXERUI_ENABLE_PROFILING=OFF \
   -DCMAKE_SYSTEM_NAME=iOS \
   -DCMAKE_OSX_SYSROOT=iphoneos \
   -DCMAKE_OSX_ARCHITECTURES=arm64 \
@@ -56,6 +57,7 @@ cmake --build "$device_build_directory" --config "$configuration" \
   --target huxerui_static --parallel "$jobs"
 
 cmake -S "$source_directory" -B "$simulator_build_directory" -G Xcode \
+  -DHUXERUI_ENABLE_PROFILING=OFF \
   -DCMAKE_SYSTEM_NAME=iOS \
   -DCMAKE_OSX_SYSROOT=iphonesimulator \
   '-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64' \

@@ -1926,6 +1926,18 @@ Root hooks run once in declaration order. Runtime owns the provided services and
 
 HuxerUI installs its built-in Toast, SnackBar, Tooltip, Dialog, BottomSheet, Popup, and Menu services for every Runtime before application root hooks run. Applications use command-oriented services through their typed `UseXxx()` handles, while Tooltip remains an ordinary retained modifier; root hooks remain the extension mechanism for third-party services and global components. When `AppOptions::show_debug_overlay` is enabled, Runtime installs the built-in DebugOverlay after all root hooks so its System entry remains above other global layers. The option defaults to enabled in Debug builds and disabled in Release builds.
 
+Detailed performance diagnostics are a private source-build capability controlled by `HUXERUI_ENABLE_PROFILING`, which defaults to on for source builds and is explicitly disabled for SDK packaging.
+When compiled in, detailed capture is enabled by default, and a root service owns one bounded recorder per recording Runtime; a library-owned thread-local pointer routes nested instrumentation during that Runtime's frame and restores the previous recorder across nested Runtime calls.
+The optional `HUXERUI_PROFILE` selects `overview`, `detailed`, or `off`; an unset or empty value uses `detailed`.
+The optional `HUXERUI_PROFILE_DIRECTORY` overrides the default working-directory `traces/` location resolved at Runtime creation without changing the recording mode.
+Output-directory initialization failures disable capture for that Runtime and report a diagnostic without preventing application startup.
+The recorder uses an independent monotonic clock and stores scalar event data without retaining nodes or application values.
+Buffer exhaustion or an escaping frame exception rolls back that frame's events and counters, so exports contain complete frames only.
+The private recorder's start, stop, and export operations require a frame boundary; calls during an active frame are rejected.
+Recording and capture export do not introduce a public Profiler API, code-generation metadata, platform services, or new DebugOverlay UI.
+With profiling compiled out, neither the recorder nor its instrumentation arguments, storage, timers, or activation checks are present; the existing DebugOverlay contract is unchanged.
+See [Runtime profiling](../development/building.md#runtime-profiling) for source-build activation and capture limits.
+
 RootHook does not provide:
 
 - Direct Runtime access.

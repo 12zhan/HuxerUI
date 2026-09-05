@@ -23,6 +23,9 @@ function(huxerui_configure_compile_target target_name)
     target_compile_definitions(${target_name} PRIVATE
             ${HUXERUI_PLATFORM_COMPILE_DEFINITIONS}
     )
+    if (HUXERUI_ENABLE_PROFILING)
+        target_compile_definitions(${target_name} PRIVATE HUXERUI_ENABLE_PROFILING=1)
+    endif ()
 endfunction()
 
 function(huxerui_configure_public_target target_name resource_package)
@@ -100,6 +103,9 @@ function(huxerui_configure_targets)
     file(GLOB HUXERUI_CORE_SOURCE_FILES CONFIGURE_DEPENDS
             "${HUXERUI_PROJECT_DIR}/src/*/*.cpp"
     )
+    if (NOT HUXERUI_ENABLE_PROFILING)
+        list(REMOVE_ITEM HUXERUI_CORE_SOURCE_FILES "${HUXERUI_PROJECT_DIR}/src/runtime/profiling.cpp")
+    endif ()
 
     if (IOS)
         set(HUXERUI_LIBRARY_SOURCE_FILES
