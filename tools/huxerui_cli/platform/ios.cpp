@@ -404,6 +404,8 @@ public:
         std::string_view{"App/Info.plist"},
         std::string_view{"App/LaunchScreen.storyboard"},
         std::string_view{"App/Assets.xcassets/Contents.json"},
+        std::string_view{"App/Assets.xcassets/AppIcon.appiconset/Contents.json"},
+        std::string_view{"App/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png"},
         std::string_view{"Config/Base.xcconfig"},
         std::string_view{"Config/Debug.xcconfig"},
         std::string_view{"Config/Release.xcconfig"},

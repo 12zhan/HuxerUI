@@ -21,6 +21,7 @@ OHOS does not currently have a repository-owned backend.
 
 The default backend targets Windows 10 version 1607 or later and uses Win32, D3D11, Direct2D, DirectWrite, DXGI, and IMM32.
 Build with MSVC and a supported Visual Studio installation.
+Application packaging deploys the required Release VC++ runtime beside the application and installer; see [Packaging Applications](packaging.md#desktop-system-requirements).
 
 The optional `HUXERUI_WINDOWS_7_COMPAT=ON` configuration targets Windows 7 SP1 with Platform Update by using capability-based fallbacks.
 PlatformView composition requires DirectComposition and is unavailable when that capability is missing.
@@ -83,6 +84,7 @@ Libepoxy provides OpenGL dispatch, Pango provides text layout, Cairo records ord
 Install the corresponding development packages before configuring CMake.
 The SDK archive does not bundle distribution-owned GTK, libepoxy, Pango, Cairo, GIO, or libsoup libraries.
 Official Linux SDK binaries require glibc 2.35 or later.
+Application packages retain the distribution-owned runtime stack and may require newer system ABI versions according to their binaries; see [Packaging Applications](packaging.md#desktop-system-requirements).
 
 Linux builds are provided for x86_64 and aarch64 hosts.
 PlatformView and a platform accessibility bridge are not implemented.

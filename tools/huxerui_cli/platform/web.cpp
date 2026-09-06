@@ -159,6 +159,8 @@ public:
     static constexpr std::array required{
         std::string_view{"huxerui.cmake"},
         std::string_view{"index.html.in"},
+        std::string_view{"favicon.svg"},
+        std::string_view{"apple-touch-icon.png"},
     };
     return detail::ValidateRequiredFiles(shell_root, required);
   }

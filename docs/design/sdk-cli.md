@@ -355,14 +355,29 @@ Desktop platforms intentionally use different containers:
 - macOS produces one DMG containing the complete application bundle and an Applications link.
 - Linux produces one executable AppImage containing the application, its HuxerUI resources, and application-declared runtime payloads.
 
+Application icons remain editable native assets in their generated platform shells.
+Windows uses one `app.ico` for the application executable, installer executable, Burn bundle, shortcuts, and installed-product metadata; macOS embeds `AppIcon.icns` in the application bundle; Linux installs its target-named SVG beside the AppImage desktop entry.
+Android owns launcher density and adaptive icon resources, iOS owns its AppIcon asset catalog, and Web owns its favicon and touch icon.
+The generated defaults share the HuxerUI brand mark, while the build and package layers do not add a cross-platform icon property, perform image conversion, customize the macOS volume icon, or introduce a second Windows installer icon.
+
 Android, iOS, and Web retain their platform-owned store, archive, and deployment outputs rather than pretending that an interactive desktop installer applies to them.
 An explicitly requested unsupported platform, missing package tool, malformed staging tree, or missing final artifact fails the command instead of producing a partial success message.
 
 Application installation content comes only from CMake install rules.
-The generated application installs its executable and final HuxerUI resource package, while an application adds explicit install rules for third-party libraries, plugins, codecs, and data that it owns.
+The generated application installs its executable and final HuxerUI resource package, then the runtime-dependency module recursively deploys non-system dynamic dependencies during installation.
+`huxerui_add_runtime_dependencies` registers additional shared-library targets, modules, or prebuilt files that runtime loading hides from the binary graph, together with optional installation destinations and search hints.
+Ordinary data remains in application-owned install rules.
 `huxerui_add_app` records the single package component in the application target's `HUXERUI_APPLICATION_INSTALL_COMPONENT` property, so generated shells and application-owned install rules share the same value without a directory-scoped variable.
 The CLI never scans an executable dependency graph or copies every adjacent dynamic library.
 The staged tree is a projection of those rules, not another package manifest.
+`HuxerUIRuntimeDependencies.cmake` owns both declaration and deployment functions; dependency inputs are generated in their declaring directory, while each application directory generates its per-configuration deployment entry.
+The top-level directory schedules these entries after ordinary installation rules so parent-directory payloads also participate in deployment and final validation.
+Installation entries read the final target-owned input list, including declarations made later by a parent or sibling directory, without promoting imported targets to global visibility.
+Dependency discovery uses original binaries, while copying, load-path rewriting, and final validation operate on fresh staging trees.
+Collection classifies explicit and discovered dependencies before copying; staged validation enforces the same system-runtime boundary.
+Windows uses executable-local dependencies and toolchain Release VC++ redistributables, resolving them through an explicit CMake setting, CMake discovery, the active compiler installation, or its developer environment in that order.
+macOS uses bundle Frameworks and PlugIns with relative load commands and signatures applied after fixup; Linux uses AppDir `usr/lib` and per-binary relative RUNPATHs while retaining the distribution-owned desktop stack.
+Missing required dependencies, conflicting destinations, invalid architectures, unsupported Debug CRTs, and external non-system dependencies remaining after deployment are fatal.
 
 ### Windows installer
 
@@ -375,7 +390,9 @@ The generated Windows shell contains editable installer source and resources und
 Its interface text uses the installer target's ordinary HuxerUI string resources and the Runtime's one locale configuration; the required default catalog supplies fallback text, and language or region catalogs use the same resolution chain as application resources.
 The native folder picker and messages returned by Burn remain platform-owned text rather than a second installer localization registry.
 Normal `build` and `run` commands neither build that target nor require WiX.
-Windows package mode restores the pinned WiX tool and native bootstrapper API into package-local generated storage, verifies their hashes, builds the installer UI against `HuxerUI::huxerui_static`, stages the application through CMake install rules, and then produces one bundle.
+Windows package mode restores the pinned WiX tool and native bootstrapper API into package-local generated storage, verifies their hashes, builds the installer UI against `HuxerUI::huxerui_static`, and independently stages the application and installer through CMake install rules before producing one bundle.
+The installer component includes its executable, resources, `mbanative.dll`, and its own complete non-system dependency closure, including Release VC++ runtime DLLs.
+WiX payload generation consumes that complete staged directory and excludes only the bootstrapper executable already declared by the bundle source.
 The Windows installer CMake module owns the WiX version, package layout, restoration, and tool validation as one dependency contract.
 The restored framework-dependent tool requires `Microsoft.NETCore.App` 6.0 or newer, but does not require a system-wide WiX installation.
 The initial Windows package implementation targets x64 and rejects another architecture explicitly.

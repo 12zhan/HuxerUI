@@ -56,6 +56,7 @@ public:
         std::string_view{"main.cpp"},
         std::string_view{"huxerui.cmake"},
         std::string_view{"Info.plist.in"},
+        std::string_view{"AppIcon.icns"},
     };
     return detail::ValidateRequiredFiles(shell_root, required);
   }

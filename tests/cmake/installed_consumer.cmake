@@ -103,6 +103,7 @@ endif ()
             "cmake_minimum_required(VERSION 3.20)\n"
             "project(huxerui_installed_consumer LANGUAGES CXX)\n"
             "find_package(HuxerUI CONFIG REQUIRED${CONSUMER_COMPONENT})\n"
+            "if(NOT COMMAND huxerui_add_runtime_dependencies)\n  message(FATAL_ERROR \"SDK runtime deployment helper is missing\")\nendif()\n"
             "${CONSUMER_TARGET_EXPECTATIONS}"
             "add_executable(consumer main.cpp)\n"
             "target_compile_features(consumer PRIVATE cxx_std_20)\n"

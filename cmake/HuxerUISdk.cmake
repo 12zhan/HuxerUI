@@ -120,6 +120,7 @@ install(FILES
         "${HUXERUI_PROJECT_DIR}/cmake/HuxerUILibraries.cmake"
         "${HUXERUI_PROJECT_DIR}/cmake/HuxerUIResourceBuild.cmake"
         "${HUXERUI_PROJECT_DIR}/cmake/HuxerUIResources.cmake"
+        "${HUXERUI_PROJECT_DIR}/cmake/HuxerUIRuntimeDependencies.cmake"
         "${HUXERUI_PROJECT_DIR}/cmake/HuxerUIGenerateWixPayloads.cmake"
         "${HUXERUI_PROJECT_DIR}/cmake/HuxerUIWindowsInstaller.cmake"
         DESTINATION "${HUXERUI_INSTALL_CMAKE_DIR}"

@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		000000000000000000000101 /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000201 /* main.mm */; };
 		000000000000000000000102 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000203 /* LaunchScreen.storyboard */; };
+		000000000000000000000103 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000208 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -20,6 +21,7 @@
 		000000000000000000000205 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
 		000000000000000000000206 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
 		000000000000000000000207 /* Local.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Local.xcconfig.example; sourceTree = "<group>"; };
+		000000000000000000000208 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -48,6 +50,7 @@
 				000000000000000000000201 /* main.mm */,
 				000000000000000000000202 /* Info.plist */,
 				000000000000000000000203 /* LaunchScreen.storyboard */,
+				000000000000000000000208 /* Assets.xcassets */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -131,6 +134,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				000000000000000000000102 /* LaunchScreen.storyboard in Resources */,
+				000000000000000000000103 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

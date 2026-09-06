@@ -291,6 +291,9 @@ public:
         std::string_view{"gradle/wrapper/gradle-wrapper.properties"},
         std::string_view{"app/build.gradle"},
         std::string_view{"app/src/main/AndroidManifest.xml"},
+        std::string_view{"app/src/main/res/drawable/ic_launcher_foreground.xml"},
+        std::string_view{"app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml"},
+        std::string_view{"app/src/main/res/mipmap-xxxhdpi/ic_launcher.png"},
     };
     std::vector<Diagnostic> diagnostics = detail::ValidateRequiredFiles(shell_root, required);
     bool has_activity = false;

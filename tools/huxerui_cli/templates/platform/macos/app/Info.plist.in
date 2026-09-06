@@ -6,6 +6,8 @@
   <string>@PROJECT_NAME@</string>
   <key>CFBundleIdentifier</key>
   <string>@PROJECT_ID@</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundleName</key>
   <string>@PROJECT_NAME@</string>
   <key>CFBundlePackageType</key>

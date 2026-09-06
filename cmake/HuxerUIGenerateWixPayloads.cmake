@@ -1,8 +1,8 @@
 if (NOT HUXERUI_WIX_PAYLOAD_DIRECTORY)
     message(FATAL_ERROR "HUXERUI_WIX_PAYLOAD_DIRECTORY is required")
 endif ()
-if (NOT HUXERUI_WIX_PAYLOAD_NAME)
-    message(FATAL_ERROR "HUXERUI_WIX_PAYLOAD_NAME is required")
+if (NOT HUXERUI_WIX_PAYLOAD_EXECUTABLE)
+    message(FATAL_ERROR "HUXERUI_WIX_PAYLOAD_EXECUTABLE is required")
 endif ()
 if (NOT HUXERUI_WIX_PAYLOAD_OUTPUT)
     message(FATAL_ERROR "HUXERUI_WIX_PAYLOAD_OUTPUT is required")
@@ -26,14 +26,17 @@ file(GLOB_RECURSE HUXERUI_WIX_PAYLOAD_FILES
 )
 list(SORT HUXERUI_WIX_PAYLOAD_FILES)
 set(HUXERUI_WIX_PAYLOAD_XML
-        "<Wix xmlns=\"http://wixtoolset.org/schemas/v4/wxs\">\n  <Fragment>\n    <PayloadGroup Id=\"HuxerUIInstallerResources\">\n"
+        "<Wix xmlns=\"http://wixtoolset.org/schemas/v4/wxs\">\n  <Fragment>\n    <PayloadGroup Id=\"HuxerUIInstallerPayloads\">\n"
 )
 foreach (HUXERUI_WIX_PAYLOAD_FILE IN LISTS HUXERUI_WIX_PAYLOAD_FILES)
+    if (HUXERUI_WIX_PAYLOAD_FILE STREQUAL HUXERUI_WIX_PAYLOAD_EXECUTABLE)
+        continue()
+    endif ()
     set(HUXERUI_WIX_PAYLOAD_SOURCE
             "${HUXERUI_WIX_PAYLOAD_DIRECTORY}/${HUXERUI_WIX_PAYLOAD_FILE}"
     )
     set(HUXERUI_WIX_PAYLOAD_DESTINATION
-            "${HUXERUI_WIX_PAYLOAD_NAME}/${HUXERUI_WIX_PAYLOAD_FILE}"
+            "${HUXERUI_WIX_PAYLOAD_FILE}"
     )
     string(REPLACE "/" "\\" HUXERUI_WIX_PAYLOAD_DESTINATION
             "${HUXERUI_WIX_PAYLOAD_DESTINATION}"

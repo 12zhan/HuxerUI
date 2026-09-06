@@ -1,6 +1,7 @@
 #include <catch2/catch_amalgamated.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -67,6 +68,12 @@ std::string Read(const std::filesystem::path& path) {
   std::string content{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
   std::erase(content, '\r');
   return content;
+}
+
+std::string ReadBinary(const std::filesystem::path& path) {
+  std::ifstream stream(path, std::ios::binary);
+  REQUIRE(stream);
+  return {std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
 }
 
 std::vector<std::string> ExpectedLibraryGraphArguments(const huxerui::cli::PlatformCommandContext& context) {
@@ -240,6 +247,8 @@ TEST_CASE("HuxerUICliCreatesSelectedPlatformShells") {
   ));
   REQUIRE(std::filesystem::is_regular_file(project / "platform/windows/main.cpp"));
   REQUIRE(std::filesystem::is_regular_file(project / "platform/windows/app.manifest"));
+  REQUIRE(std::filesystem::is_regular_file(project / "platform/windows/app.ico"));
+  REQUIRE(std::filesystem::is_regular_file(project / "platform/windows/app.rc.in"));
   REQUIRE(std::filesystem::is_regular_file(project / "platform/windows/huxerui.cmake"));
   REQUIRE(std::filesystem::is_regular_file(project / "platform/windows/package/Bundle.wxs.in"));
   REQUIRE(std::filesystem::is_regular_file(project / "platform/windows/package/Package.wxs.in"));
@@ -270,9 +279,14 @@ TEST_CASE("HuxerUICliCreatesSelectedPlatformShells") {
   REQUIRE(default_installer_strings.find("application_setup = APPLICATION SETUP") != std::string::npos);
   REQUIRE(default_installer_strings.find("files_in_use = Close applications") != std::string::npos);
   const std::string installer_bundle = Read(project / "platform/windows/package/Bundle.wxs.in");
+  REQUIRE(installer_bundle.find("IconSourceFile=\"!(bindpath.Project)\\app.ico\"") != std::string::npos);
   REQUIRE(installer_bundle.find("Name=\"InstallFolder\" Type=\"formatted\"") != std::string::npos);
   REQUIRE(installer_bundle.find("Name=\"CreateDesktopShortcut\" Type=\"numeric\"") != std::string::npos);
   const std::string installer_package = Read(project / "platform/windows/package/Package.wxs.in");
+  REQUIRE(installer_package.find("Icon Id=\"ApplicationIcon\"") != std::string::npos);
+  REQUIRE(installer_package.find("Property Id=\"ARPPRODUCTICON\" Value=\"ApplicationIcon\"") !=
+          std::string::npos);
+  REQUIRE(installer_package.find("Icon=\"ApplicationIcon\"") != std::string::npos);
   REQUIRE(installer_package.find("Feature Id=\"DesktopShortcut\"") != std::string::npos);
   REQUIRE(installer_package.find("StandardDirectory Id=\"DesktopFolder\"") != std::string::npos);
   REQUIRE(std::filesystem::is_regular_file(project / "platform/android/settings.gradle"));
@@ -280,15 +294,23 @@ TEST_CASE("HuxerUICliCreatesSelectedPlatformShells") {
   REQUIRE(std::filesystem::is_regular_file(project / "platform/android/gradlew.bat"));
   REQUIRE(std::filesystem::is_regular_file(project / "platform/android/gradle/wrapper/gradle-wrapper.jar"));
   REQUIRE(std::filesystem::is_regular_file(project / "platform/android/gradle/wrapper/gradle-wrapper.properties"));
+  const std::filesystem::path android_resource_root = project / "platform/android/app/src/main/res";
+  REQUIRE(std::filesystem::is_regular_file(android_resource_root / "drawable/ic_launcher_foreground.xml"));
+  REQUIRE(std::filesystem::is_regular_file(android_resource_root / "mipmap-anydpi-v26/ic_launcher.xml"));
+  REQUIRE(std::filesystem::is_regular_file(android_resource_root / "mipmap-xxxhdpi/ic_launcher.png"));
 #if !defined(_WIN32)
   REQUIRE(IsExecutable(project / "platform/android/gradlew"));
 #endif
   REQUIRE(std::filesystem::is_regular_file(project / "platform/web/index.html.in"));
+  REQUIRE(std::filesystem::is_regular_file(project / "platform/web/favicon.svg"));
+  REQUIRE(std::filesystem::is_regular_file(project / "platform/web/apple-touch-icon.png"));
   REQUIRE_FALSE(std::filesystem::exists(project / "platform/macos"));
   REQUIRE_FALSE(std::filesystem::exists(project / ".huxerui"));
   REQUIRE(Read(project / ".gitignore").find("/.huxerui/") != std::string::npos);
   const std::string web_html = Read(project / "platform/web/index.html.in");
   REQUIRE(web_html.find("<div id=\"huxerui-root\"></div>") != std::string::npos);
+  REQUIRE(web_html.find("rel=\"icon\"") != std::string::npos);
+  REQUIRE(web_html.find("rel=\"apple-touch-icon\"") != std::string::npos);
   REQUIRE(web_html.find("mountHuxerUI(\"#huxerui-root\")") != std::string::npos);
   REQUIRE(web_html.find("huxerui-canvas") == std::string::npos);
   const std::string cmake = Read(project / "CMakeLists.txt");
@@ -306,6 +328,8 @@ TEST_CASE("HuxerUICliCreatesSelectedPlatformShells") {
   REQUIRE(project_cmake.find("CMAKE_OSX_DEPLOYMENT_TARGET \"12.0\"") != std::string::npos);
   REQUIRE(project_cmake.find("if (NOT HUXERUI_LIBRARY_GRAPH_ONLY)\n    enable_language(CXX)") !=
           std::string::npos);
+  REQUIRE(project_cmake.find("enable_language(RC)") != std::string::npos);
+  REQUIRE(project_cmake.find("\"${HUXERUI_WINDOWS_RESOURCE}\"") != std::string::npos);
   REQUIRE(project_cmake.find("set(HUXERUI_BUILD_SHARED ON CACHE BOOL \"\" FORCE)") != std::string::npos);
   REQUIRE(project_cmake.find("set(HUXERUI_BUILD_STATIC OFF CACHE BOOL \"\" FORCE)") != std::string::npos);
   REQUIRE(project_cmake.find("RESOURCE_OUTPUT_DIRECTORY") != std::string::npos);
@@ -314,8 +338,10 @@ TEST_CASE("HuxerUICliCreatesSelectedPlatformShells") {
   REQUIRE(application.find("const Application application") != std::string::npos);
   REQUIRE(application.find("MaterialTheme") == std::string::npos);
   REQUIRE(Read(project / "platform/windows/main.cpp").find("RunApplication()") != std::string::npos);
+  REQUIRE(Read(project / "platform/windows/app.ico").starts_with(std::string("\0\0\1\0", 4)));
   const std::string android_settings = Read(project / "platform/android/settings.gradle");
   const std::string android_app = Read(project / "platform/android/app/build.gradle");
+  const std::string android_manifest = Read(project / "platform/android/app/src/main/AndroidManifest.xml");
   const std::string android_properties = Read(project / "platform/android/gradle.properties");
   REQUIRE(android_settings.find("project(\":HuxerUI\").projectDir") != std::string::npos);
   REQUIRE(android_settings.find("share/huxerui/platform/android/HuxerUI.aar") != std::string::npos);
@@ -334,6 +360,12 @@ TEST_CASE("HuxerUICliCreatesSelectedPlatformShells") {
   REQUIRE(android_app.find("huxeruiAbis") != std::string::npos);
   REQUIRE(android_app.find(".cxx") == std::string::npos);
   REQUIRE(android_app.find("lastModified") == std::string::npos);
+  REQUIRE(android_manifest.find("android:icon=\"@mipmap/ic_launcher\"") != std::string::npos);
+  REQUIRE(android_manifest.find("android:roundIcon=\"@mipmap/ic_launcher\"") != std::string::npos);
+  REQUIRE(
+      ReadBinary(android_resource_root / "mipmap-xxxhdpi/ic_launcher.png")
+          .starts_with(std::string("\x89PNG\r\n\x1a\n", 8))
+  );
   REQUIRE(android_properties.find("huxeruiBuildNative=false") != std::string::npos);
   REQUIRE(android_properties.find("huxeruiCompileSdk=36") != std::string::npos);
   REQUIRE(android_properties.find("huxeruiNdkVersion=29.0.14206865") != std::string::npos);
@@ -693,10 +725,24 @@ TEST_CASE("HuxerUICliAddsMissingPlatformsFromNestedProjectDirectories") {
 
   REQUIRE(invocation.result == 0);
   REQUIRE(std::filesystem::is_regular_file(temporary.Path() / "sample/platform/macos/Info.plist.in"));
+  REQUIRE(std::filesystem::is_regular_file(temporary.Path() / "sample/platform/macos/AppIcon.icns"));
+  REQUIRE(Read(temporary.Path() / "sample/platform/macos/AppIcon.icns").starts_with("icns"));
+  REQUIRE(Read(temporary.Path() / "sample/platform/macos/Info.plist.in").find("CFBundleIconFile") !=
+          std::string::npos);
+  REQUIRE(Read(temporary.Path() / "sample/platform/macos/huxerui.cmake").find("MACOSX_PACKAGE_LOCATION Resources") !=
+          std::string::npos);
   REQUIRE(std::filesystem::is_regular_file(temporary.Path() / "sample/platform/ios/App/Info.plist"));
+  const std::filesystem::path ios_app_icons =
+      temporary.Path() / "sample/platform/ios/App/Assets.xcassets/AppIcon.appiconset";
+  REQUIRE(std::filesystem::is_regular_file(ios_app_icons / "Contents.json"));
+  REQUIRE(std::filesystem::is_regular_file(ios_app_icons / "AppIcon-1024.png"));
+  REQUIRE(Read(ios_app_icons / "Contents.json").find("AppIcon-1024.png") != std::string::npos);
+  REQUIRE(ReadBinary(ios_app_icons / "AppIcon-1024.png").starts_with(std::string("\x89PNG\r\n\x1a\n", 8)));
   REQUIRE(std::filesystem::is_regular_file(temporary.Path() / "sample/platform/ios/sample.xcodeproj/project.pbxproj"));
   REQUIRE(std::filesystem::is_regular_file(temporary.Path() / "sample/platform/android/settings.gradle"));
   REQUIRE(std::filesystem::is_regular_file(temporary.Path() / "sample/platform/web/index.html.in"));
+  REQUIRE(std::filesystem::is_regular_file(temporary.Path() / "sample/platform/web/favicon.svg"));
+  REQUIRE(std::filesystem::is_regular_file(temporary.Path() / "sample/platform/web/apple-touch-icon.png"));
   REQUIRE(std::filesystem::is_regular_file(temporary.Path() / "sample/platform/linux/main.cpp"));
   REQUIRE(std::filesystem::is_regular_file(temporary.Path() / "sample/platform/linux/huxerui.cmake"));
   REQUIRE(std::filesystem::is_regular_file(temporary.Path() / "sample/platform/linux/package/AppRun"));
@@ -829,8 +875,7 @@ TEST_CASE("HuxerUICliCreatesStableWindowsBuildCommands") {
 
   const std::filesystem::path package_plan = context.build_directory / "huxerui-package/windows/Release/package.json";
   const std::filesystem::path installer_plan = temporary.Path() / "installer.json";
-  const std::filesystem::path installer = temporary.Path() / "sample-installer.exe";
-  const std::filesystem::path installer_resources = temporary.Path() / "sample-installer.resources";
+  const std::filesystem::path installer = "sample-installer.exe";
   const std::filesystem::path package_source = temporary.Path() / "Package.wxs";
   const std::filesystem::path bundle_source = temporary.Path() / "Bundle.wxs";
   const std::filesystem::path wix = temporary.Path() / "wix.exe";
@@ -848,18 +893,23 @@ TEST_CASE("HuxerUICliCreatesStableWindowsBuildCommands") {
                                    "  \"wix\": \""
                                 << wix.generic_string() << "\",\n"
                                 << "  \"installer\": \"" << installer.generic_string() << "\",\n"
-                                << "  \"installerResources\": \"" << installer_resources.generic_string() << "\",\n"
-                                << "  \"installerResourcesName\": \"sample-installer.resources\"\n"
+                                << "  \"installComponent\": \"HuxerUIInstaller_sample\"\n"
                                 << "}\n";
 
   const std::vector<huxerui::cli::ProcessCommand> package_commands = windows->PackageCommands(package_context);
-  REQUIRE(package_commands.size() == 6);
-  REQUIRE(std::filesystem::path(package_commands[3].executable).generic_string() == wix.generic_string());
-  REQUIRE(package_commands[4].executable == "cmake");
-  REQUIRE(std::filesystem::path(package_commands[5].executable).generic_string() == wix.generic_string());
+  REQUIRE(package_commands.size() == 9);
+  REQUIRE(package_commands[5].arguments[5] == "HuxerUIInstaller_sample");
+  REQUIRE(std::filesystem::path(package_commands[6].executable).generic_string() == wix.generic_string());
+  REQUIRE(package_commands[7].executable == "cmake");
+  REQUIRE(std::filesystem::path(package_commands[8].executable).generic_string() == wix.generic_string());
   const std::filesystem::path installer_payloads =
-      context.project_root / ".huxerui/package/windows/release/installer-resources.wxs";
-  REQUIRE(std::any_of(package_commands[5].arguments.begin(), package_commands[5].arguments.end(),
+      context.project_root / ".huxerui/package/windows/release/installer-payloads.wxs";
+  const std::string project_bind_path = "Project=" + (context.project_root / "platform/windows").string();
+  REQUIRE(std::find(package_commands[6].arguments.begin(), package_commands[6].arguments.end(), project_bind_path) !=
+          package_commands[6].arguments.end());
+  REQUIRE(std::find(package_commands[8].arguments.begin(), package_commands[8].arguments.end(), project_bind_path) !=
+          package_commands[8].arguments.end());
+  REQUIRE(std::any_of(package_commands[8].arguments.begin(), package_commands[8].arguments.end(),
                       [&installer_payloads](const std::string& argument) {
                         return std::filesystem::path(argument).generic_string() == installer_payloads.generic_string();
                       }));
@@ -1129,6 +1179,8 @@ TEST_CASE("HuxerUICliCreatesWebBuildAndRunCommands") {
   });
   REQUIRE(configuration != shell.end());
   REQUIRE(configuration->content.find("${target_name}.js") != std::string::npos);
+  REQUIRE(configuration->content.find("${target_name}.favicon.svg") != std::string::npos);
+  REQUIRE(configuration->content.find("${target_name}.apple-touch-icon.png") != std::string::npos);
   REQUIRE(configuration->content.find(".mjs") == std::string::npos);
   const std::filesystem::path project = temporary.Path() / "sample";
   const std::filesystem::path build = project / ".huxerui/build/web/debug";
@@ -1171,11 +1223,18 @@ TEST_CASE("HuxerUICliCreatesWebBuildAndRunCommands") {
   const std::filesystem::path artifact = build / "sample.js";
   const std::filesystem::path entry = build / "sample.html";
   const std::filesystem::path module = build / "sample.wasm";
+  const std::array web_icon_files{
+      build / "sample.favicon.svg",
+      build / "sample.apple-touch-icon.png",
+  };
   const std::filesystem::path plan = build / "huxerui-integration/sample/Debug/app.json";
   std::filesystem::create_directories(plan.parent_path());
   std::ofstream(artifact) << "export default {};\n";
   std::ofstream(entry) << "<!doctype html>\n";
   std::ofstream(module) << "wasm\n";
+  for (const std::filesystem::path& icon : web_icon_files) {
+    std::ofstream(icon) << "icon\n";
+  }
   std::ofstream(plan) << "{\n"
                          "  \"target\": \"sample\",\n"
                          "  \"artifact\": \""
@@ -1214,10 +1273,15 @@ TEST_CASE("HuxerUICliCreatesWebBuildAndRunCommands") {
   REQUIRE(std::filesystem::equivalent(termux_run_commands[0].working_directory, build));
 
   const std::vector<huxerui::cli::PackageArtifact> package_artifacts = web->PackageArtifacts(context);
-  REQUIRE(package_artifacts.size() == 3);
+  REQUIRE(package_artifacts.size() == 5);
   REQUIRE(std::any_of(package_artifacts.begin(), package_artifacts.end(), [&module](const auto& packaged) {
     return packaged.source == module && packaged.destination == module.filename();
   }));
+  for (const std::filesystem::path& icon : web_icon_files) {
+    REQUIRE(std::any_of(package_artifacts.begin(), package_artifacts.end(), [&icon](const auto& packaged) {
+      return packaged.source == icon && packaged.destination == icon.filename();
+    }));
+  }
 }
 
 TEST_CASE("HuxerUICliCreatesIosBuildAndRunCommands") {
@@ -1236,6 +1300,11 @@ TEST_CASE("HuxerUICliCreatesIosBuildAndRunCommands") {
   REQUIRE(base_configuration->content.find("HEADER_SEARCH_PATHS") != std::string::npos);
   REQUIRE(base_configuration->content.find("@\"$(HUXERUI_LINK_OPTIONS_FILE)\"") != std::string::npos);
   REQUIRE(base_configuration->content.find("-framework UIKit") == std::string::npos);
+  const auto app_icon = std::find_if(shell.begin(), shell.end(), [](const huxerui::cli::GeneratedFile& file) {
+    return file.path == "App/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png";
+  });
+  REQUIRE(app_icon != shell.end());
+  REQUIRE(app_icon->content.starts_with(std::string("\x89PNG\r\n\x1a\n", 8)));
   const auto launch_screen = std::find_if(shell.begin(), shell.end(), [](const huxerui::cli::GeneratedFile& file) {
     return file.path == "App/LaunchScreen.storyboard";
   });

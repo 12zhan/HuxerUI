@@ -401,6 +401,18 @@ if (WIN32)
 else ()
     set(HUXERUI_SOURCE_SUBDIRECTORY_WORK_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
 endif ()
+if (NOT CMAKE_CROSSCOMPILING AND (WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux"))
+    add_test(NAME HuxerUIRuntimeDependencyTests
+            COMMAND "${CMAKE_COMMAND}"
+                    "-DSOURCE_DIRECTORY=${HUXERUI_PROJECT_DIR}"
+                    "-DWORK_DIRECTORY=${HUXERUI_SOURCE_SUBDIRECTORY_WORK_DIRECTORY}"
+                    "-DHOST_GENERATOR=${CMAKE_GENERATOR}"
+                    "-DHOST_GENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}"
+                    "-DHOST_GENERATOR_TOOLSET=${CMAKE_GENERATOR_TOOLSET}"
+                    "-DHOST_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/runtime_dependencies.cmake"
+    )
+endif ()
 add_test(NAME HuxerUISourceSubdirectoryTests
         COMMAND "${CMAKE_COMMAND}"
                 "-DSOURCE_DIRECTORY=${HUXERUI_PROJECT_DIR}"
@@ -424,6 +436,11 @@ if (MSVC AND CMAKE_GENERATOR MATCHES "^Ninja")
     set_tests_properties(HuxerUISourceSubdirectoryTests PROPERTIES
             ENVIRONMENT "${HUXERUI_SOURCE_SUBDIRECTORY_ENVIRONMENT}"
     )
+    if (TEST HuxerUIRuntimeDependencyTests)
+        set_tests_properties(HuxerUIRuntimeDependencyTests PROPERTIES
+                ENVIRONMENT "${HUXERUI_SOURCE_SUBDIRECTORY_ENVIRONMENT}"
+        )
+    endif ()
 endif ()
 
 if (TARGET huxerui_cli_core)

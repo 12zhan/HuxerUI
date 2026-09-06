@@ -1,6 +1,7 @@
 include_guard(GLOBAL)
 
 include("${CMAKE_CURRENT_LIST_DIR}/HuxerUILibraries.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/HuxerUIRuntimeDependencies.cmake")
 
 function(_huxerui_configure_ios_app_core target_name)
     get_property(HUXERUI_IOS_APP_FRAMEWORK_TARGET

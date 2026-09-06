@@ -183,8 +183,19 @@ function(huxerui_add_windows_installer target_name)
             ${target_name}
             HUXERUI_RESOURCE_PACKAGE
     )
+    set(HUXERUI_INSTALLER_COMPONENT "HuxerUIInstaller_${target_name}")
+    set_property(TARGET ${target_name} PROPERTY HUXERUI_APPLICATION_INSTALL_COMPONENT "${HUXERUI_INSTALLER_COMPONENT}")
+    install(TARGETS ${target_name} RUNTIME DESTINATION . COMPONENT "${HUXERUI_INSTALLER_COMPONENT}")
+    install(DIRECTORY "${HUXERUI_INSTALLER_RESOURCE_PACKAGE}/"
+            DESTINATION "$<TARGET_FILE_BASE_NAME:${target_name}>.resources"
+            COMPONENT "${HUXERUI_INSTALLER_COMPONENT}"
+    )
+    huxerui_add_runtime_dependencies(${target_name} FILES "${HUXERUI_WIX_BOOTSTRAPPER_RUNTIME}")
+    _huxerui_install_runtime_dependencies(${target_name} "${HUXERUI_INSTALLER_COMPONENT}"
+            . "$<TARGET_FILE_NAME:${target_name}>"
+    )
     file(GENERATE
             OUTPUT "${HUXERUI_INSTALLER_INTEGRATION_OUTPUT}"
-            CONTENT "{\n  \"schema\": 1,\n  \"wix\": \"${HUXERUI_WIX_EXECUTABLE}\",\n  \"installer\": \"$<TARGET_FILE:${target_name}>\",\n  \"installerResources\": \"${HUXERUI_INSTALLER_RESOURCE_PACKAGE}\",\n  \"installerResourcesName\": \"$<TARGET_FILE_BASE_NAME:${target_name}>.resources\"\n}\n"
+            CONTENT "{\n  \"schema\": 1,\n  \"wix\": \"${HUXERUI_WIX_EXECUTABLE}\",\n  \"installer\": \"$<TARGET_FILE_NAME:${target_name}>\",\n  \"installComponent\": \"${HUXERUI_INSTALLER_COMPONENT}\"\n}\n"
     )
 endfunction()

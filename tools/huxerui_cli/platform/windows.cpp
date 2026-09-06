@@ -187,6 +187,8 @@ public:
         std::string_view{"main.cpp"},
         std::string_view{"huxerui.cmake"},
         std::string_view{"app.manifest"},
+        std::string_view{"app.ico"},
+        std::string_view{"app.rc.in"},
     };
     return detail::ValidateRequiredFiles(shell_root, required);
   }
@@ -232,31 +234,36 @@ public:
     const std::string installer_plan = detail::ReadFile(detail::JsonString(plan, "installerPlan"));
     const std::filesystem::path wix = detail::JsonString(installer_plan, "wix");
     const std::filesystem::path installer = detail::JsonString(installer_plan, "installer");
-    const std::filesystem::path installer_resources = detail::JsonString(installer_plan, "installerResources");
-    const std::string installer_resources_name = detail::JsonString(installer_plan, "installerResourcesName");
+    const std::string installer_component = detail::JsonString(installer_plan, "installComponent");
     const std::filesystem::path root = WindowsPackageRoot(context);
     const std::filesystem::path staging = root / "staging";
+    const std::filesystem::path installer_staging = root / "installer";
+    const std::filesystem::path project_shell = context.project_root / "platform/windows";
     const std::filesystem::path msi = root / (target + ".msi");
     const std::filesystem::path bundle = WindowsPackageArtifact(context, plan);
-    const std::filesystem::path installer_payloads = root / "installer-resources.wxs";
+    const std::filesystem::path installer_payloads = root / "installer-payloads.wxs";
     std::vector<ProcessCommand> commands =
         detail::DesktopPackageStageCommands(context, staging, install_component);
+    std::vector<ProcessCommand> installer_commands =
+        detail::DesktopPackageStageCommands(context, installer_staging, installer_component);
+    commands.insert(commands.end(), std::make_move_iterator(installer_commands.begin()),
+                    std::make_move_iterator(installer_commands.end()));
     commands.push_back(
         {wix.string(),
          {"build", package_source.string(), "-arch", "x64", "-bindpath", "Application=" + staging.string(),
-          "-out", msi.string()},
+          "-bindpath", "Project=" + project_shell.string(), "-out", msi.string()},
          root});
     commands.push_back(
         {"cmake",
-         {"-DHUXERUI_WIX_PAYLOAD_DIRECTORY=" + installer_resources.string(),
-          "-DHUXERUI_WIX_PAYLOAD_NAME=" + installer_resources_name,
+         {"-DHUXERUI_WIX_PAYLOAD_DIRECTORY=" + installer_staging.string(),
+          "-DHUXERUI_WIX_PAYLOAD_EXECUTABLE=" + installer.string(),
           "-DHUXERUI_WIX_PAYLOAD_OUTPUT=" + installer_payloads.string(), "-P", WixPayloadScript(context).string()},
          root});
     commands.push_back(
         {wix.string(),
          {"build", bundle_source.string(), installer_payloads.string(), "-arch", "x64", "-bindpath",
-          "Installer=" + installer.parent_path().string(), "-bindpath", "Package=" + root.string(), "-out",
-          bundle.string()},
+          "Installer=" + installer_staging.string(), "-bindpath", "Package=" + root.string(), "-bindpath",
+          "Project=" + project_shell.string(), "-out", bundle.string()},
          root});
     return commands;
   }

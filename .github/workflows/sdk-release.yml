@@ -457,7 +457,7 @@ jobs:
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y \
             binutils ca-certificates fontconfig fonts-dejavu-core gdb git libepoxy-dev libgtk-4-dev \
-            libsoup-3.0-dev ninja-build pkg-config python3-pip software-properties-common
+            libsoup-3.0-dev ninja-build patchelf pkg-config python3-pip software-properties-common
           add-apt-repository -y ppa:ubuntu-toolchain-r/test
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y gcc-14 g++-14
