@@ -395,9 +395,27 @@ Remeasured realized items update retained metrics incrementally, while unrealize
 Candidate measurements do not commit corrected scroll offsets; the final layout placement commits and clamps the correction against the chosen viewport so a parent's provisional measurement cannot truncate scrolling.
 None of these retained records creates a Scope, an Environment observer object, or another composition lifetime for each item.
 
-Each realized item must declare a stable semantic root key.
-Missing or duplicate keys are framework invariant failures rather than an invitation to infer identity from a viewport position.
+Keyed items declare stable sibling identity on the factory's returned root View; duplicate realized keys are framework invariant failures.
+Unkeyed items use their logical index, so dynamic stateful sources should supply keys when inserting, deleting, or reordering.
 A keyed composable item preserves its state identity when it moves, leaves the realization window, or re-enters under a changed Environment.
+
+### Tree snapshots
+
+TreeView owns one Scope that reads the roots, item-info provider, and synchronous Children snapshots for the expanded structure.
+It invokes the row factory once for each expanded logical item and reads the returned root View's key without compiling its declaration or executing a nested Scope.
+Keys are unique among logical siblings and are internally qualified by parent identity before rows enter the flat virtual layout.
+Unkeyed rows use sibling position; moving a keyed row to another parent creates a new identity.
+The snapshot retains those declarations, resolved labels, controlled values, parent relationships, and event dispatch captures.
+It resolves an optional TreeView disclosure icon once per snapshot; each realized row presents it as an image View, applies the current foreground color to vector assets, and uses the retained Rotation animation for expansion.
+Scrolling requests retained declarations and executes only realized row Scope bodies; it never repeats business factories or Children traversal until the tree Scope is invalidated.
+Local hooks in row content belong in a composable function or explicit Scope, since the raw callbacks do not create a per-item composition lifetime.
+
+The initial layout uses fixed row extents and a bounded vertical viewport.
+Structural changes preserve the committed top item's identity and intra-row offset, falling back to its surviving parent or neighbor when it disappears.
+An explicit scroll change after that committed geometry takes precedence over anchor restoration in the next layout.
+A row containing the focused control remains realized outside the cache window; removing its logical branch releases that control and restores navigation focus to the tree.
+The snapshot and semantic frame cost O(V) for V expanded items; only mounting, nested composition, measurement, and drawing are limited to the viewport/cache rows plus the focused row.
+Immediate work inside an ordinary factory still costs O(V times factory work), so expensive row composition should be deferred in a composable function.
 
 ## Layers and overlays
 

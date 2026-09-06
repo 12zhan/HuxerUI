@@ -1044,6 +1044,14 @@ void InternalAccess::RequestFrame(Runtime& runtime) {
   runtime.RequestFrame();
 }
 
+void InternalAccess::FocusNode(Runtime& runtime, std::uint64_t identity) {
+  runtime.SetFocusedNode(identity, true);
+}
+
+std::optional<std::uint64_t> InternalAccess::FocusedNodeIdentity(const Runtime& runtime) noexcept {
+  return runtime.state_->focused_node_identity_;
+}
+
 void InternalAccess::InvalidateLayout(Runtime& runtime, MountedNode& node) {
   runtime.InvalidateLayout(node);
 }

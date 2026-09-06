@@ -607,6 +607,7 @@ The shared component contract is listed below.
 | SnackBar | Non-modal polite live region with an optional ordinary Button action |
 | VirtualList | List collection with total count and realized item indices; a transparent item root defaults to ListItem |
 | VirtualGrid | Grid collection with total count and realized item positions and spans; a transparent item root defaults to GridCell |
+| TreeView | Tree owner and hierarchical TreeItem snapshots for every expanded logical row, including offscreen rows |
 | Canvas | No inferred semantics; explicit owner semantics or virtual children |
 
 Icon-only item constructors continue to require their existing semantic label.
@@ -617,6 +618,14 @@ VirtualList and VirtualGrid publish only realized retained items and never mater
 Cached items outside the viewport remain published with `offscreen = true` and reuse the existing ShowOnScreen action while they remain mounted.
 An item root that already owns a meaningful role such as Button or Checkbox keeps that role and receives collection-item metadata; Runtime supplies ListItem or GridCell only when the item root has no component role.
 Future component defaults use the same owner/real-child and retained action-routing contracts rather than adding component-specific Runtime branches.
+
+TreeView publishes its expanded logical hierarchy independently of row realization.
+Sibling keys are qualified by parent identity and produce stable extension-local IDs; scrolling does not retire the logical TreeItem or execute its row factory.
+Collapsing or removing a logical item omits it from the next snapshot and invalidates its action routes.
+The tree owns one navigation focus target and projects its active item as focused only when that owner has input focus.
+An embedded editor keeps its own focus and semantic child identity while its row is retained, including outside the viewport.
+Selection, activation, expansion, and reveal actions validate the current logical item and use the same controlled events or ScrollController path as ordinary input.
+The complete expanded declaration and semantic snapshots cost O(V); this contract does not promise O(viewport rows) total work.
 
 ### Virtual collection layout contract
 

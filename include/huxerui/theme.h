@@ -9,6 +9,7 @@
 #include <typeindex>
 #include <utility>
 
+#include <huxerui/animation.h>
 #include <huxerui/color.h>
 #include <huxerui/environment.h>
 #include <huxerui/indication.h>
@@ -234,6 +235,24 @@ struct TabsStyle {
   static TabsStyle Default();
 
   bool operator==(const TabsStyle&) const = default;
+};
+
+struct TreeViewStyle {
+  Color background = Color::Transparent();
+  Color foreground = Color::Rgb(31, 35, 40);
+  Color disabled_foreground = Color::Rgb(31, 35, 40, 0.38F);
+  Color selected_background = Color::Rgb(31, 111, 235, 0.14F);
+  Color active_background = Color::Rgb(31, 111, 235, 0.08F);
+  Color focus_indicator = Color::Rgb(31, 111, 235);
+  float item_extent = 32.0F;
+  float indentation = 20.0F;
+  float indicator_size = 12.0F;
+  float item_padding = 8.0F;
+  TweenSpec disclosure_motion{0.12, Easing::EaseOut};
+  std::optional<Indication> indication;
+
+  static TreeViewStyle Default();
+  bool operator==(const TreeViewStyle&) const = default;
 };
 
 struct SelectStyle {
@@ -685,6 +704,7 @@ DividerStyle DefaultDividerStyle(const ThemeSpec& theme);
 SegmentedButtonStyle DefaultSegmentedButtonStyle(const ThemeSpec& theme);
 TabsStyle DefaultTabsStyle(const ThemeSpec& theme);
 SelectStyle DefaultSelectStyle(const ThemeSpec& theme);
+TreeViewStyle DefaultTreeViewStyle(const ThemeSpec& theme);
 DatePickerStyle DefaultDatePickerStyle(const ThemeSpec& theme);
 TimePickerStyle DefaultTimePickerStyle(const ThemeSpec& theme);
 TextFieldStyle DefaultTextFieldStyle(const ThemeSpec& theme);

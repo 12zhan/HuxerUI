@@ -21,6 +21,29 @@ State<TextEditingValue> accessibility_combo_value;
 State<bool> accessibility_date_available;
 int accessibility_date_changes = 0;
 
+State<std::optional<int>> accessibility_tree_selection;
+int accessibility_tree_activations = 0;
+
+View WindowsAccessibilityTreeApp() {
+  accessibility_tree_selection = UseState(std::optional<int>{});
+  const auto factory = [](int item) { return Text(std::to_string(item)).Key(item); };
+  const auto info = [](int item) {
+    return TreeItemInfo{
+        .label = item == 0 ? "Folder" : "File",
+        .expandable = item == 0,
+        .expanded = item == 0,
+        .selected = item == 0 ? std::nullopt : std::optional{accessibility_tree_selection.Get() == item},
+    };
+  };
+  return TreeView<int>(std::vector<int>{0}, factory, info)
+      .Children([](int) { return std::vector<int>{1}; })
+      .OnSelectionChanged([](int item, bool selected) {
+        accessibility_tree_selection = selected ? std::optional{item} : std::nullopt;
+      })
+      .OnActivated([](int) { ++accessibility_tree_activations; })
+      .Label("Files");
+}
+
 View WindowsAccessibilityApp() {
   auto slider = UseState(2.0F);
   auto text = UseState(TextEditingValue::FromText("initial"));
@@ -551,6 +574,48 @@ TEST_CASE("Windows accessibility maps optional tree selection and set metadata",
   BOOL required = TRUE;
   REQUIRE(selection->get_IsSelectionRequired(&required) == S_OK);
   REQUIRE(required == FALSE);
+}
+
+TEST_CASE("Windows accessibility tree selection does not invoke item activation", "[tree]") {
+  accessibility_tree_activations = 0;
+  TestPlatform platform{BuiltinTestResources()};
+  Runtime runtime{WindowsAccessibilityTreeApp, platform};
+  runtime.SetWindowMetrics({.viewport = {240.0F, 100.0F}});
+  auto frame = runtime.BuildCommit().semantic_frame;
+  detail::Win32Accessibility accessibility;
+  accessibility.SetRuntime(&runtime.CoreRuntime());
+  accessibility.Commit(frame, nullptr);
+  const auto tree_id = FindNode(*frame, SemanticRole::Tree).id;
+  const auto file_id = FindNode(*frame, SemanticRole::TreeItem, "File").id;
+  Microsoft::WRL::ComPtr<IRawElementProviderSimple> tree;
+  Microsoft::WRL::ComPtr<IRawElementProviderSimple> file;
+  REQUIRE(accessibility.ProviderForNode(tree_id, &tree) == S_OK);
+  REQUIRE(accessibility.ProviderForNode(file_id, &file) == S_OK);
+  Microsoft::WRL::ComPtr<ISelectionProvider> selection;
+  Microsoft::WRL::ComPtr<ISelectionItemProvider> item;
+  Microsoft::WRL::ComPtr<IInvokeProvider> invoke;
+  REQUIRE(tree.As(&selection) == S_OK);
+  REQUIRE(file.As(&item) == S_OK);
+  REQUIRE(file.As(&invoke) == S_OK);
+  REQUIRE(item->Select() == S_OK);
+  REQUIRE(accessibility_tree_selection.Get() == 1);
+  REQUIRE(accessibility_tree_activations == 0);
+  frame = runtime.BuildCommit().semantic_frame;
+  accessibility.Commit(frame, nullptr);
+  SAFEARRAY* selected = nullptr;
+  REQUIRE(selection->GetSelection(&selected) == S_OK);
+  LONG upper = -1;
+  REQUIRE(SafeArrayGetUBound(selected, 1, &upper) == S_OK);
+  REQUIRE(upper == 0);
+  SafeArrayDestroy(selected);
+  Microsoft::WRL::ComPtr<IRawElementProviderSimple> owner;
+  REQUIRE(item->get_SelectionContainer(&owner) == S_OK);
+  REQUIRE(owner.Get() == tree.Get());
+  REQUIRE(item->RemoveFromSelection() == S_OK);
+  REQUIRE_FALSE(accessibility_tree_selection.Get());
+  REQUIRE(accessibility_tree_activations == 0);
+  REQUIRE(invoke->Invoke() == S_OK);
+  REQUIRE(accessibility_tree_activations == 1);
 }
 
 TEST_CASE("Windows accessibility hits tree descendants outside the parent row", "[tree]") {

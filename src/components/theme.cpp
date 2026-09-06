@@ -1299,6 +1299,23 @@ TabsStyle DefaultTabsStyle(const ThemeSpec& theme) {
   };
 }
 
+TreeViewStyle DefaultTreeViewStyle(const ThemeSpec& theme) {
+  TreeViewStyle style;
+  style.foreground = theme.colors.on_surface;
+  style.disabled_foreground = theme.colors.on_surface;
+  style.disabled_foreground.alpha *= theme.interactions.disabled_opacity;
+  style.selected_background = theme.colors.primary;
+  style.selected_background.alpha *= 0.14F;
+  style.active_background = theme.colors.primary;
+  style.active_background.alpha *= 0.08F;
+  style.focus_indicator = theme.colors.primary;
+  style.disclosure_motion = TweenSpec{
+      .duration = theme.motion.reduced_motion ? 0.0 : theme.motion.fast,
+      .easing = Easing::EaseOut,
+  };
+  return style;
+}
+
 SelectStyle DefaultSelectStyle(const ThemeSpec& theme) {
   Color border = theme.colors.on_surface;
   border.alpha *= 0.4F;
@@ -1721,6 +1738,10 @@ ChipStyle ChipStyle::Default() {
 
 SegmentedButtonStyle SegmentedButtonStyle::Default() {
   return detail::DefaultSegmentedButtonStyle(ThemeSpec::Default());
+}
+
+TreeViewStyle TreeViewStyle::Default() {
+  return detail::DefaultTreeViewStyle(ThemeSpec::Default());
 }
 
 TabsStyle TabsStyle::Default() {

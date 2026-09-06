@@ -18,6 +18,7 @@
 #include <huxerui/theme.h>
 
 #include "view_internal.h"
+#include "internal_access.h"
 #include "graphics/paint_internal.h"
 #include "resources/resource_internal.h"
 #include "components/indication_internal.h"
@@ -210,6 +211,10 @@ std::shared_ptr<ViewSpec> MakeVirtualLayoutSpec(const VirtualLayoutDescriptor& l
 } // namespace detail
 
 View::View(std::shared_ptr<detail::ViewSpec> spec) : spec_(std::move(spec)) {
+}
+
+const std::optional<detail::ViewKey>& detail::InternalAccess::ViewDeclarationKey(const View& view) noexcept {
+  return view.spec_->key;
 }
 
 void View::SetEventBinding(std::type_index key, std::shared_ptr<detail::EventHandlerBase> handler) {

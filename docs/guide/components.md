@@ -166,6 +166,77 @@ View Controls() {
 Disabled behavior is configured with the shared enabled modifier where supported.
 Disabled components remain visible but do not emit activation or value-change events.
 
+## TreeView
+
+`TreeView<Node>(roots, factory, item_info)` accepts a vector snapshot of application-owned values or handles.
+It does not require a model base class, global ID map, or an eagerly initialized tree.
+The required item-info provider supplies each item's accessible label, enabled state, expansion state, and optional selection.
+
+```cpp
+return TreeView<Node>(roots.Get(), [](const Node& node) {
+  return FileRow(node).Key(node->key);
+}, [selected](const Node& node) {
+  return TreeItemInfo{
+      .label = node->name,
+      .expandable = node->is_directory,
+      .expanded = node->expanded.Get(),
+      .selected = selected.Get() == node,
+  };
+}).Children([](const Node& node) {
+  return node->children.Get();
+}).OnExpandedChanged([tasks](const Node& node, bool expanded) {
+  node->expanded = expanded;
+  if (expanded) {
+    EnsureChildrenLoaded(tasks, node);
+  }
+}).OnSelectionChanged([selected](const Node& node, bool value) {
+  if (value) {
+    selected = node;
+  } else if (selected.Get() == node) {
+    selected = Node{};
+  }
+}).OnActivated([](const Node& node) {
+  OpenFile(node);
+}).Label("Project files")
+    .ItemExtent(32.0F)
+    .CacheExtent(128.0F)
+    .Controller(scroll)
+    .With(Frame{.height = 320.0F});
+```
+
+Here `Node`, `FileRow`, `EnsureChildrenLoaded`, and `OpenFile` are application code.
+The [File Tree example](../../examples/tree_view/main.cpp) shows the complete pattern with handle-based nodes and
+simulated asynchronous child loading.
+`expanded` and `selected` are controlled: events request changes, and the next supplied values remain authoritative.
+Programmatic updates emit no events.
+An absent `selected` makes an item nonselectable; a bool enables single selection, with at most one selected expanded item.
+Selecting another item emits one request for that item rather than clearing the previous item through a second event.
+Collapsing a branch preserves application data and any selected descendant.
+
+`expandable` can be true while Children is empty, including before an asynchronous load finishes.
+Children returns the current synchronous snapshot and is read only for expanded items.
+Start loading from the expansion event or an application-owned lifecycle, and guard loading/loaded state in the application.
+Initial or programmatic expansion must start the same loading operation explicitly.
+Keep tasks above virtual rows because row eviction ends their lifecycle and TaskScope; copy an owning Node handle into asynchronous work because event references are borrowed.
+
+Put a key on the factory's returned root View; a key inside its deferred body cannot identify the logical item.
+Keys must be unique among siblings, while different parents may reuse the same local key.
+Unkeyed rows use sibling position, so changing their sibling order can change local state identity.
+The factory runs once per expanded logical item when the tree snapshot recomposes, while only viewport/cache rows and the focused row are mounted.
+Declare complex `FileRow` content as composable so its body runs only when realized.
+Scrolling does not rerun the factory or Children callbacks.
+
+TreeView requires a bounded vertical viewport and uses fixed-height rows, configured by ItemExtent or TreeViewStyle.
+Use `Style(...)` for one tree or `ThemeDefinition::Set(TreeViewStyle)` for inherited styling.
+Use `DisclosureIcon(...)` to replace the right-facing icon for expandable rows; TreeView animates the supplied image clockwise by 90 degrees when a row expands.
+Vector disclosure icons follow the enabled or disabled foreground color, while raster icons preserve their own colors.
+Row clicks select and the disclosure indicator changes expansion.
+Mouse or pen double-click toggles a branch and activates a leaf; a touch tap selects and toggles a branch.
+Enter activates the current row.
+Up/Down, Home/End, Left/Right, and Space provide tree navigation, expansion, and selection without changing the meaning of nested buttons or text inputs.
+Disabled input and canceled pointer sequences emit no changes.
+Expanded logical items remain accessible while offscreen, with stable hierarchy and separate focus, selection, activation, and expansion actions.
+
 ## Keyboard events
 
 `KeyEvent::key` identifies a portable key independently of localized character text.

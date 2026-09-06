@@ -22,6 +22,7 @@
 namespace huxerui {
 class NavigationItem;
 class Runtime;
+class View;
 }
 
 namespace huxerui::detail {
@@ -33,6 +34,13 @@ struct VirtualCollectionSemantics;
 // Public headers only declare this friend. Implementations stay with the subsystem owning each operation.
 // Existing ownership, internal cooperation, and direct field sharing do not need a forwarding function here.
 struct InternalAccess {
+#pragma region View
+
+  static const std::optional<std::variant<std::int64_t, std::uint64_t, std::string>>&
+  ViewDeclarationKey(const View& view) noexcept;
+
+#pragma endregion
+
 #pragma region Runtime
 
   static void InvalidateRoot(Runtime& runtime);
@@ -40,6 +48,8 @@ struct InternalAccess {
   static const ScrollPhysics& DefaultScrollPhysics(const Runtime& runtime) noexcept;
   static void NotifyScrollActivity(Runtime& runtime, MountedNode& node, const ScrollActivity& activity);
   static void RequestFrame(Runtime& runtime);
+  static void FocusNode(Runtime& runtime, std::uint64_t identity);
+  static std::optional<std::uint64_t> FocusedNodeIdentity(const Runtime& runtime) noexcept;
   static void InvalidateLayout(Runtime& runtime, MountedNode& node);
   static std::optional<std::uint64_t> HitTestPlatformView(const Runtime& runtime, Point position);
   static std::optional<std::uint64_t> FocusedPlatformView(const Runtime& runtime);

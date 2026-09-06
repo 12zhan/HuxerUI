@@ -45,6 +45,7 @@ namespace huxerui {
 class Environment;
 class PaintContext;
 class Runtime;
+struct TreeViewStyle;
 
 /// Selects the theme typography role used by Text when no explicit TextStyle overrides it.
 enum class TextRole {
@@ -203,6 +204,7 @@ private:
   friend View ProvideEnvironment(Environment environment, View content);
   friend class Runtime;
   friend class detail::VirtualMeasureSession;
+  friend struct detail::InternalAccess;
 };
 
 /// Declares a platform-owned view embedded in the shared HuxerUI tree.
@@ -1604,6 +1606,243 @@ public:
   /// Resolves the content offset required to align a logical item row in the viewport.
   static std::optional<float>
   ScrollOffsetForItem(ViewNode& node, std::size_t index, ScrollAlignment alignment, float viewport_extent);
+};
+
+/// Application-owned meaning and state of one tree item.
+struct TreeItemInfo {
+  /// Nonempty accessible name resolved for the logical item.
+  StringVariant label;
+  /// Controls pointer, keyboard, and semantic actions for the item and its expanded descendants.
+  bool enabled = true;
+  /// Declares whether the item owns a controlled disclosure state and may expose children.
+  bool expandable = false;
+  /// Controlled disclosure state; true requires expandable to also be true.
+  bool expanded = false;
+  /// Absence makes the item nonselectable; false and true enable controlled selection.
+  std::optional<bool> selected{};
+};
+
+namespace detail {
+
+enum class TreeItemAction { Expansion, Selection, Activation };
+
+struct TreeItemDeclaration {
+  View content;
+  TreeItemInfo info;
+  std::size_t parent = static_cast<std::size_t>(-1);
+  std::function<void(const EventEmitter&, TreeItemAction, bool)> dispatch;
+};
+
+struct TreeConfiguration {
+  static const ModifierDescriptor& Descriptor();
+  std::function<std::vector<TreeItemDeclaration>()> items;
+  StringVariant label;
+  std::optional<ImageVariant> disclosure_icon;
+  std::optional<float> item_extent;
+  float cache_extent = 0.0F;
+  std::optional<ScrollController> controller;
+  std::shared_ptr<const TreeViewStyle> style;
+};
+
+std::shared_ptr<ViewSpec> MakeTreeSpec();
+std::shared_ptr<const TreeViewStyle> CopyTreeStyle(const TreeViewStyle& style);
+void ValidateTreeDisclosureIcon(const ImageVariant& icon);
+void ValidateTreeExtent(float value, bool positive);
+
+} // namespace detail
+
+/// Presents controlled hierarchical data with fixed-height virtual rows.
+///
+/// Item factories run once per expanded logical item during snapshot composition. Only realized row Scope bodies
+/// run during scrolling. Put stable sibling keys on the factory's returned root View. Children returns the current
+/// synchronous snapshot; applications start asynchronous loading from their event handlers or lifecycle scopes.
+/// TreeView requires bounded vertical constraints and permits at most one selected item in its expanded snapshot.
+///
+/// @code
+/// return TreeView<Node>(roots, [](const Node& node) {
+///   return FileRow(node).Key(node->id);
+/// }, [selected](const Node& node) {
+///   return TreeItemInfo{
+///       .label = node->name,
+///       .expandable = node->is_directory,
+///       .expanded = node->expanded,
+///       .selected = selected.Get() == node,
+///   };
+/// }).Children([](const Node& node) {
+///   return node->children;
+/// }).OnExpandedChanged([](const Node& node, bool expanded) {
+///   node->expanded = expanded;
+/// }).With(Frame{.height = 320.0F});
+/// @endcode
+/// @tparam Node Application-owned value or owning handle representing one logical item.
+template <class Node> class TreeView final : public detail::TypedView<TreeView<Node>> {
+public:
+  /// Creates a tree from the current root snapshot, declarative row factory, and item-info provider.
+  /// @tparam Factory Callable compatible with `View(const Node&)`.
+  /// @tparam Info Callable compatible with `TreeItemInfo(const Node&)`.
+  /// @param roots Current ordered root items; later application changes require a new TreeView declaration.
+  /// @param factory Produces one nonempty row View for each expanded logical item.
+  /// @param item_info Supplies the accessible label and controlled state for each expanded logical item.
+  /// @throws std::invalid_argument If either converted callable is empty, or during composition if an item label is
+  /// blank, an expanded item is not expandable, or more than one expanded item is selected.
+  template <class Factory, class Info>
+  TreeView(std::vector<Node> roots, Factory&& factory, Info&& item_info)
+      : detail::TypedView<TreeView<Node>>(detail::MakeTreeSpec()),
+        roots_(std::make_shared<const std::vector<Node>>(std::move(roots))),
+        factory_(std::forward<Factory>(factory)), item_info_(std::forward<Info>(item_info)) {
+    if (!factory_) {
+      throw std::invalid_argument("HuxerUI TreeView item factory must not be empty");
+    }
+    if (!item_info_) {
+      throw std::invalid_argument("HuxerUI TreeView item info provider must not be empty");
+    }
+    UpdateConfiguration();
+  }
+
+  /// Supplies the current ordered child snapshot for expanded, expandable items.
+  ///
+  /// The callable is not invoked for collapsed or nonexpandable items. It must return promptly; asynchronous loading
+  /// belongs in application lifecycle or expansion-event handling and publishes a later snapshot. Together with the
+  /// roots, returned children must form a finite hierarchy.
+  /// @tparam Function Callable compatible with `std::vector<Node>(const Node&)`.
+  /// @param function Synchronous child-snapshot provider.
+  template <class Function> TreeView Children(Function&& function) && {
+    children_ = std::forward<Function>(function);
+    UpdateConfiguration();
+    return std::move(*this);
+  }
+
+  /// Handles requests to change an item's controlled expansion state.
+  /// @param function Handler compatible with `void(const Node&, bool)`.
+  template <class Function> TreeView OnExpandedChanged(Function&& function) && {
+    return std::move(*this).template On<typename TreeViewEvents<Node>::ExpandedChanged>(
+        std::forward<Function>(function));
+  }
+  /// Handles requests to change an item's controlled selection state.
+  ///
+  /// Selecting another item emits one true proposal for that item; it does not also clear the previous item.
+  /// @param function Handler compatible with `void(const Node&, bool)`.
+  template <class Function> TreeView OnSelectionChanged(Function&& function) && {
+    return std::move(*this).template On<typename TreeViewEvents<Node>::SelectionChanged>(
+        std::forward<Function>(function));
+  }
+  /// Handles item activation independently of expansion and selection.
+  /// @param function Handler compatible with `void(const Node&)`.
+  template <class Function> TreeView OnActivated(Function&& function) && {
+    return std::move(*this).template On<typename TreeViewEvents<Node>::Activated>(std::forward<Function>(function));
+  }
+
+  /// Sets the accessible name of the tree container.
+  /// @param label Literal or localized container label.
+  TreeView Label(StringVariant label) && {
+    configuration_.label = std::move(label);
+    UpdateConfiguration();
+    return std::move(*this);
+  }
+
+  /// Replaces the right-facing disclosure icon used by expandable items.
+  ///
+  /// TreeView rotates the supplied image clockwise by 90 degrees while an item is expanded.
+  /// @param icon Image used for the collapsed state.
+  /// @throws std::invalid_argument If icon is empty or invalid.
+  TreeView DisclosureIcon(ImageVariant icon) && {
+    detail::ValidateTreeDisclosureIcon(icon);
+    configuration_.disclosure_icon = std::move(icon);
+    UpdateConfiguration();
+    return std::move(*this);
+  }
+
+  /// Overrides the positive fixed logical height shared by all rows.
+  /// @param extent Row height in logical pixels.
+  /// @throws std::invalid_argument If extent is nonfinite or not positive.
+  TreeView ItemExtent(float extent) && {
+    detail::ValidateTreeExtent(extent, true);
+    configuration_.item_extent = extent;
+    UpdateConfiguration();
+    return std::move(*this);
+  }
+
+  /// Sets the nonnegative offscreen extent retained before and after the viewport.
+  /// @param extent Cache extent in logical pixels.
+  /// @throws std::invalid_argument If extent is nonfinite or negative.
+  TreeView CacheExtent(float extent) && {
+    detail::ValidateTreeExtent(extent, false);
+    configuration_.cache_extent = extent;
+    UpdateConfiguration();
+    return std::move(*this);
+  }
+
+  /// Connects a stable controller for programmatic scrolling and metric observation.
+  /// @param controller Controller retained by this declaration.
+  TreeView Controller(ScrollController controller) && {
+    configuration_.controller = std::move(controller);
+    UpdateConfiguration();
+    return std::move(*this);
+  }
+
+  /// Overrides the inherited TreeViewStyle for this tree.
+  /// @param style Style copied into this declaration.
+  /// @throws std::invalid_argument During composition if item_extent is not finite and positive, or indentation,
+  /// indicator_size, or item_padding is not finite and nonnegative.
+  TreeView Style(const TreeViewStyle& style) && {
+    configuration_.style = detail::CopyTreeStyle(style);
+    UpdateConfiguration();
+    return std::move(*this);
+  }
+
+private:
+  void UpdateConfiguration() {
+    configuration_.items = [roots = roots_, factory = factory_, children = children_, item_info = item_info_]() {
+      struct Cursor {
+        std::shared_ptr<const std::vector<Node>> siblings;
+        std::size_t parent;
+        std::size_t next = 0;
+      };
+      std::vector<Cursor> stack{{roots, static_cast<std::size_t>(-1)}};
+      std::vector<detail::TreeItemDeclaration> result;
+      while (!stack.empty()) {
+        Cursor& cursor = stack.back();
+        if (cursor.next == cursor.siblings->size()) {
+          stack.pop_back();
+          continue;
+        }
+        const auto siblings = cursor.siblings;
+        const std::size_t index = cursor.next++;
+        const Node& node = (*siblings)[index];
+        TreeItemInfo current_info = item_info(node);
+        const bool expanded = current_info.expandable && current_info.expanded;
+        const std::size_t parent = result.size();
+        result.push_back({
+            factory(node), std::move(current_info), cursor.parent,
+            [siblings, index](const EventEmitter& events, detail::TreeItemAction action, bool value) {
+              const Node& item = (*siblings)[index];
+              switch (action) {
+              case detail::TreeItemAction::Expansion:
+                events.Emit<typename TreeViewEvents<Node>::ExpandedChanged>(item, value);
+                break;
+              case detail::TreeItemAction::Selection:
+                events.Emit<typename TreeViewEvents<Node>::SelectionChanged>(item, value);
+                break;
+              case detail::TreeItemAction::Activation:
+                events.Emit<typename TreeViewEvents<Node>::Activated>(item);
+                break;
+              }
+            },
+        });
+        if (expanded && children) {
+          stack.push_back({std::make_shared<const std::vector<Node>>(children(node)), parent});
+        }
+      }
+      return result;
+    };
+    this->SetModifier(detail::MakeModifierSpec(configuration_));
+  }
+
+  std::shared_ptr<const std::vector<Node>> roots_;
+  std::function<View(const Node&)> factory_;
+  std::function<std::vector<Node>(const Node&)> children_;
+  std::function<TreeItemInfo(const Node&)> item_info_;
+  detail::TreeConfiguration configuration_;
 };
 
 } // namespace huxerui

@@ -587,6 +587,19 @@ struct SelectEvents {
   struct Changed : Event<void(std::size_t)> {};
 };
 
+/// Controlled-value requests and activation emitted by TreeView<Node>.
+///
+/// Node references borrow the current tree snapshot and remain valid only for synchronous event dispatch. Capture an
+/// owning handle or other stable application identity before retaining it or starting asynchronous work.
+template <class Node> struct TreeViewEvents {
+  /// Requests that the supplied item adopt the proposed expanded state.
+  struct ExpandedChanged : Event<void(const Node&, bool)> {};
+  /// Requests that the supplied selectable item adopt the proposed selected state.
+  struct SelectionChanged : Event<void(const Node&, bool)> {};
+  /// Reports activation of the supplied item independently of expansion or selection.
+  struct Activated : Event<void(const Node&)> {};
+};
+
 /// Event keys emitted by DatePicker.
 struct DatePickerEvents {
   /// Requests a new controlled calendar date.

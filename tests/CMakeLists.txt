@@ -58,6 +58,7 @@ add_executable(huxerui_tests
         runtime/combo_box.cpp
         runtime/date_time_picker.cpp
         runtime/select.cpp
+        runtime/tree.cpp
         runtime/system_tray.cpp
         runtime/selection_area.cpp
         runtime/task.cpp
