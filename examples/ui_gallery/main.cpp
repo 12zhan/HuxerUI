@@ -541,8 +541,13 @@ View TextInputDemo() {
   auto repository_url = UseState(TextEditingValue::FromText("https://github.com/HuxerUI/HuxerUI"));
   auto display_name = UseState(TextEditingValue::FromText("HuxerUI"));
   auto password = UseState(TextEditingValue::FromText(""));
+  auto password_visible = UseState(false);
   auto message = UseState(TextEditingValue::FromText(""));
   auto city_query = UseState(TextEditingValue::FromText(""));
+  const bool password_is_visible = password_visible.Get();
+  const auto password_visibility_icon =
+      password_is_visible ? ui_gallery::images::visibility_off : ui_gallery::images::visibility;
+  const char* password_visibility_label = password_is_visible ? "Hide password" : "Show password";
   const std::vector<std::string> cities{"Amsterdam", "Berlin", "London", "Paris", "Tokyo"};
   const std::string& query = city_query.Get().text;
   std::vector<std::string> matching_cities;
@@ -553,7 +558,8 @@ View TextInputDemo() {
   return Column {
     GallerySection(
         "Field variants",
-        "Filled, outlined, and standard fields share editing, selection, composition, icons, and floating labels.",
+        "Filled, outlined, and standard fields share editing, selection, composition, icons, trailing actions, and "
+        "floating labels.",
         Column {
           TextField(display_name)
               .Align(TextAlign::Center)
@@ -567,13 +573,15 @@ View TextInputDemo() {
               .Variant(TextFieldVariant::Standard)
               .OnChanged([repository_url](const TextEditingValue& value) { repository_url = value; }),
           TextField(password)
-              .Secure()
+              .Secure(!password_is_visible)
               .MaxLength(64)
               .Label("Password")
               .Placeholder("Enter password")
               .LeadingIcon(ui_gallery::images::lock)
+              .TrailingIcon(password_visibility_icon, password_visibility_label)
               .Variant(TextFieldVariant::Outlined)
               .Validation(Validate(password.Get().text, Required("Password is required")))
+              .OnTrailingIconClick([password_visible] { password_visible = !password_visible.Get(); })
               .OnChanged([password](const TextEditingValue& value) { password = value; }),
         }.With(Spacing(theme.spacing.medium), CrossAlign(CrossAxisAlignment::Stretch))
     ),

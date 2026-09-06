@@ -514,6 +514,8 @@ Available variants are `Standard`, `Filled`, and `Outlined`.
 The active theme decides whether the visual label is shown; its semantic label remains available to accessibility independently.
 
 Use `LeadingIcon`, `TrailingIcon`, `LineLimits`, `MaxLength`, `Secure`, `InputConfiguration`, and `Validation` for typed configuration.
+`TrailingIcon(icon)` is decorative.
+`TrailingIcon(icon, semantic_label)` reserves an independently accessible action target; bind its typed event with `OnTrailingIconClick`.
 `TextFieldLineLimits::SingleLine()` is the default; multiline fields can define a minimum and optional maximum line count.
 `Align(TextAlign::...)` applies horizontal alignment to editable text, placeholder, selection, caret, hit testing, and input-method geometry.
 `VerticalAlign(TextVerticalAlign::...)` places the editable region within the field; single-line fields default to `Center` and multiline fields default to `Top`.
@@ -527,6 +529,20 @@ Validation communicates application-owned domain state.
 It does not reject edits or replace input filtering.
 
 Secure fields redact their text from semantics and platform accessibility while preserving editing behavior through the platform text-input bridge.
+
+```cpp
+[[huxerui::composable]]
+View PasswordField(State<TextEditingValue> password, ImageVariant visibility_icon) {
+  auto visible = UseState(false);
+
+  return TextField(password)
+      .Label("Password")
+      .TrailingIcon(visibility_icon, visible.Get() ? "Hide password" : "Show password")
+      .Secure(!visible.Get())
+      .OnTrailingIconClick([visible]() mutable { visible = !visible.Get(); })
+      .OnChanged([password](TextEditingValue next) mutable { password = std::move(next); });
+}
+```
 
 ## Selection and clipboard
 

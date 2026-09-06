@@ -566,12 +566,13 @@ The component uses typed events:
 struct TextFieldEvents {
   struct Changed : Event<void(const TextEditingValue&)> {};
   struct Submitted : Event<void()> {};
+  struct TrailingIconClick : Event<void()> {};
 };
 ```
 
 `TextFieldEvents` belongs in `event.h`, following the existing `ToggleEvents` convention.
 
-`OnChanged()` and `OnSubmitted()` are convenience wrappers over the matching typed events.
+`OnChanged()`, `OnSubmitted()`, and `OnTrailingIconClick()` are convenience wrappers over the matching typed events.
 
 `Label()` and `Placeholder()` have separate presentation roles.
 When an empty field is unfocused, its label occupies the input line and its placeholder is hidden.
@@ -585,7 +586,10 @@ The label transition is retained visual state and uses the resolved Theme motion
 Material defaults to Filled while Flat defaults to Standard; an explicit variant is stable across themes.
 
 `LeadingIcon()` and `TrailingIcon()` accept image resources, raster assets, and vector assets.
-They are decorative content within the editor geometry rather than independent controls.
+The one-argument forms are decorative content within the editor geometry.
+`TrailingIcon(icon, semantic_label)` defines a self-drawn action subtarget when `TextFieldEvents::TrailingIconClick` is bound.
+Its handler remains in the View event bindings rather than the TextField modifier, and its virtual Button semantics use the same typed event as pointer activation.
+Pointer activation uses the resolved `IconButtonStyle` interaction geometry without moving the editor selection; TextField still owns the icon size and state tint.
 Their occupied width participates in text layout, selection, caret geometry, scrolling, and platform text-input geometry.
 Vector assets resolve the TextField state color, while raster assets retain their encoded colors.
 
@@ -625,18 +629,20 @@ Synchronous rules return a `ValidationResult` and `Validate()` stops at the firs
 
 Visual properties remain Theme styles or modifiers rather than growing one-off TextField styling methods.
 
-Password entry stays on the same component:
+Password visibility stays controlled application state on the same component:
 
 ```cpp
+auto visible = UseState(false);
+
 return TextField(password)
-    .Secure()
-    .Placeholder("Password")
-    .OnChanged([password](const TextEditingValue& value) mutable {
-      password = value;
-    });
+    .Secure(!visible.Get())
+    .TrailingIcon(visibility_icon, visible.Get() ? "Hide password" : "Show password")
+    .OnTrailingIconClick([visible]() mutable { visible = !visible.Get(); })
+    .OnChanged([password](const TextEditingValue& value) mutable { password = value; });
 ```
 
-`Secure()` is a convenience for `TextInputConfiguration::secure`. It does not create a second value model or a separate PasswordField component.
+`Secure(bool)` configures `TextInputConfiguration::secure`, and its default argument enables secure entry.
+It does not create a second value model or a separate PasswordField component.
 
 The public API should expose one value model. It should not provide a second string-only TextField with different change events. Simple applications use `TextEditingValue::FromText()`.
 

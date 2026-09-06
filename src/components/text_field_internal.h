@@ -22,6 +22,10 @@ struct TextFieldStyleBinding {
   using Value = TextFieldStyle;
 };
 
+struct TextFieldTrailingIconActionStyleBinding {
+  using Value = IconButtonStyle;
+};
+
 inline const TextFieldVariantStyle&
 ResolveTextFieldVariantStyle(const TextFieldStyle& style, TextFieldVariant variant) noexcept {
   if (variant == TextFieldVariant::Filled) {
@@ -62,6 +66,7 @@ struct TextFieldModifier {
   StringVariant placeholder;
   std::optional<ImageVariant> leading_icon;
   std::optional<ImageVariant> trailing_icon;
+  std::optional<StringVariant> trailing_icon_semantic_label;
   std::optional<TextFieldVariant> variant;
   TextInputConfiguration configuration;
   TextLayoutOptions text_layout_options;

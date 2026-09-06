@@ -1094,6 +1094,8 @@ public:
   TextField LeadingIcon(ImageVariant icon) &&;
   /// Adds a decorative image after the editable text.
   TextField TrailingIcon(ImageVariant icon) &&;
+  /// Adds an image action after the editable text with an accessible label.
+  TextField TrailingIcon(ImageVariant icon, StringVariant semantic_label) &&;
   /// Selects the themed filled, outlined, or standard surface.
   TextField Variant(TextFieldVariant value) &&;
   /// Configures single-line behavior or intrinsic multiline height limits.
@@ -1108,8 +1110,8 @@ public:
   TextField MaxLength(std::size_t value) &&;
   /// Presents application-owned validation state without filtering edits.
   TextField Validation(ValidationResult value) &&;
-  /// Enables secure entry and prevents copying or exposing the controlled text through semantics.
-  TextField Secure() &&;
+  /// Configures secure entry, which prevents copying or exposing the controlled text through semantics.
+  TextField Secure(bool secure = true) &&;
   /// Replaces platform input configuration and synchronizes its multiline mode with LineLimits.
   TextField InputConfiguration(TextInputConfiguration configuration) &&;
 
@@ -1123,6 +1125,11 @@ public:
     return std::move(*this).On<TextFieldEvents::Submitted>(std::forward<Function>(function));
   }
 
+  /// Handles activation of a trailing icon configured with an accessible label.
+  template <class Function> TextField OnTrailingIconClick(Function&& function) && {
+    return std::move(*this).On<TextFieldEvents::TrailingIconClick>(std::forward<Function>(function));
+  }
+
 private:
   void UpdateModifier();
 
@@ -1131,6 +1138,7 @@ private:
   StringVariant placeholder_;
   std::optional<ImageVariant> leading_icon_;
   std::optional<ImageVariant> trailing_icon_;
+  std::optional<StringVariant> trailing_icon_semantic_label_;
   std::optional<TextFieldVariant> variant_;
   TextInputConfiguration configuration_;
   TextFieldLineLimits line_limits_ = TextFieldLineLimits::SingleLine();

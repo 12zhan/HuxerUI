@@ -10,6 +10,8 @@ State<TextEditingValue> text_field_value;
 ScrollController text_field_scroll;
 std::vector<TextEditingValue> text_field_changes;
 int text_field_submissions = 0;
+int text_field_trailing_icon_clicks = 0;
+State<bool> password_visible;
 State<TextEditingValue> multiline_text_field_value;
 State<TextEditingValue> nested_multiline_text_field_value;
 State<TextEditingValue> keyboard_text_field_value;
@@ -321,6 +323,29 @@ View FlatLabeledIconTextFieldApp() {
         .TrailingIcon(TextFieldVectorIcon())
         .With(huxerui::Frame{.width = 180.0F}),
   };
+}
+
+View InteractiveTrailingIconTextFieldApp() {
+  auto visible = UseState(false);
+  password_visible = visible;
+  return TextField(TextEditingValue::FromText("secret"))
+      .Label("Password")
+      .TrailingIcon(TextFieldVectorIcon(), visible.Get() ? "Hide password" : "Show password")
+      .Secure(!visible.Get())
+      .OnTrailingIconClick([visible]() mutable {
+        ++text_field_trailing_icon_clicks;
+        visible = !visible.Get();
+      })
+      .With(huxerui::Frame{180.0F, 40.0F});
+}
+
+View DisabledTrailingIconTextFieldApp() {
+  return TextField(TextEditingValue::FromText("secret"))
+      .Label("Password")
+      .TrailingIcon(TextFieldVectorIcon(), "Show password")
+      .Secure()
+      .OnTrailingIconClick([] { ++text_field_trailing_icon_clicks; })
+      .With(huxerui::Frame{180.0F, 40.0F}, Enabled(false));
 }
 
 View FlatLabeledTextFieldApp() {
@@ -646,11 +671,13 @@ void ResetTextFieldState() {
   text_field_offset = State<bool>{};
   text_field_dark_theme = State<bool>{};
   text_field_shaping_locale = State<bool>{};
+  password_visible = State<bool>{};
   submission_action = TextInputAction::Default;
   first_action_submissions = 0;
   second_action_submissions = 0;
   text_field_changes.clear();
   text_field_submissions = 0;
+  text_field_trailing_icon_clicks = 0;
 }
 
 void Pointer(Runtime& runtime, PointerEventType type, float x, float y = 20.0F) {
@@ -1210,14 +1237,74 @@ TEST_CASE("TestFlatTextFieldSupportsFilledVariant") {
 }
 
 TEST_CASE("TestTextFieldRejectsEmptyIconAssets") {
-  REQUIRE_THROWS_AS(
-      TextField(TextEditingValue::FromText("")).LeadingIcon(ImageAsset{}),
-      std::invalid_argument
-  );
-  REQUIRE_THROWS_AS(
-      TextField(TextEditingValue::FromText("")).TrailingIcon(VectorAsset{}),
-      std::invalid_argument
-  );
+  REQUIRE_THROWS_AS(TextField(TextEditingValue::FromText("")).LeadingIcon(ImageAsset{}), std::invalid_argument);
+  REQUIRE_THROWS_AS(TextField(TextEditingValue::FromText("")).TrailingIcon(VectorAsset{}), std::invalid_argument);
+  REQUIRE_THROWS_AS(TextField(TextEditingValue::FromText("")).TrailingIcon(VectorAsset{}, "Show password"),
+                    std::invalid_argument);
+  REQUIRE_THROWS_AS(TextField(TextEditingValue::FromText("")).TrailingIcon(TextFieldVectorIcon(), "  "),
+                    std::invalid_argument);
+}
+
+TEST_CASE("TestTextFieldTrailingIconUsesTypedPointerAndSemanticActivation") {
+  ResetTextFieldState();
+  TestPlatform platform;
+  Runtime runtime{InteractiveTrailingIconTextFieldApp, platform};
+  runtime.SetWindowMetrics({.viewport = {220.0F, 100.0F}});
+
+  const std::shared_ptr<const SemanticFrame> initial = runtime.BuildCommit().semantic_frame;
+  const auto field = std::ranges::find(initial->nodes, SemanticRole::TextField, &SemanticNode::role);
+  const auto show = std::ranges::find_if(initial->nodes, [](const SemanticNode& node) {
+    return node.role == SemanticRole::Button && node.label == "Show password";
+  });
+  REQUIRE(field != initial->nodes.end());
+  REQUIRE(show != initial->nodes.end());
+  REQUIRE(show->parent == field->id);
+  REQUIRE(show->bounds.width == IconButtonStyle::Default().minimum_interactive_size);
+  REQUIRE(show->bounds.height == IconButtonStyle::Default().minimum_interactive_size);
+  REQUIRE((show->actions & SemanticActionMask(SemanticActionKind::Activate)) != 0);
+  REQUIRE(field->value.empty());
+
+  const Point action_center{
+      show->bounds.x + show->bounds.width * 0.5F,
+      show->bounds.y + show->bounds.height * 0.5F,
+  };
+  runtime.HandlePointerEvent({PointerEventType::Down, 901, action_center});
+  runtime.HandlePointerEvent({PointerEventType::Up, 901, action_center});
+  REQUIRE(text_field_trailing_icon_clicks == 1);
+  REQUIRE(password_visible.Get());
+  REQUIRE(runtime.QueryTextInputContext(1, 0, 6).selection == TextSelection{6, 6});
+
+  const std::shared_ptr<const SemanticFrame> revealed = runtime.BuildCommit().semantic_frame;
+  const auto revealed_field = std::ranges::find(revealed->nodes, SemanticRole::TextField, &SemanticNode::role);
+  const auto hide = std::ranges::find_if(revealed->nodes, [](const SemanticNode& node) {
+    return node.role == SemanticRole::Button && node.label == "Hide password";
+  });
+  REQUIRE(revealed_field != revealed->nodes.end());
+  REQUIRE(hide != revealed->nodes.end());
+  REQUIRE(revealed_field->value == "secret");
+  const SemanticAction activate{SemanticActionKind::Activate, std::monostate{}};
+  REQUIRE(runtime.CoreRuntime().PerformSemanticAction(hide->id, activate));
+  REQUIRE(text_field_trailing_icon_clicks == 2);
+  REQUIRE_FALSE(password_visible.Get());
+
+  TestPlatform disabled_platform;
+  Runtime disabled{DisabledTrailingIconTextFieldApp, disabled_platform};
+  disabled.SetWindowMetrics({.viewport = {220.0F, 100.0F}});
+  const std::shared_ptr<const SemanticFrame> disabled_frame = disabled.BuildCommit().semantic_frame;
+  const auto disabled_action = std::ranges::find_if(disabled_frame->nodes, [](const SemanticNode& node) {
+    return node.role == SemanticRole::Button && node.label == "Show password";
+  });
+  REQUIRE(disabled_action != disabled_frame->nodes.end());
+  REQUIRE_FALSE(disabled_action->enabled);
+  REQUIRE(disabled_action->actions == 0);
+  REQUIRE_FALSE(disabled.CoreRuntime().PerformSemanticAction(disabled_action->id, activate));
+  const Point disabled_center{
+      disabled_action->bounds.x + disabled_action->bounds.width * 0.5F,
+      disabled_action->bounds.y + disabled_action->bounds.height * 0.5F,
+  };
+  disabled.HandlePointerEvent({PointerEventType::Down, 902, disabled_center});
+  disabled.HandlePointerEvent({PointerEventType::Up, 902, disabled_center});
+  REQUIRE(text_field_trailing_icon_clicks == 2);
 }
 
 TEST_CASE("TestTextFieldValidationRendersSupportingMessageAndErrorBorder") {

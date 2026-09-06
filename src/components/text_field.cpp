@@ -1,4 +1,5 @@
 #include "runtime/mounted_node_internal.h"
+#include "runtime/gesture_internal.h"
 #include "graphics/geometry_internal.h"
 #include "resources/resource_internal.h"
 #include "text_field_internal.h"
@@ -344,6 +345,31 @@ public:
     if (!configuration_.secure) {
       builder.AddAction(0, SemanticActionKind::SetSelection);
     }
+    if (node_ && HasTrailingIconAction()) {
+      Semantics action_semantics{.role = SemanticRole::Button, .label = *trailing_icon_semantic_label_};
+      builder.AddChild(1, TrailingIconActionBounds(*node_), std::move(action_semantics), true);
+      builder.AddAction(1, SemanticActionKind::Activate);
+    }
+  }
+
+  [[nodiscard]] bool HasTrailingIconAction() const noexcept {
+    return trailing_icon_.has_value() && trailing_icon_semantic_label_.has_value() &&
+           detail::HasEventBinding<TextFieldEvents::TrailingIconClick>(event_bindings_);
+  }
+
+  [[nodiscard]] Rect TrailingIconActionBounds(const detail::MountedNode& node) const {
+    const Rect frame = EditorFrame(node);
+    const Rect icon = IconBounds(node, false);
+    const float minimum_size = std::max(0.0F, trailing_icon_action_style_.minimum_interactive_size);
+    const float desired_size = std::max(IconSize(false), minimum_size);
+    const float width = std::min(desired_size, frame.width);
+    const float height = std::min(desired_size, frame.height);
+    return {
+        std::clamp(icon.x + icon.width * 0.5F - width * 0.5F, frame.x, frame.x + frame.width - width),
+        std::clamp(icon.y + icon.height * 0.5F - height * 0.5F, frame.y, frame.y + frame.height - height),
+        width,
+        height,
+    };
   }
 
   bool PerformSemanticAction(const SemanticAction& action) {
@@ -402,6 +428,13 @@ public:
   void Update(detail::MountedNode& node, const detail::TextFieldModifier& modifier) {
     const std::string& label = detail::StringLiteral(modifier.label);
     const std::string& placeholder = detail::StringLiteral(modifier.placeholder);
+    std::optional<std::string> trailing_icon_semantic_label;
+    if (modifier.trailing_icon_semantic_label.has_value()) {
+      if (detail::IsBlankStringVariantLiteral(*modifier.trailing_icon_semantic_label)) {
+        throw std::invalid_argument("HuxerUI TextField trailing icon semantic label must not be empty");
+      }
+      trailing_icon_semantic_label = detail::StringLiteral(*modifier.trailing_icon_semantic_label);
+    }
     const detail::ResolvedValidationResult validation{
         modifier.validation.status,
         detail::StringLiteral(modifier.validation.message),
@@ -435,6 +468,9 @@ public:
     }
     if (!detail::Utf16Length(placeholder).has_value()) {
       throw std::invalid_argument("HuxerUI TextField placeholder must contain valid UTF-8");
+    }
+    if (trailing_icon_semantic_label.has_value() && !detail::Utf16Length(*trailing_icon_semantic_label).has_value()) {
+      throw std::invalid_argument("HuxerUI TextField trailing icon semantic label must contain valid UTF-8");
     }
     if (!detail::Utf16Length(validation.message).has_value()) {
       throw std::invalid_argument("HuxerUI TextField validation message must contain valid UTF-8");
@@ -472,8 +508,11 @@ public:
     placeholder_ = placeholder;
     leading_icon_ = leading_icon;
     trailing_icon_ = trailing_icon;
+    trailing_icon_semantic_label_ = std::move(trailing_icon_semantic_label);
 
     TextFieldStyle next_style = node.LayoutValueOr<detail::TextFieldStyleBinding>(TextFieldStyle::Default());
+    trailing_icon_action_style_ =
+        node.LayoutValueOr<detail::TextFieldTrailingIconActionStyleBinding>(IconButtonStyle::Default());
     const TextFieldVariant next_variant = modifier.variant.value_or(next_style.variant);
     const TextFieldVariantStyle next_variant_style = detail::ResolveTextFieldVariantStyle(next_style, next_variant);
     next_style.text_style = node.properties.text_style;
@@ -631,7 +670,8 @@ public:
     return changed;
   }
 
-  void Paint(const detail::MountedNode& node, PaintContext& context, bool hovered) const {
+  void Paint(const detail::MountedNode& node, PaintContext& context, bool hovered, bool trailing_icon_hovered,
+             bool trailing_icon_pressed) const {
     if (!text_layout_) {
       return;
     }
@@ -729,7 +769,29 @@ public:
       PaintTextFieldIcon(context, *leading_icon_, IconBounds(node, true), ResolveIconColor(node, invalid, true));
     }
     if (trailing_icon_.has_value()) {
-      PaintTextFieldIcon(context, *trailing_icon_, IconBounds(node, false), ResolveIconColor(node, invalid, false));
+      const Color icon_color = ResolveIconColor(node, invalid, false);
+      if (enabled && HasTrailingIconAction() && (trailing_icon_hovered || trailing_icon_pressed)) {
+        const Rect action_bounds = TrailingIconActionBounds(node);
+        const float available_size = std::min(action_bounds.width, action_bounds.height);
+        const float state_layer_size =
+            std::min(std::max(0.0F, trailing_icon_action_style_.state_layer_size), available_size);
+        if (state_layer_size > 0.0F) {
+          const Rect icon_bounds = IconBounds(node, false);
+          const float candidate_x = icon_bounds.x + (icon_bounds.width - state_layer_size) * 0.5F;
+          const float candidate_y = icon_bounds.y + (icon_bounds.height - state_layer_size) * 0.5F;
+          const float maximum_x = action_bounds.x + action_bounds.width - state_layer_size;
+          const float maximum_y = action_bounds.y + action_bounds.height - state_layer_size;
+          const float state_layer_x = std::clamp(candidate_x, action_bounds.x, maximum_x);
+          const float state_layer_y = std::clamp(candidate_y, action_bounds.y, maximum_y);
+          const Rect state_layer{state_layer_x, state_layer_y, state_layer_size, state_layer_size};
+          Color state_color = icon_color;
+          state_color.alpha *= trailing_icon_pressed ? 0.12F : 0.08F;
+          const float corner_radius =
+              std::min(std::max(0.0F, trailing_icon_action_style_.corner_radius), state_layer_size * 0.5F);
+          context.DrawRect(state_layer, state_color, corner_radius);
+        }
+      }
+      PaintTextFieldIcon(context, *trailing_icon_, IconBounds(node, false), icon_color);
     }
 
     if (validation_layout_) {
@@ -1469,7 +1531,14 @@ private:
   }
 
   float IconSlotWidth(bool leading) const {
-    return IconSize(leading) + std::max(0.0F, style_.icon_spacing);
+    const float icon_size = IconSize(leading);
+    const float decorative_width = icon_size + std::max(0.0F, style_.icon_spacing);
+    if (leading || !trailing_icon_semantic_label_.has_value()) {
+      return decorative_width;
+    }
+    const float minimum_size = std::max(0.0F, trailing_icon_action_style_.minimum_interactive_size);
+    const float interactive_size = std::max(icon_size, minimum_size);
+    return std::max(decorative_width, (icon_size + interactive_size) * 0.5F);
   }
 
   float IconContentWidth() const {
@@ -2292,6 +2361,8 @@ private:
   std::string laid_out_validation_message_;
   std::optional<detail::ResolvedImageAsset> leading_icon_;
   std::optional<detail::ResolvedImageAsset> trailing_icon_;
+  std::optional<std::string> trailing_icon_semantic_label_;
+  IconButtonStyle trailing_icon_action_style_;
   std::unique_ptr<detail::TextLayout> text_layout_;
   std::unique_ptr<detail::TextLayout> label_layout_;
   std::unique_ptr<detail::TextLayout> floating_label_layout_;
@@ -2317,6 +2388,30 @@ private:
   bool history_merge_allowed_ = false;
 };
 
+class TextFieldExtension;
+
+class TextFieldTrailingIconRecognizer final : public detail::GestureRecognizer {
+public:
+  explicit TextFieldTrailingIconRecognizer(Rect action_bounds) : action_bounds_(action_bounds) {}
+
+  detail::GestureDecision Update(const detail::GestureRecognizerInput& input) override {
+    if (input.event.type == PointerEventType::Up) {
+      return action_bounds_.Contains(input.event.position) ? detail::GestureDecision::Accept
+                                                           : detail::GestureDecision::Reject;
+    }
+    return input.event.type == PointerEventType::Cancel ? detail::GestureDecision::Reject
+                                                        : detail::GestureDecision::Continue;
+  }
+
+  void Accepted(detail::MountedNode& node, NodeExtension& extension,
+                const detail::GestureRecognizerInput& input) override;
+  void Canceled(detail::MountedNode& node, NodeExtension& extension,
+                const detail::GestureRecognizerInput& input) override;
+
+private:
+  Rect action_bounds_;
+};
+
 class TextFieldExtension final : public NodeExtension {
 public:
   TextFieldExtension(ViewNode& node, const detail::TextFieldModifier& modifier)
@@ -2332,8 +2427,14 @@ public:
     auto& mounted = static_cast<detail::MountedNode&>(node);
     if (!node.IsEnabled()) {
       hovered_ = false;
+      trailing_icon_hovered_ = false;
+      trailing_icon_pressed_ = false;
     }
     client_->Update(mounted, modifier);
+    if (!client_->HasTrailingIconAction()) {
+      trailing_icon_hovered_ = false;
+      trailing_icon_pressed_ = false;
+    }
   }
 
   FrameResult OnFrame(ViewNode& node, const FrameInfo& frame) override {
@@ -2358,12 +2459,15 @@ public:
   }
 
   void OnHover(ViewNode& node, const HoverEvent& event) override {
-    static_cast<void>(node);
+    const auto& mounted = static_cast<const detail::MountedNode&>(node);
     const bool hovered = event.type != HoverEventType::Leave;
-    if (hovered_ == hovered) {
+    const bool trailing_icon_hovered = hovered && client_->HasTrailingIconAction() &&
+                                       client_->TrailingIconActionBounds(mounted).Contains(event.position);
+    if (hovered_ == hovered && trailing_icon_hovered_ == trailing_icon_hovered) {
       return;
     }
     hovered_ = hovered;
+    trailing_icon_hovered_ = trailing_icon_hovered;
     InvalidatePaint();
   }
 
@@ -2393,7 +2497,14 @@ public:
   }
 
   bool OnSemanticAction(std::uint64_t local_id, const SemanticAction& action) override {
-    return local_id == 0 && client_->PerformSemanticAction(action);
+    if (local_id == 0) {
+      return client_->PerformSemanticAction(action);
+    }
+    if (local_id != 1 || action.kind != SemanticActionKind::Activate || !client_->HasTrailingIconAction()) {
+      return false;
+    }
+    ActivateTrailingIcon();
+    return true;
   }
 
   PointerResult OnPointer(ViewNode& node, const PointerEvent& event) override {
@@ -2406,7 +2517,9 @@ public:
   }
 
   void PaintAboveContent(const ViewNode& node, PaintContext& context) const override {
-    client_->Paint(static_cast<const detail::MountedNode&>(node), context, hovered_);
+    const auto& mounted = static_cast<const detail::MountedNode&>(node);
+    client_->Paint(mounted, context, hovered_, trailing_icon_hovered_,
+                   trailing_icon_pressed_ && mounted.interaction.pressed);
   }
 
   Size Measure(detail::MountedNode& node, PlatformAdapter& platform, Constraints constraints) {
@@ -2414,9 +2527,54 @@ public:
   }
 
 private:
+  std::shared_ptr<detail::GestureRecognizer>
+  CreateGestureRecognizer(ViewNode& node, const PointerEvent& event, double, const GestureSettings&,
+                          Transform2D) override {
+    const auto& mounted = static_cast<const detail::MountedNode&>(node);
+    trailing_icon_pressed_ =
+        client_->HasTrailingIconAction() && client_->TrailingIconActionBounds(mounted).Contains(event.position);
+    if (!trailing_icon_pressed_) {
+      return {};
+    }
+    InvalidatePaint();
+    return std::make_shared<TextFieldTrailingIconRecognizer>(client_->TrailingIconActionBounds(mounted));
+  }
+
+  void ActivateTrailingIcon() {
+    if (!client_->HasTrailingIconAction()) {
+      CancelTrailingIconPress();
+      return;
+    }
+    trailing_icon_pressed_ = false;
+    InvalidatePaint();
+    EmitEvent<TextFieldEvents::TrailingIconClick>();
+  }
+
+  void CancelTrailingIconPress() {
+    if (!trailing_icon_pressed_) {
+      return;
+    }
+    trailing_icon_pressed_ = false;
+    InvalidatePaint();
+  }
+
   std::shared_ptr<TextFieldClient> client_;
   bool hovered_ = false;
+  bool trailing_icon_hovered_ = false;
+  bool trailing_icon_pressed_ = false;
+
+  friend class TextFieldTrailingIconRecognizer;
 };
+
+void TextFieldTrailingIconRecognizer::Accepted(detail::MountedNode&, NodeExtension& extension,
+                                               const detail::GestureRecognizerInput&) {
+  static_cast<TextFieldExtension&>(extension).ActivateTrailingIcon();
+}
+
+void TextFieldTrailingIconRecognizer::Canceled(detail::MountedNode&, NodeExtension& extension,
+                                               const detail::GestureRecognizerInput&) {
+  static_cast<TextFieldExtension&>(extension).CancelTrailingIconPress();
+}
 
 TextFieldExtension& FindTextFieldExtension(detail::MountedNode& node) {
   for (detail::NodeExtensionEntry& entry : node.extensions) {
@@ -2428,16 +2586,15 @@ TextFieldExtension& FindTextFieldExtension(detail::MountedNode& node) {
 }
 
 void ApplyTextFieldDefaults(detail::ViewSpec& spec, const std::shared_ptr<const Environment>& environment) {
-  TextFieldStyle style = detail::DefaultTextFieldStyle(detail::ResolveThemeSpec(environment));
-  if (const std::any* value = detail::FindThemeStyleValue(environment, typeid(TextFieldStyle))) {
-    const auto* override_style = std::any_cast<TextFieldStyle>(value);
-    if (override_style == nullptr) {
-      throw std::logic_error("HuxerUI component style environment value has an invalid type");
-    }
-    style = *override_style;
-  }
+  const ThemeSpec& theme = detail::ResolveThemeSpec(environment);
+  const TextFieldStyle style = detail::ResolveStyleOverride<TextFieldStyle>(environment)
+                                   .value_or(detail::DefaultTextFieldStyle(theme));
+  const IconButtonStyle trailing_icon_action_style = detail::ResolveStyleOverride<IconButtonStyle>(environment)
+                                                          .value_or(detail::DefaultIconButtonStyle(theme));
   const TextFieldVariantStyle& variant_style = detail::ResolveTextFieldVariantStyle(style, style.variant);
   spec.layout_values.insert_or_assign(typeid(detail::TextFieldStyleBinding), detail::MakeErasedLayoutValue(style));
+  spec.layout_values.insert_or_assign(typeid(detail::TextFieldTrailingIconActionStyleBinding),
+                                      detail::MakeErasedLayoutValue(trailing_icon_action_style));
   spec.properties.padding = style.padding;
   spec.properties.background = variant_style.background;
   spec.properties.text_style = style.text_style;
@@ -2479,6 +2636,9 @@ TextFieldModifier CompileTextFieldModifier(
   TextFieldModifier compiled = declaration;
   compiled.label = compile_string(declaration.label);
   compiled.placeholder = compile_string(declaration.placeholder);
+  if (declaration.trailing_icon_semantic_label.has_value()) {
+    compiled.trailing_icon_semantic_label = compile_string(*declaration.trailing_icon_semantic_label);
+  }
   compiled.validation.message = compile_string(declaration.validation.message);
   const auto compile_icon = [&resources, &resource_locale](const std::optional<ImageVariant>& declaration_icon) {
     if (!declaration_icon.has_value()) {
@@ -2506,7 +2666,9 @@ TextFieldModifier CompileTextFieldModifier(
 bool TextFieldModifier::LayoutEquals(const TextFieldModifier& left, const TextFieldModifier& right) {
   return left.value.text == right.value.text && left.label == right.label && left.placeholder == right.placeholder &&
          left.leading_icon.has_value() == right.leading_icon.has_value() &&
-         left.trailing_icon.has_value() == right.trailing_icon.has_value() && left.variant == right.variant &&
+         left.trailing_icon.has_value() == right.trailing_icon.has_value() &&
+         left.trailing_icon_semantic_label.has_value() == right.trailing_icon_semantic_label.has_value() &&
+         left.variant == right.variant &&
          left.configuration.multiline == right.configuration.multiline &&
          left.configuration.secure == right.configuration.secure &&
          left.text_layout_options == right.text_layout_options && left.min_lines == right.min_lines &&
@@ -2589,6 +2751,18 @@ TextField TextField::LeadingIcon(ImageVariant icon) && {
 TextField TextField::TrailingIcon(ImageVariant icon) && {
   detail::ValidateImageVariant(icon);
   trailing_icon_ = std::move(icon);
+  trailing_icon_semantic_label_.reset();
+  UpdateModifier();
+  return std::move(*this);
+}
+
+TextField TextField::TrailingIcon(ImageVariant icon, StringVariant semantic_label) && {
+  detail::ValidateImageVariant(icon);
+  if (detail::IsBlankStringVariantLiteral(semantic_label)) {
+    throw std::invalid_argument("HuxerUI TextField trailing icon semantic label must not be empty");
+  }
+  trailing_icon_ = std::move(icon);
+  trailing_icon_semantic_label_ = std::move(semantic_label);
   UpdateModifier();
   return std::move(*this);
 }
@@ -2643,8 +2817,8 @@ TextField TextField::Validation(ValidationResult value) && {
   return std::move(*this);
 }
 
-TextField TextField::Secure() && {
-  configuration_.secure = true;
+TextField TextField::Secure(bool secure) && {
+  configuration_.secure = secure;
   ValidateConfiguration(configuration_);
   UpdateModifier();
   return std::move(*this);
@@ -2675,6 +2849,7 @@ void TextField::UpdateModifier() {
       placeholder_,
       leading_icon_,
       trailing_icon_,
+      trailing_icon_semantic_label_,
       variant_,
       configuration_,
       text_layout_options,

@@ -617,6 +617,8 @@ struct TextFieldEvents {
   struct Changed : Event<void(const TextEditingValue&)> {};
   /// Reports that the configured text submission action was performed.
   struct Submitted : Event<void()> {};
+  /// Reports activation of an interactive trailing icon.
+  struct TrailingIconClick : Event<void()> {};
 };
 
 /// Event keys emitted by ComboBox.
