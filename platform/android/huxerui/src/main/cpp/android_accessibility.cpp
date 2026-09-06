@@ -134,6 +134,10 @@ std::int32_t AndroidRole(SemanticRole role) noexcept {
     return 23;
   case SemanticRole::ComboBox:
     return 24;
+  case SemanticRole::Tree:
+    return 25;
+  case SemanticRole::TreeItem:
+    return 26;
   }
   return 0;
 }
@@ -162,6 +166,7 @@ std::uint64_t AndroidActions(const SemanticNode& node) noexcept {
   include(SemanticActionKind::Collapse, AndroidSemanticAction::Collapse);
   include(SemanticActionKind::Dismiss, AndroidSemanticAction::Dismiss);
   include(SemanticActionKind::Custom, AndroidSemanticAction::Custom);
+  include(SemanticActionKind::SetSelected, AndroidSemanticAction::SetSelected);
   return result;
 }
 

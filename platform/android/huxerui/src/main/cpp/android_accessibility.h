@@ -24,6 +24,7 @@ enum class AndroidSemanticAction : std::int32_t {
   Collapse = 10,
   Dismiss = 11,
   Custom = 12,
+  SetSelected = 13,
 };
 
 // Android reserves negative virtual view IDs and exposes only 32-bit IDs. Runtime semantic identities are encoded

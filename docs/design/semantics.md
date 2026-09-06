@@ -105,6 +105,8 @@ enum class SemanticRole {
   Grid,
   GridCell,
   ScrollView,
+  Tree,
+  TreeItem,
 };
 ```
 
@@ -264,7 +266,7 @@ The builder rejects duplicate extension-local child IDs, invalid child geometry,
 
 ## NodeExtension contribution
 
-Most MountedNodes contribute at most one semantic node, but a self-drawn composite control may contribute flat virtual children.
+Most MountedNodes contribute at most one semantic node, but a composite control may contribute hierarchical virtual children.
 A custom Canvas chart uses this capability when its meaningful items do not already exist as mounted Views.
 Composite controls such as Tabs, NavigationBar, and NavigationPane instead publish semantics on their real retained item nodes so identity, geometry, enabled state, and activation continue to have one owner.
 
@@ -299,12 +301,10 @@ public:
   SemanticBuilder& operator=(const SemanticBuilder&) = delete;
 
   void SetOwner(Semantics semantics);
-  void AddChild(
-      std::uint64_t local_id,
-      Rect local_bounds,
-      Semantics semantics,
-      bool enabled
-  );
+  void AddChild(std::uint64_t local_id, Rect local_bounds, Semantics semantics, bool enabled,
+                std::uint64_t parent_local_id = 0);
+  void SetActiveChild(std::uint64_t local_id);
+  void AdoptChild(std::uint64_t local_id, std::size_t child_index);
   void AddAction(
       std::uint64_t local_id,
       SemanticActionKind action
@@ -319,8 +319,13 @@ public:
 
 The builder is valid only for the duration of `BuildSemantics()` and cannot be copied, moved, or retained.
 SetOwner applies dynamic properties to the mounted owner's declaration.
-AddChild creates one flat virtual child with owner-local bounds and explicit component-owned availability.
-Runtime combines that availability with the mounted owner's enabled state; a virtual child cannot enable a disabled subtree.
+AddChild creates one virtual child with owner-local bounds, an optional already-declared virtual parent, and explicit component-owned availability.
+Runtime combines that availability with the mounted owner and virtual ancestors' enabled state; a virtual child cannot enable a disabled subtree.
+SetActiveChild projects owner input focus onto one published, effectively enabled logical child without creating a second native focus owner.
+If that child or one of its virtual ancestors is hidden or disabled, the mounted owner retains focus.
+AdoptChild associates a direct mounted child's interactive content with a virtual semantic item; it omits the wrapper and decorative labels while preserving nested controls, input state, and actions.
+Adopted children are addressed by their current ViewNode::Children index, and each mounted child may be adopted once.
+Parent references and action targets use indexed local-ID lookup, so publishing a large virtual hierarchy does not require quadratic searches.
 Disabled virtual children remain in the semantic tree with stable identities and `enabled = false`, but publish no standard or custom actions and have no executable action routes.
 The enabled argument does not modify the owner's input behavior and is not a general `Semantics` override.
 Extensions use the same availability predicate for actual input and semantic declarations, and invalidate semantics when that state changes.
@@ -464,6 +469,7 @@ enum class SemanticActionKind {
   Expand,
   Collapse,
   Dismiss,
+  SetSelected,
   Custom,
 };
 ```
@@ -482,11 +488,13 @@ struct SemanticAction {
       TextRange,
       double,
       Point,
-      std::uint64_t> value;
+      std::uint64_t,
+      bool> value;
 };
 ```
 
-The payload represents SetText, SetSelection, SetValue, Scroll, or a Custom action ID respectively; parameterless actions use `std::monostate`.
+The payload represents SetText, SetSelection, SetValue, Scroll, a Custom action ID, or SetSelected respectively; parameterless actions use `std::monostate`.
+SetSelected requests item selection independently of activation and text-range SetSelection, allowing a tree row to select without opening its application-owned content.
 Standard action availability is stored as a compact bit mask directly on `SemanticNode`.
 A custom action adds only a local integer ID and localized label.
 There is no separate action descriptor hierarchy.
@@ -605,7 +613,7 @@ Icon-only item constructors continue to require their existing semantic label.
 Material, Flat, and third-party visual themes do not change component semantics.
 
 Popup keeps the semantics of its supplied content because the presentation mechanism does not imply a shared role.
-Virtual containers publish only realized retained items and never materialize every View for accessibility; scrolling advances the realized semantic window.
+VirtualList and VirtualGrid publish only realized retained items and never materialize every View for accessibility; scrolling advances the realized semantic window.
 Cached items outside the viewport remain published with `offscreen = true` and reuse the existing ShowOnScreen action while they remain mounted.
 An item root that already owns a meaningful role such as Button or Checkbox keeps that role and receives collection-item metadata; Runtime supplies ListItem or GridCell only when the item root has no component role.
 Future component defaults use the same owner/real-child and retained action-routing contracts rather than adding component-specific Runtime branches.
@@ -675,6 +683,9 @@ The remaining platform subsections define the intended adapter boundary, not cur
 
 ### Windows
 
+Tree and TreeItem map to the native UI Automation tree control types.
+TreeItem keeps independent Invoke and SelectionItem patterns; selection and deselection dispatch SetSelected, while GetSelection includes selected descendants below expandable parents.
+
 The HWND exposes a UI Automation fragment root with cached providers keyed by SemanticNodeId.
 Providers supply only the control patterns supported by committed role, state, and actions.
 Each provider freezes its COM interface set when created; a changed pattern shape replaces the cached provider while preserving the semantic RuntimeId.
@@ -690,6 +701,8 @@ Secure fields advertise password state but reject Value reads instead of exposin
 TextField currently exposes Value rather than TextPattern because the semantic frame does not yet publish the native text-range geometry required for a correct `ITextRangeProvider` implementation.
 
 ### macOS
+
+Tree maps to an outline and TreeItem to an outline row, including disclosure relationships, disclosure level, selected rows, and independent selection setters.
 
 The AppKit host currently exposes retained `NSAccessibilityElement` children with mapped roles, labels, basic values, hints, enabled, selected, and focused state, hierarchy, screen geometry, and press or range actions from the semantic frame.
 It preserves mixed checked state and emits separate structure, title, value, and focus notifications by comparing retained frames.
@@ -711,6 +724,9 @@ A future bridge must map meaningful nodes to built-in HTML semantics, use ARIA o
 
 ### Android
 
+Tree uses the expandable-list class with hierarchical collection metadata; TreeItem retains its logical parent and selected/expanded state.
+ACTION_SELECT and ACTION_CLEAR_SELECTION dispatch SetSelected, independently of ACTION_CLICK activation.
+
 `HuxerUIView` exposes virtual descendants through `AccessibilityNodeProvider`.
 The shared semantic root maps to `AccessibilityNodeProvider.HOST_VIEW_ID`, while every non-root SemanticNodeId is converted exactly to a positive 32-bit virtual View ID.
 The Android encoder rejects an identity above `jint` maximum instead of truncating it, and Android actions convert the virtual View ID directly back to SemanticNodeId for validation against the newest Runtime frame.
@@ -730,7 +746,7 @@ Provider touch exploration yields to a frontmost PlatformView subtree, and mount
 Roles map to the closest Android widget class, while checked, selected, expanded, editable, secure, range, collection, heading, live-region, invalid, and scrolling state use the corresponding AccessibilityNodeInfo contracts available on the current API level.
 Collections containing RadioButton children or children with selected state map to Android single-selection collections without adding a platform role to the shared semantic model.
 Secure fields never publish text or selection.
-Activate, Focus, SetText, SetSelection, SetValue, Increment, Decrement, Scroll, ShowOnScreen, Expand, Collapse, Dismiss, and Custom actions return through `Runtime::PerformSemanticAction()` on the Android UI thread.
+Activate, Focus, SetText, SetSelection, SetSelected, SetValue, Increment, Decrement, Scroll, ShowOnScreen, Expand, Collapse, Dismiss, and Custom actions return through `Runtime::PerformSemanticAction()` on the Android UI thread.
 Accessibility focus and explore-by-touch hover stay provider-owned; Android input-focus requests call Runtime Focus and remain distinct from TalkBack focus.
 
 Committed-frame diffs emit subtree, focus, selection, text, text-selection, scroll, state, dialog, and live-region events.
@@ -738,6 +754,9 @@ The provider retains the newest frame even while accessibility is disabled so en
 Detaching the HuxerUIView clears provider focus, hover, custom-action, and snapshot state together with the platform session.
 
 ### iOS
+
+Tree and TreeItem use nested list and semantic-group containers, preserving each row's own element and embedded controls.
+VoiceOver custom actions expose expansion, collapse, selection, and deselection separately from the row's default activation.
 
 The `HuxerUIView` host is neither an accessibility element nor a text-input responder and exposes an ordered `UIAccessibilityContainer` hierarchy.
 The bridge retains private UIKit elements by SemanticNodeId so compatible recomposition, geometry changes, and reparenting update UIKit properties without replacing a surviving VoiceOver target.
@@ -849,7 +868,7 @@ Each platform adapter is validated on its platform; unavailable platforms remain
 - Semantic text editing uses the existing retained client and controlled change path rather than a second editor state.
 - Scroll and ShowOnScreen use existing mounted scrolling capability rather than component branches.
 - Modal accessibility derives from retained Layer focus trapping, and virtual collection semantics never force eager View materialization.
-- One MountedNode may own stable flat virtual semantic children without fake Views.
+- One MountedNode may own a stable hierarchical virtual semantic subtree without fake Views.
 - Semantic identity is Runtime-local and never reused for unrelated content.
 - Input focus, text-input ownership, and platform accessibility focus remain distinct.
 - Platform objects retain SemanticFrame and SemanticNodeIds, never MountedNode or NodeExtension pointers.

@@ -70,6 +70,18 @@ TEST_CASE("Android semantic frames encode the ComboBox role") {
   REQUIRE(ReadUint32(encoded, 33) == 24U);
 }
 
+TEST_CASE("Android semantic frames encode tree roles and selection independently of activation", "[tree]") {
+  SemanticNode node;
+  node.role = SemanticRole::Tree;
+  REQUIRE(ReadUint32(EncodeAndroidSemanticFrame({1, 0, {node}}), 33) == 25U);
+  node.role = SemanticRole::TreeItem;
+  node.selected = false;
+  node.actions = SemanticActionMask(SemanticActionKind::SetSelected);
+  const auto encoded = EncodeAndroidSemanticFrame({1, 0, {node}});
+  REQUIRE(ReadUint32(encoded, 33) == 26U);
+  REQUIRE(ReadUint64(encoded, 41) == (std::uint64_t{1} << static_cast<int>(AndroidSemanticAction::SetSelected)));
+}
+
 TEST_CASE("Android semantic frames preserve disabled nodes and their enabled flag") {
   SemanticNode node;
   node.id = 27;

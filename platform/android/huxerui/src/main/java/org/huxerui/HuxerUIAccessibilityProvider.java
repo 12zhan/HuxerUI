@@ -59,6 +59,8 @@ final class HuxerUIAccessibilityProvider extends AccessibilityNodeProvider {
     private static final int ROLE_GRID_CELL = 22;
     private static final int ROLE_SCROLL_VIEW = 23;
     private static final int ROLE_COMBO_BOX = 24;
+    private static final int ROLE_TREE = 25;
+    private static final int ROLE_TREE_ITEM = 26;
 
     private static final int SEMANTIC_ACTIVATE = 0;
     private static final int SEMANTIC_FOCUS = 1;
@@ -73,6 +75,7 @@ final class HuxerUIAccessibilityProvider extends AccessibilityNodeProvider {
     private static final int SEMANTIC_COLLAPSE = 10;
     private static final int SEMANTIC_DISMISS = 11;
     private static final int SEMANTIC_CUSTOM = 12;
+    private static final int SEMANTIC_SET_SELECTED = 13;
 
     private static final int AXIS_HORIZONTAL = 0;
     private static final int LIVE_REGION_POLITE = 1;
@@ -411,7 +414,8 @@ final class HuxerUIAccessibilityProvider extends AccessibilityNodeProvider {
 
     private void applyCollection(Frame current, Node node, AccessibilityNodeInfo info) {
         if (node.collection != null) {
-            boolean vertical = node.role == ROLE_LIST || node.role == ROLE_MENU || node.role == ROLE_NAVIGATION;
+            boolean vertical = node.role == ROLE_LIST || node.role == ROLE_MENU || node.role == ROLE_NAVIGATION
+                    || node.role == ROLE_TREE;
             int rows = node.collection.rows >= 0 ? clampToInt(node.collection.rows)
                                                  : vertical && node.collection.items >= 0
                     ? clampToInt(node.collection.items)
@@ -420,7 +424,8 @@ final class HuxerUIAccessibilityProvider extends AccessibilityNodeProvider {
             int selectionMode = hasSingleSelectionChildren(current, node)
                     ? AccessibilityNodeInfo.CollectionInfo.SELECTION_MODE_SINGLE
                     : AccessibilityNodeInfo.CollectionInfo.SELECTION_MODE_NONE;
-            info.setCollectionInfo(AccessibilityNodeInfo.CollectionInfo.obtain(rows, columns, false, selectionMode));
+            info.setCollectionInfo(AccessibilityNodeInfo.CollectionInfo.obtain(
+                    rows, columns, node.role == ROLE_TREE, selectionMode));
         }
         if (node.collectionItem != null) {
             int row = node.collectionItem.row >= 0 ? clampToInt(node.collectionItem.row)
@@ -434,6 +439,25 @@ final class HuxerUIAccessibilityProvider extends AccessibilityNodeProvider {
     }
 
     private static boolean hasSingleSelectionChildren(Frame current, Node node) {
+        if (node.role == ROLE_TREE) {
+            ArrayList<Integer> pending = new ArrayList<>();
+            for (int childId : node.children) {
+                pending.add(childId);
+            }
+            for (int index = 0; index < pending.size(); ++index) {
+                Node child = current.nodes.get(pending.get(index));
+                if (child == null || child.role != ROLE_TREE_ITEM) {
+                    continue;
+                }
+                if (child.selected != null) {
+                    return true;
+                }
+                for (int childId : child.children) {
+                    pending.add(childId);
+                }
+            }
+            return false;
+        }
         if (node.role == ROLE_TAB_LIST || node.role == ROLE_NAVIGATION) {
             return true;
         }
@@ -447,9 +471,15 @@ final class HuxerUIAccessibilityProvider extends AccessibilityNodeProvider {
     }
 
     private void applyActions(Node node, AccessibilityNodeInfo info) {
+        if (hasAction(node, SEMANTIC_SET_SELECTED)) {
+            info.addAction(Boolean.TRUE.equals(node.selected)
+                    ? AccessibilityNodeInfo.AccessibilityAction.ACTION_CLEAR_SELECTION
+                    : AccessibilityNodeInfo.AccessibilityAction.ACTION_SELECT);
+        }
         if (hasAction(node, SEMANTIC_ACTIVATE)) {
             info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_CLICK);
-            if (node.selected != null && !Boolean.TRUE.equals(node.selected)) {
+            if (!hasAction(node, SEMANTIC_SET_SELECTED) && node.selected != null
+                    && !Boolean.TRUE.equals(node.selected)) {
                 info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SELECT);
             }
         }
@@ -501,6 +531,11 @@ final class HuxerUIAccessibilityProvider extends AccessibilityNodeProvider {
     }
 
     private boolean performRuntimeAction(Node node, int action, Bundle arguments) {
+        if ((action == AccessibilityNodeInfo.ACTION_SELECT || action == AccessibilityNodeInfo.ACTION_CLEAR_SELECTION)
+                && hasAction(node, SEMANTIC_SET_SELECTED)) {
+            return perform(node.id, SEMANTIC_SET_SELECTED, null,
+                    action == AccessibilityNodeInfo.ACTION_SELECT ? 1 : 0, 0, 0.0, 0.0F, 0.0F, 0L);
+        }
         if (action == AccessibilityNodeInfo.ACTION_CLICK && hasAction(node, SEMANTIC_ACTIVATE)) {
             return perform(node.id, SEMANTIC_ACTIVATE, null, 0, 0, 0.0, 0.0F, 0.0F, 0L);
         }
@@ -889,8 +924,11 @@ final class HuxerUIAccessibilityProvider extends AccessibilityNodeProvider {
         case ROLE_LIST:
         case ROLE_NAVIGATION:
             return "android.widget.ListView";
+        case ROLE_TREE:
+            return "android.widget.ExpandableListView";
         case ROLE_MENU_ITEM:
         case ROLE_LIST_ITEM:
+        case ROLE_TREE_ITEM:
             return "android.widget.TextView";
         case ROLE_DIALOG:
             return "android.app.Dialog";

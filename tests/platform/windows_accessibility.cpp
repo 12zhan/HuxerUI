@@ -73,6 +73,15 @@ std::wstring PropertyString(IRawElementProviderSimple& provider, PROPERTYID prop
   return result;
 }
 
+LONG PropertyInt(IRawElementProviderSimple& provider, PROPERTYID property) {
+  VARIANT value{};
+  REQUIRE(provider.GetPropertyValue(property, &value) == S_OK);
+  REQUIRE(value.vt == VT_I4);
+  const LONG result = value.lVal;
+  VariantClear(&value);
+  return result;
+}
+
 } // namespace
 
 TEST_CASE("Windows accessibility maps semantic properties and stable fragments") {
@@ -488,6 +497,88 @@ TEST_CASE("Windows accessibility keeps COM interfaces static while replacing cha
   REQUIRE(original->GetPropertyValue(UIA_NamePropertyId, &unavailable) == UIA_E_ELEMENTNOTAVAILABLE);
   Microsoft::WRL::ComPtr<IRawElementProviderSimple> removed;
   REQUIRE(accessibility.ProviderForNode(2, &removed) == UIA_E_ELEMENTNOTAVAILABLE);
+}
+
+TEST_CASE("Windows accessibility maps optional tree selection and set metadata", "[tree]") {
+  auto frame = std::make_shared<SemanticFrame>();
+  frame->root = 1;
+  frame->nodes = {
+      SemanticNode{
+          .id = 1,
+          .children = {2, 3},
+          .role = SemanticRole::Tree,
+          .label = "Files",
+          .collection = SemanticCollection{.item_count = 2},
+          .bounds = {0.0F, 0.0F, 200.0F, 100.0F},
+      },
+      SemanticNode{
+          .id = 2,
+          .parent = 1,
+          .role = SemanticRole::TreeItem,
+          .label = "First",
+          .selected = false,
+          .collection_item = SemanticCollectionItem{.index = 0},
+          .actions = SemanticActionMask(SemanticActionKind::SetSelected),
+          .bounds = {0.0F, 0.0F, 200.0F, 20.0F},
+      },
+      SemanticNode{
+          .id = 3,
+          .parent = 1,
+          .role = SemanticRole::TreeItem,
+          .label = "Second",
+          .selected = true,
+          .collection_item = SemanticCollectionItem{.index = 1},
+          .actions = SemanticActionMask(SemanticActionKind::SetSelected),
+          .bounds = {0.0F, 20.0F, 200.0F, 20.0F},
+      },
+  };
+  detail::Win32Accessibility accessibility;
+  accessibility.Commit(frame, nullptr);
+  Microsoft::WRL::ComPtr<IRawElementProviderSimple> tree;
+  Microsoft::WRL::ComPtr<IRawElementProviderSimple> first;
+  Microsoft::WRL::ComPtr<IRawElementProviderSimple> second;
+  REQUIRE(accessibility.ProviderForNode(1, &tree) == S_OK);
+  REQUIRE(accessibility.ProviderForNode(2, &first) == S_OK);
+  REQUIRE(accessibility.ProviderForNode(3, &second) == S_OK);
+  REQUIRE(PropertyInt(*tree.Get(), UIA_ControlTypePropertyId) == UIA_TreeControlTypeId);
+  REQUIRE(PropertyInt(*first.Get(), UIA_ControlTypePropertyId) == UIA_TreeItemControlTypeId);
+  REQUIRE(PropertyInt(*first.Get(), UIA_PositionInSetPropertyId) == 1);
+  REQUIRE(PropertyInt(*first.Get(), UIA_SizeOfSetPropertyId) == 2);
+  REQUIRE(PropertyInt(*second.Get(), UIA_PositionInSetPropertyId) == 2);
+  REQUIRE(PropertyInt(*second.Get(), UIA_SizeOfSetPropertyId) == 2);
+  Microsoft::WRL::ComPtr<ISelectionProvider> selection;
+  REQUIRE(tree.As(&selection) == S_OK);
+  BOOL required = TRUE;
+  REQUIRE(selection->get_IsSelectionRequired(&required) == S_OK);
+  REQUIRE(required == FALSE);
+}
+
+TEST_CASE("Windows accessibility hits tree descendants outside the parent row", "[tree]") {
+  auto frame = std::make_shared<SemanticFrame>();
+  frame->root = 1;
+  frame->nodes = {
+      SemanticNode{.id = 1, .children = {2}, .bounds = {0.0F, 0.0F, 200.0F, 100.0F}},
+      SemanticNode{
+          .id = 2, .parent = 1, .children = {3}, .role = SemanticRole::TreeItem,
+          .offscreen = GENERATE(false, true), .bounds = {0.0F, -20.0F, 200.0F, 20.0F},
+      },
+      SemanticNode{
+          .id = 3, .parent = 2, .role = SemanticRole::TreeItem, .label = "Visible child",
+          .bounds = {0.0F, 0.0F, 200.0F, 20.0F},
+      },
+  };
+  detail::Win32Accessibility accessibility;
+  accessibility.Commit(frame, nullptr);
+  Microsoft::WRL::ComPtr<IRawElementProviderSimple> root_simple;
+  REQUIRE(accessibility.ProviderForNode(frame->root, &root_simple) == S_OK);
+  Microsoft::WRL::ComPtr<IRawElementProviderFragmentRoot> root;
+  REQUIRE(root_simple.As(&root) == S_OK);
+  Microsoft::WRL::ComPtr<IRawElementProviderFragment> hit;
+  REQUIRE(root->ElementProviderFromPoint(50.0, 10.0, &hit) == S_OK);
+  REQUIRE(hit);
+  Microsoft::WRL::ComPtr<IRawElementProviderSimple> hit_simple;
+  REQUIRE(hit.As(&hit_simple) == S_OK);
+  REQUIRE(PropertyString(*hit_simple.Get(), UIA_NamePropertyId) == L"Visible child");
 }
 
 } // namespace huxerui::test

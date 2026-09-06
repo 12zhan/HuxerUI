@@ -48,6 +48,7 @@ private:
   SemanticNodeId semantic_root_identity_ = 0;
   std::uint64_t semantic_revision_ = 0;
   std::unordered_map<SemanticNodeId, SemanticActionRoute> semantic_action_routes_;
+  std::unordered_map<SemanticNodeId, std::size_t> node_indices_;
 };
 
 struct SemanticPatch {
@@ -93,6 +94,7 @@ void ApplySemantics(SemanticPatch& target, const SemanticPatch& source);
 
 struct SemanticBuilderItem {
   std::uint64_t local_id = 0;
+  std::uint64_t parent_local_id = 0;
   std::optional<Rect> local_bounds{};
   SemanticPatch semantics{};
   bool enabled = true;
@@ -104,6 +106,9 @@ struct SemanticBuilderState {
   std::shared_ptr<const Environment> environment;
   AppResources* resources = nullptr;
   std::vector<SemanticBuilderItem> items{};
+  std::unordered_map<std::uint64_t, std::size_t> item_indices{};
+  std::unordered_map<std::size_t, std::uint64_t> adopted_children{};
+  std::uint64_t active_child = 0;
 };
 
 struct VirtualSemanticKey {

@@ -1202,4 +1202,96 @@ TEST_CASE("SemanticsModifierRejectsInvalidSharedValues") {
   });
 }
 
+namespace {
+
+int hierarchy_mode = 0;
+bool hierarchy_enabled = true;
+bool hierarchy_hidden = false;
+class HierarchyExtension;
+struct HierarchySemantics {
+  using Extension = HierarchyExtension;
+};
+
+class HierarchyExtension final : public NodeExtension {
+public:
+  HierarchyExtension(ViewNode&, const HierarchySemantics&) {}
+  void Update(ViewNode&, const HierarchySemantics&) {}
+  void BuildSemantics(SemanticBuilder& builder) const override {
+    builder.SetOwner(Semantics{.label = "Owner"});
+    builder.AddChild(1, {0.0F, 0.0F, 200.0F, 50.0F}, Semantics{.label = "Parent"}, hierarchy_enabled);
+    builder.AddChild(2, {0.0F, 25.0F, 200.0F, 25.0F},
+                     Semantics{.label = "Child", .hidden = hierarchy_hidden}, true,
+                     hierarchy_mode == 1 ? 99 : 1);
+    builder.AddAction(2, SemanticActionKind::Focus);
+    builder.SetActiveChild(hierarchy_mode == 2 ? 99 : 2);
+    builder.AdoptChild(2, hierarchy_mode == 3 ? 99 : 0);
+    if (hierarchy_mode == 4) {
+      builder.AdoptChild(1, 0);
+    }
+  }
+  bool OnSemanticAction(std::uint64_t local_id, const SemanticAction& action) override {
+    return local_id == 2 && action.kind == SemanticActionKind::Focus;
+  }
+};
+
+View HierarchyApp() {
+  return Column {
+    Row {
+      Text("Decoration"),
+      Button("Embedded").OnClick([] {}),
+    },
+  }.With(Focusable{}, HierarchySemantics{});
+}
+
+} // namespace
+
+TEST_CASE("SemanticBuilder hierarchy adopts controls and inherits virtual availability", "[tree][semantics]") {
+  hierarchy_mode = 0;
+  hierarchy_enabled = GENERATE(true, false);
+  hierarchy_hidden = false;
+  TestPlatform platform;
+  Runtime runtime{HierarchyApp, platform};
+  runtime.SetWindowMetrics({.viewport = {200.0F, 100.0F}});
+  auto frame = runtime.BuildCommit().semantic_frame;
+  const auto parent = FindSemanticNode(*frame, "Parent");
+  const auto child = FindSemanticNode(*frame, "Child");
+  const auto control = FindSemanticNode(*frame, "Embedded");
+  REQUIRE(child.parent == parent.id);
+  REQUIRE(control.parent == child.id);
+  REQUIRE(control.enabled == hierarchy_enabled);
+  REQUIRE_FALSE(FindSemanticNodeOrNull(*frame, "Decoration"));
+  REQUIRE(runtime.CoreRuntime().PerformSemanticAction(child.id, {SemanticActionKind::Focus}) == hierarchy_enabled);
+  frame = runtime.BuildCommit().semantic_frame;
+  REQUIRE(FindSemanticNode(*frame, "Child").focused == hierarchy_enabled);
+  REQUIRE_FALSE(FindSemanticNode(*frame, "Owner").focused);
+  if (!hierarchy_enabled) {
+    REQUIRE(control.actions == 0);
+  }
+}
+
+TEST_CASE("SemanticBuilder leaves owner focus visible when its active child is hidden", "[tree][semantics]") {
+  hierarchy_mode = 0;
+  hierarchy_enabled = true;
+  hierarchy_hidden = true;
+  TestPlatform platform;
+  Runtime runtime{HierarchyApp, platform};
+  runtime.SetWindowMetrics({.viewport = {200.0F, 100.0F}});
+  auto frame = runtime.BuildCommit().semantic_frame;
+  const auto owner = FindSemanticNode(*frame, "Owner");
+  REQUIRE(std::ranges::none_of(frame->nodes, [](const SemanticNode& node) { return node.label == "Child"; }));
+  REQUIRE(runtime.CoreRuntime().PerformSemanticAction(owner.id, {SemanticActionKind::Focus}));
+  frame = runtime.BuildCommit().semantic_frame;
+  REQUIRE(FindSemanticNode(*frame, "Owner").focused);
+}
+
+TEST_CASE("SemanticBuilder rejects invalid hierarchy and duplicate adoption", "[tree][semantics]") {
+  hierarchy_enabled = true;
+  hierarchy_hidden = false;
+  hierarchy_mode = GENERATE(1, 2, 3, 4);
+  TestPlatform platform;
+  Runtime runtime{HierarchyApp, platform};
+  runtime.SetWindowMetrics({.viewport = {200.0F, 100.0F}});
+  REQUIRE_THROWS_AS(runtime.BuildFrame(), std::logic_error);
+}
+
 } // namespace huxerui::test

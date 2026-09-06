@@ -29,6 +29,7 @@ public:
 
   [[nodiscard]] bool PerformDefault(SemanticNodeId id);
   [[nodiscard]] bool Perform(SemanticNodeId id, SemanticActionKind action);
+  [[nodiscard]] bool PerformSelection(SemanticNodeId id, bool selected);
   [[nodiscard]] bool PerformCustom(SemanticNodeId id, std::uint64_t action_id);
   [[nodiscard]] bool PerformScroll(SemanticNodeId id, UIAccessibilityScrollDirection direction);
   void AccessibilityFocusChanged(SemanticNodeId id);

@@ -3,6 +3,7 @@
 #import <AppKit/AppKit.h>
 
 #include <memory>
+#include <unordered_map>
 
 #include <huxerui/semantics.h>
 
@@ -36,6 +37,7 @@ private:
   __weak NSView* root_view_;
   AppKitPlatformViews* platform_views_;
   std::shared_ptr<const SemanticFrame> frame_;
+  std::unordered_map<SemanticNodeId, std::size_t> node_indices_;
   __strong NSMutableDictionary* elements_ = nil;
 };
 

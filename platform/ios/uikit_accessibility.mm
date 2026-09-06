@@ -88,6 +88,8 @@ bool IsStructuralRole(SemanticRole role) noexcept {
   case SemanticRole::List:
   case SemanticRole::Grid:
   case SemanticRole::GridCell:
+  case SemanticRole::Tree:
+  case SemanticRole::TreeItem:
     return true;
   default:
     return false;
@@ -142,6 +144,7 @@ UIAccessibilityTraits Traits(const SemanticNode& node, bool container) {
     case SemanticRole::Button:
     case SemanticRole::MenuItem:
     case SemanticRole::Tab:
+    case SemanticRole::TreeItem:
       traits |= UIAccessibilityTraitButton;
       break;
     case SemanticRole::ComboBox:
@@ -187,6 +190,10 @@ UIAccessibilityContainerType ContainerType(const SemanticNode& node) noexcept {
   switch (node.role) {
   case SemanticRole::List:
     return UIAccessibilityContainerTypeList;
+  case SemanticRole::Tree:
+    return UIAccessibilityContainerTypeList;
+  case SemanticRole::TreeItem:
+    return UIAccessibilityContainerTypeSemanticGroup;
   case SemanticRole::Navigation:
     return UIAccessibilityContainerTypeLandmark;
   case SemanticRole::Grid:
@@ -400,6 +407,29 @@ void ConfigureNode(
 
   NSMutableArray<UIAccessibilityCustomAction*>* actions = [NSMutableArray arrayWithCapacity:node.custom_actions.size()];
   __weak HuxerUIAccessibilityNode* weak_object = object;
+  for (const auto kind : {SemanticActionKind::Expand, SemanticActionKind::Collapse}) {
+    if (!HasAction(node, kind)) {
+      continue;
+    }
+    NSString* name = kind == SemanticActionKind::Expand ? NSLocalizedString(@"Expand", nil)
+                                                        : NSLocalizedString(@"Collapse", nil);
+    [actions addObject:[[UIAccessibilityCustomAction alloc] initWithName:name
+        actionHandler:^BOOL(UIAccessibilityCustomAction*) {
+          HuxerUIAccessibilityNode* strong_object = weak_object;
+          return strong_object != nil && strong_object->huxeruiOwner != nullptr &&
+                 strong_object->huxeruiOwner->Perform(strong_object->huxeruiNodeId, kind);
+        }]];
+  }
+  if (HasAction(node, SemanticActionKind::SetSelected)) {
+    const bool selected = !node.selected.value_or(false);
+    NSString* name = selected ? NSLocalizedString(@"Select", nil) : NSLocalizedString(@"Deselect", nil);
+    [actions addObject:[[UIAccessibilityCustomAction alloc] initWithName:name
+        actionHandler:^BOOL(UIAccessibilityCustomAction*) {
+          HuxerUIAccessibilityNode* strong_object = weak_object;
+          return strong_object != nil && strong_object->huxeruiOwner != nullptr &&
+                 strong_object->huxeruiOwner->PerformSelection(strong_object->huxeruiNodeId, selected);
+        }]];
+  }
   for (const auto& [action_id, label] : node.custom_actions) {
     const std::uint64_t captured_action_id = action_id;
     NSString* name = NSStringFromUtf8(label);
@@ -647,6 +677,11 @@ bool UIKitAccessibility::Perform(SemanticNodeId id, SemanticActionKind action) {
     return false;
   }
   return state_->runtime->PerformSemanticAction(id, {action, std::monostate{}});
+}
+
+bool UIKitAccessibility::PerformSelection(SemanticNodeId id, bool selected) {
+  return state_ && state_->runtime != nullptr &&
+         state_->runtime->PerformSemanticAction(id, {SemanticActionKind::SetSelected, selected});
 }
 
 bool UIKitAccessibility::PerformCustom(SemanticNodeId id, std::uint64_t action_id) {

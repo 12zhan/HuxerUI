@@ -116,6 +116,8 @@ std::optional<SemanticActionKind> ToSemanticAction(jint action) {
     return SemanticActionKind::Dismiss;
   case AndroidSemanticAction::Custom:
     return SemanticActionKind::Custom;
+  case AndroidSemanticAction::SetSelected:
+    return SemanticActionKind::SetSelected;
   }
   return std::nullopt;
 }
@@ -1440,6 +1442,12 @@ public:
       break;
     case SemanticActionKind::SetSelection:
       action.value = TextRange{static_cast<TextOffset>(argument0), static_cast<TextOffset>(argument1)};
+      break;
+    case SemanticActionKind::SetSelected:
+      if (argument0 != 0 && argument0 != 1) {
+        return false;
+      }
+      action.value = argument0 != 0;
       break;
     case SemanticActionKind::SetValue:
       action.value = static_cast<double>(number);

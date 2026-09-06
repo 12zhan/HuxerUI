@@ -84,6 +84,10 @@ enum class SemanticRole {
   GridCell,
   /// A scrollable viewport.
   ScrollView,
+  /// A hierarchical collection of expandable items.
+  Tree,
+  /// One item in a Tree, optionally owning nested TreeItems.
+  TreeItem,
 };
 
 /// Describes the state of a checkable control, separately from selection within a collection.
@@ -269,6 +273,8 @@ enum class SemanticActionKind : std::uint8_t {
   Collapse,
   /// Requests dismissal through the component's existing dismissal policy.
   Dismiss,
+  /// Requests the item's controlled selection state carried by a bool, independently of activation or text selection.
+  SetSelected,
   /// Invokes a declared custom action identified by a std::uint64_t payload.
   Custom,
 };
@@ -297,7 +303,7 @@ struct SemanticAction {
   /// Requested operation, which also determines the payload type.
   SemanticActionKind kind = SemanticActionKind::Activate;
   /// Payload documented by SemanticActionKind; default construction supplies std::monostate.
-  std::variant<std::monostate, std::string, TextRange, double, Point, std::uint64_t> value;
+  std::variant<std::monostate, std::string, TextRange, double, Point, std::uint64_t, bool> value;
 
   bool operator==(const SemanticAction&) const = default;
 };
@@ -394,11 +400,12 @@ struct SemanticFrame {
   bool operator==(const SemanticFrame&) const = default;
 };
 
-/// Publishes one NodeExtension's owner contribution and flat virtual children during BuildSemantics().
+/// Publishes one NodeExtension's owner contribution and hierarchical virtual children during BuildSemantics().
 ///
 /// The builder is borrowed for that call only and must not be retained. Local ID zero denotes the mounted owner;
 /// nonzero child IDs are scoped to the extension and must stay stable for the same logical item across updates.
-/// Use actual child Views when they already own the behavior; virtual semantics are for self-drawn items.
+/// Use actual child Views when they already own the complete behavior. Virtual semantics may describe logical items
+/// whose Views are unrealized and adopt interactive content from currently mounted children.
 ///
 /// Declare actions here and handle them in NodeExtension::OnSemanticAction(), using the same validation and typed
 /// events as ordinary input. Call InvalidateSemantics() when retained semantic state changes; declaration alone does
@@ -444,14 +451,25 @@ public:
   ///
   /// Disabled children remain discoverable with stable identities but expose no standard or custom actions. Apply
   /// the same availability check to actual input; this declaration does not disable pointer or keyboard handlers.
-  /// Child hierarchy is flat. Tree visibility is controlled by the mounted owner; omit a child to hide that item.
+  /// Declare parents before their children. Omit a child and its descendants to remove that logical branch.
   /// @param local_id Nonzero ID unique within this extension's current contribution and stable for the logical item.
   /// @param local_bounds Owner-local logical rectangle with finite coordinates and finite, nonnegative dimensions.
   /// @param semantics Child meaning and state, with user-facing strings resolved in the owner's environment.
-  /// @param enabled Child availability; false disables this child, while true cannot enable a disabled owner.
+  /// @param enabled Child availability; true cannot enable a disabled owner or virtual ancestor.
+  /// @param parent_local_id Previously declared virtual parent, or zero for the mounted owner.
   /// @throws std::invalid_argument If local_id is zero, bounds are invalid, or semantic metadata is invalid.
-  /// @throws std::logic_error If local_id has already been declared in this contribution.
-  void AddChild(std::uint64_t local_id, Rect local_bounds, Semantics semantics, bool enabled);
+  /// @throws std::logic_error If local_id is duplicated or the virtual parent has not been declared.
+  void AddChild(std::uint64_t local_id, Rect local_bounds, Semantics semantics, bool enabled,
+                std::uint64_t parent_local_id = 0);
+
+  /// Exposes this logical child's input focus while the mounted owner is focused and the child remains available.
+  /// A hidden or effectively disabled active child leaves focus on the mounted owner. Zero clears the active child.
+  void SetActiveChild(std::uint64_t local_id);
+
+  /// Places a direct mounted child's interactive semantic content under a declared virtual child.
+  /// The wrapper and decorative labels are omitted; nested controls keep their independent semantics and actions.
+  /// Each mounted child index may be adopted only once. Indices refer to ViewNode::Children() for this layout.
+  void AdoptChild(std::uint64_t local_id, std::size_t child_index);
 
   /// Advertises a standard action handled by this extension's OnSemanticAction().
   ///

@@ -5,6 +5,7 @@
 #include <unordered_set>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include <huxerui/app.h>
 
@@ -63,6 +64,10 @@ NSString* AccessibilityRole(const huxerui::SemanticNode& node) {
     return NSAccessibilityCellRole;
   case SemanticRole::ScrollView:
     return NSAccessibilityScrollAreaRole;
+  case SemanticRole::Tree:
+    return NSAccessibilityOutlineRole;
+  case SemanticRole::TreeItem:
+    return NSAccessibilityRowRole;
   case SemanticRole::Generic:
   case SemanticRole::Navigation:
   case SemanticRole::ListItem:
@@ -78,11 +83,6 @@ NSString* StringFromUtf8(const std::string& value) {
   return [[NSString alloc] initWithBytes:value.data() length:value.size() encoding:NSUTF8StringEncoding];
 }
 
-const huxerui::SemanticNode* FindNode(const huxerui::SemanticFrame& frame, huxerui::SemanticNodeId id) {
-  const auto found = std::ranges::find(frame.nodes, id, &huxerui::SemanticNode::id);
-  return found == frame.nodes.end() ? nullptr : &*found;
-}
-
 bool SemanticLayoutChanged(const huxerui::SemanticFrame* previous, const huxerui::SemanticFrame* current) {
   if (previous == nullptr || current == nullptr) {
     return previous != current;
@@ -90,8 +90,14 @@ bool SemanticLayoutChanged(const huxerui::SemanticFrame* previous, const huxerui
   if (previous->root != current->root || previous->nodes.size() != current->nodes.size()) {
     return true;
   }
-  return std::ranges::any_of(current->nodes, [previous](const huxerui::SemanticNode& node) {
-    const huxerui::SemanticNode* old = FindNode(*previous, node.id);
+  std::unordered_map<huxerui::SemanticNodeId, const huxerui::SemanticNode*> previous_nodes;
+  previous_nodes.reserve(previous->nodes.size());
+  for (const auto& node : previous->nodes) {
+    previous_nodes.emplace(node.id, &node);
+  }
+  return std::ranges::any_of(current->nodes, [&previous_nodes](const huxerui::SemanticNode& node) {
+    const auto found = previous_nodes.find(node.id);
+    const huxerui::SemanticNode* old = found == previous_nodes.end() ? nullptr : found->second;
     return old == nullptr || old->parent != node.parent || old->children != node.children || old->role != node.role ||
            old->platform_view_identity != node.platform_view_identity || old->bounds != node.bounds;
   });
@@ -145,6 +151,14 @@ void MacAccessibility::Commit(std::shared_ptr<const SemanticFrame> frame) {
   const std::shared_ptr<const SemanticFrame> previous = frame_;
   const bool layout_changed = SemanticLayoutChanged(previous.get(), frame.get());
   frame_ = std::move(frame);
+  const auto previous_indices = std::move(node_indices_);
+  node_indices_.clear();
+  if (frame_) {
+    node_indices_.reserve(frame_->nodes.size());
+    for (std::size_t index = 0; index < frame_->nodes.size(); ++index) {
+      node_indices_.emplace(frame_->nodes[index].id, index);
+    }
+  }
   if (elements_ != nil) {
     std::unordered_set<SemanticNodeId> retained;
     if (frame_) {
@@ -171,8 +185,10 @@ void MacAccessibility::Commit(std::shared_ptr<const SemanticFrame> frame) {
     return;
   }
   for (const SemanticNode& node : frame_->nodes) {
-    const SemanticNode* old = FindNode(*previous, node.id);
-    if (old == nullptr) {
+    const auto found = previous_indices.find(node.id);
+    const SemanticNode* old = found == previous_indices.end() ? nullptr : &previous->nodes[found->second];
+    if (old == nullptr ||
+        (old->label == node.label && !SemanticValueChanged(*old, node) && old->focused == node.focused)) {
       continue;
     }
     id element = Element(node.id);
@@ -202,8 +218,8 @@ const SemanticNode* MacAccessibility::NodeForId(SemanticNodeId id) const noexcep
   if (!frame_) {
     return nullptr;
   }
-  const auto found = std::ranges::find(frame_->nodes, id, &SemanticNode::id);
-  return found == frame_->nodes.end() ? nullptr : &*found;
+  const auto found = node_indices_.find(id);
+  return found == node_indices_.end() ? nullptr : &frame_->nodes[found->second];
 }
 
 id MacAccessibility::Element(SemanticNodeId id) {
@@ -343,9 +359,121 @@ bool MacAccessibility::PerformAction(SemanticNodeId id, SemanticAction action) {
   return node != nullptr && node->focused;
 }
 
+- (void)setAccessibilitySelected:(BOOL)selected {
+  const auto* node = huxeruiAccessibility == nullptr ? nullptr : huxeruiAccessibility->NodeForId(huxeruiNodeId);
+  if (node == nullptr) {
+    return;
+  }
+  if ((node->actions & huxerui::SemanticActionMask(huxerui::SemanticActionKind::SetSelected)) != 0) {
+    huxeruiAccessibility->PerformAction(huxeruiNodeId,
+                                        {huxerui::SemanticActionKind::SetSelected, selected != NO});
+  } else if (selected != NO &&
+             (node->actions & huxerui::SemanticActionMask(huxerui::SemanticActionKind::Activate)) != 0) {
+    huxeruiAccessibility->PerformAction(huxeruiNodeId,
+                                        {huxerui::SemanticActionKind::Activate, std::monostate{}});
+  }
+}
+
+- (BOOL)isAccessibilityDisclosed {
+  const auto* node = huxeruiAccessibility == nullptr ? nullptr : huxeruiAccessibility->NodeForId(huxeruiNodeId);
+  return node != nullptr && node->expanded.value_or(false);
+}
+
+- (void)setAccessibilityDisclosed:(BOOL)disclosed {
+  if (huxeruiAccessibility != nullptr) {
+    huxeruiAccessibility->PerformAction(huxeruiNodeId,
+        {disclosed ? huxerui::SemanticActionKind::Expand : huxerui::SemanticActionKind::Collapse, std::monostate{}});
+  }
+}
+
+- (NSInteger)accessibilityDisclosureLevel {
+  const auto* node = huxeruiAccessibility == nullptr ? nullptr : huxeruiAccessibility->NodeForId(huxeruiNodeId);
+  NSInteger level = 0;
+  while (node != nullptr && node->parent) {
+    node = huxeruiAccessibility->NodeForId(*node->parent);
+    if (node == nullptr || node->role != huxerui::SemanticRole::TreeItem) {
+      break;
+    }
+    ++level;
+  }
+  return level;
+}
+
+- (id)accessibilityDisclosedByRow {
+  const auto* node = huxeruiAccessibility == nullptr ? nullptr : huxeruiAccessibility->NodeForId(huxeruiNodeId);
+  const auto* parent = node != nullptr && node->parent ? huxeruiAccessibility->NodeForId(*node->parent) : nullptr;
+  return parent != nullptr && parent->role == huxerui::SemanticRole::TreeItem
+             ? huxeruiAccessibility->Element(parent->id) : nil;
+}
+
+- (NSArray*)accessibilityDisclosedRows {
+  const auto* node = huxeruiAccessibility == nullptr ? nullptr : huxeruiAccessibility->NodeForId(huxeruiNodeId);
+  NSMutableArray* rows = [NSMutableArray array];
+  if (node != nullptr) {
+    for (const auto child_id : node->children) {
+      const auto* child = huxeruiAccessibility->NodeForId(child_id);
+      if (child != nullptr && child->role == huxerui::SemanticRole::TreeItem) {
+        id element = huxeruiAccessibility->Element(child->id);
+        if (element != nil) {
+          [rows addObject:element];
+        }
+      }
+    }
+  }
+  return rows;
+}
+
 - (void)setAccessibilityFocused:(BOOL)focused {
   if (focused && huxeruiAccessibility != nullptr) {
     huxeruiAccessibility->PerformAction(huxeruiNodeId, {huxerui::SemanticActionKind::Focus, std::monostate{}});
+  }
+}
+
+- (NSArray*)accessibilityRows {
+  const auto* node = huxeruiAccessibility == nullptr ? nullptr : huxeruiAccessibility->NodeForId(huxeruiNodeId);
+  NSMutableArray* rows = [NSMutableArray array];
+  if (node == nullptr || node->role != huxerui::SemanticRole::Tree) {
+    return rows;
+  }
+  std::vector<huxerui::SemanticNodeId> pending(node->children.rbegin(), node->children.rend());
+  while (!pending.empty()) {
+    const auto* row = huxeruiAccessibility->NodeForId(pending.back());
+    pending.pop_back();
+    if (row == nullptr || row->role != huxerui::SemanticRole::TreeItem) {
+      continue;
+    }
+    id element = huxeruiAccessibility->Element(row->id);
+    if (element != nil) {
+      [rows addObject:element];
+    }
+    pending.insert(pending.end(), row->children.rbegin(), row->children.rend());
+  }
+  return rows;
+}
+
+- (NSArray*)accessibilitySelectedRows {
+  NSMutableArray* selected = [NSMutableArray array];
+  for (HuxerUIAccessibilityElement* row in [self accessibilityRows]) {
+    if ([row isAccessibilitySelected]) {
+      [selected addObject:row];
+    }
+  }
+  return selected;
+}
+
+- (void)setAccessibilitySelectedRows:(NSArray*)rows {
+  if (rows.count > 1) {
+    return;
+  }
+  if (rows.count == 1) {
+    id row = rows.firstObject;
+    if ([[self accessibilityRows] containsObject:row]) {
+      [row setAccessibilitySelected:YES];
+    }
+  } else {
+    for (HuxerUIAccessibilityElement* row in [self accessibilitySelectedRows]) {
+      [row setAccessibilitySelected:NO];
+    }
   }
 }
 

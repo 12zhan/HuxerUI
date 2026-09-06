@@ -74,11 +74,27 @@ void ValidateScrollMetrics(const ScrollMetrics& metrics) {
 }
 
 SemanticBuilderItem& RequireItem(SemanticBuilderState& state, std::uint64_t local_id) {
-  const auto found = std::ranges::find(state.items, local_id, &SemanticBuilderItem::local_id);
-  if (found == state.items.end()) {
+  const auto found = state.item_indices.find(local_id);
+  if (found == state.item_indices.end()) {
     throw std::logic_error("HuxerUI semantic action requires an existing owner or virtual child");
   }
-  return *found;
+  return state.items[found->second];
+}
+
+bool ActiveChildIsAvailable(const SemanticBuilderState& state) {
+  std::uint64_t local_id = state.active_child;
+  while (local_id != 0) {
+    const auto found = state.item_indices.find(local_id);
+    if (found == state.item_indices.end()) {
+      return false;
+    }
+    const SemanticBuilderItem& item = state.items[found->second];
+    if (!item.enabled || item.semantics.hidden.value_or(false)) {
+      return false;
+    }
+    local_id = item.parent_local_id;
+  }
+  return state.active_child != 0;
 }
 
 AppResources& RequireResources(SemanticBuilderState& state) {
@@ -222,7 +238,8 @@ bool HasMeaning(
 }
 
 bool SupportsSemanticScroll(SemanticRole role) noexcept {
-  return role == SemanticRole::ScrollView || role == SemanticRole::List || role == SemanticRole::Grid;
+  return role == SemanticRole::ScrollView || role == SemanticRole::List || role == SemanticRole::Grid ||
+         role == SemanticRole::Tree;
 }
 
 ScrollMetrics MountedScrollMetrics(const detail::MountedNode& node) {
@@ -302,6 +319,9 @@ bool IsParameterlessAction(SemanticActionKind kind) noexcept {
 }
 
 bool HasValidPayload(const SemanticAction& action) noexcept {
+  if (action.kind == SemanticActionKind::SetSelected) {
+    return std::holds_alternative<bool>(action.value);
+  }
   if (IsParameterlessAction(action.kind)) {
     return std::holds_alternative<std::monostate>(action.value);
   }
@@ -365,16 +385,17 @@ const detail::ModifierDescriptor& Semantics::Descriptor() {
 }
 
 void SemanticBuilder::SetOwner(Semantics semantics) {
-  auto found = std::ranges::find(state_->items, std::uint64_t{0}, &detail::SemanticBuilderItem::local_id);
-  if (found == state_->items.end()) {
+  const auto [found, inserted] = state_->item_indices.emplace(0, state_->items.size());
+  if (inserted) {
     state_->items.push_back({.local_id = 0});
-    found = std::prev(state_->items.end());
   }
   detail::AppResources& resources = detail::RequireResources(*state_);
-  detail::ApplySemantics(found->semantics, detail::ResolveSemantics(semantics, state_->environment, resources));
+  detail::ApplySemantics(state_->items[found->second].semantics,
+                         detail::ResolveSemantics(semantics, state_->environment, resources));
 }
 
-void SemanticBuilder::AddChild(std::uint64_t local_id, Rect local_bounds, Semantics semantics, bool enabled) {
+void SemanticBuilder::AddChild(std::uint64_t local_id, Rect local_bounds, Semantics semantics, bool enabled,
+                               std::uint64_t parent_local_id) {
   if (local_id == 0) {
     throw std::invalid_argument("HuxerUI virtual semantic child local id must be nonzero");
   }
@@ -382,17 +403,39 @@ void SemanticBuilder::AddChild(std::uint64_t local_id, Rect local_bounds, Semant
       !std::isfinite(local_bounds.height) || local_bounds.width < 0.0F || local_bounds.height < 0.0F) {
     throw std::invalid_argument("HuxerUI virtual semantic child bounds must be finite and nonnegative");
   }
-  if (std::ranges::any_of(state_->items, [local_id](const auto& item) { return item.local_id == local_id; })) {
+  if (parent_local_id != 0) {
+    static_cast<void>(detail::RequireItem(*state_, parent_local_id));
+  }
+  if (state_->item_indices.contains(local_id)) {
     throw std::logic_error("HuxerUI virtual semantic child local ids must be unique within an extension");
   }
   state_->items.push_back({
       .local_id = local_id,
+      .parent_local_id = parent_local_id,
       .local_bounds = local_bounds,
       .semantics = detail::ResolveSemantics(
           semantics, state_->environment, detail::RequireResources(*state_)
       ),
       .enabled = enabled,
   });
+  state_->item_indices.emplace(local_id, state_->items.size() - 1);
+}
+
+void SemanticBuilder::SetActiveChild(std::uint64_t local_id) {
+  if (local_id != 0) {
+    static_cast<void>(detail::RequireItem(*state_, local_id));
+  }
+  state_->active_child = local_id;
+}
+
+void SemanticBuilder::AdoptChild(std::uint64_t local_id, std::size_t child_index) {
+  if (local_id == 0) {
+    throw std::invalid_argument("HuxerUI semantic adoption requires a virtual child");
+  }
+  static_cast<void>(detail::RequireItem(*state_, local_id));
+  if (!state_->adopted_children.emplace(child_index, local_id).second) {
+    throw std::logic_error("HuxerUI mounted semantic child may only be adopted once");
+  }
 }
 
 void SemanticBuilder::AddAction(std::uint64_t local_id, SemanticActionKind action) {
@@ -463,11 +506,15 @@ void detail::SemanticTree::BuildSemantics() {
                          SemanticNodeId parent,
                          Rect visible_bounds,
                          bool has_scroll_ancestor,
-                         const VirtualItemSemanticContext* virtual_item) -> NodeIds {
+                         const VirtualItemSemanticContext* virtual_item,
+                         bool controls_only = false,
+                         bool omit_owner = false,
+                         bool inherited_enabled = true) -> NodeIds {
     if (!mounted.participates_in_layout || layer_is_exiting(mounted)) {
       return {};
     }
     detail::SemanticPatch resolved = mounted.component_semantics;
+    const bool node_enabled = mounted.interaction.enabled && inherited_enabled;
     // Virtual collection facts enrich the real item root; an existing component role remains authoritative.
     if (mounted.virtual_state && mounted.virtual_state->collection_semantics.has_value()) {
       const detail::VirtualCollectionSemantics& collection = *mounted.virtual_state->collection_semantics;
@@ -493,6 +540,9 @@ void detail::SemanticTree::BuildSemantics() {
     bool owner_extension_declared = false;
     bool has_virtual_children = false;
     std::uint64_t owner_extension_actions = 0;
+    bool has_active_child_declaration = false;
+    bool has_active_child = false;
+    std::unordered_map<std::size_t, detail::VirtualSemanticKey> adopted_children;
     for (std::size_t index = 0; index < mounted.extensions.size(); ++index) {
       detail::NodeExtensionEntry& entry = mounted.extensions[index];
       if (!entry.extension) {
@@ -507,6 +557,19 @@ void detail::SemanticTree::BuildSemantics() {
       };
       SemanticBuilder builder(contribution.state);
       entry.extension->BuildSemantics(builder);
+      if (contribution.state.active_child != 0) {
+        if (has_active_child_declaration) {
+          throw std::logic_error("HuxerUI semantic owner may only have one active virtual child");
+        }
+        has_active_child_declaration = true;
+        has_active_child = ActiveChildIsAvailable(contribution.state);
+      }
+      for (const auto& [child_index, local_id] : contribution.state.adopted_children) {
+        if (child_index >= mounted.children.size() ||
+            !adopted_children.emplace(child_index, detail::VirtualSemanticKey{index, local_id}).second) {
+          throw std::logic_error("HuxerUI semantic adoption requires a unique existing mounted child");
+        }
+      }
       if (std::shared_ptr<TextInputClient> client = entry.extension->GetTextInputClient()) {
         text_input_configuration = client->Configuration();
         text_input_state = client->State();
@@ -539,17 +602,17 @@ void detail::SemanticTree::BuildSemantics() {
     }
 
     std::uint64_t actions = owner_extension_actions;
-    if (mounted.interaction.enabled &&
+    if (node_enabled &&
         (mounted.activation || detail::HasEventBinding<ViewEvents::Click>(mounted.event_bindings))) {
       actions |= SemanticActionMask(SemanticActionKind::Activate);
     }
-    if (mounted.interaction.enabled && mounted.focusable) {
+    if (node_enabled && mounted.focusable) {
       actions |= SemanticActionMask(SemanticActionKind::Focus);
     }
-    if (mounted.interaction.enabled && publishes_scroll && actual_scroll->maximum_offset > 0.0F) {
+    if (node_enabled && publishes_scroll && actual_scroll->maximum_offset > 0.0F) {
       actions |= SemanticActionMask(SemanticActionKind::Scroll);
     }
-    if (!mounted.interaction.enabled) {
+    if (!node_enabled) {
       actions = 0;
     }
     if (text_input_configuration.has_value()) {
@@ -562,13 +625,17 @@ void detail::SemanticTree::BuildSemantics() {
     }
 
     const bool is_platform_view = mounted.kind == detail::NodeKind::PlatformView;
-    const bool emit_owner = HasMeaning(
+    const bool has_control = owner_extension_actions != 0 || mounted.focusable || mounted.activation ||
+                             detail::HasEventBinding<ViewEvents::Click>(mounted.event_bindings) ||
+                             text_input_configuration.has_value() || is_platform_view ||
+                             resolved.range.has_value() || has_virtual_children;
+    const bool emit_owner = !omit_owner && (!controls_only || has_control) && HasMeaning(
         resolved,
         actions,
         has_virtual_children,
         owner_extension_declared || mounted.author_semantics.has_value() || is_platform_view
     );
-    if (mounted.interaction.enabled && has_scroll_ancestor && emit_owner) {
+    if (node_enabled && has_scroll_ancestor && emit_owner) {
       actions |= SemanticActionMask(SemanticActionKind::ShowOnScreen);
     }
     const SemanticNodeId owner_id = [&] {
@@ -588,8 +655,8 @@ void detail::SemanticTree::BuildSemantics() {
           owner_id,
           parent,
           resolved,
-          mounted.interaction.enabled,
-          mounted.interaction.focused,
+          node_enabled,
+          node_enabled && mounted.interaction.focused && !has_active_child,
           owner_bounds,
           !owner_bounds.Intersects(visible_bounds)
       );
@@ -622,6 +689,9 @@ void detail::SemanticTree::BuildSemantics() {
         throw std::logic_error("HuxerUI virtual semantic placements must match realized children");
       }
       for (std::size_t index = 0; index < mounted.children.size(); ++index) {
+        if (adopted_children.contains(index)) {
+          continue;
+        }
         const std::unique_ptr<detail::MountedNode>& child = mounted.children[index];
         std::optional<VirtualItemSemanticContext> item_context;
         if (mounted.virtual_state && mounted.virtual_state->collection_semantics.has_value()) {
@@ -636,24 +706,20 @@ void detail::SemanticTree::BuildSemantics() {
             };
           }
         }
-        std::vector<SemanticNodeId> child_ids = self(
-            self,
-            *child,
-            child_parent,
-            descendant_visible_bounds,
-            descendants_have_scroll,
-            item_context ? &*item_context : nullptr
-        );
+        std::vector<SemanticNodeId> child_ids =
+            self(self, *child, child_parent, descendant_visible_bounds, descendants_have_scroll,
+                 item_context ? &*item_context : nullptr, controls_only && !emit_owner, false, node_enabled);
         children.insert(children.end(), child_ids.begin(), child_ids.end());
       }
     }
 
+    std::unordered_map<detail::VirtualSemanticKey, std::size_t, detail::VirtualSemanticKeyHash> virtual_indices;
     for (const ExtensionContribution& contribution : contributions) {
       const detail::NodeExtensionEntry& entry = mounted.extensions[contribution.index];
       const detail::NodeExtensionHandle handle{mounted.identity, contribution.index, entry.descriptor};
       for (const detail::SemanticBuilderItem& item : contribution.state.items) {
         if (item.local_id == 0) {
-          if (!emit_owner || !mounted.interaction.enabled) {
+          if (!emit_owner || !node_enabled) {
             continue;
           }
           BindExtensionActions(routes[owner_id], item.actions, {handle, 0});
@@ -669,19 +735,31 @@ void detail::SemanticTree::BuildSemantics() {
         }
 
         const detail::VirtualSemanticKey key{contribution.index, item.local_id};
+        std::optional<std::size_t> parent_index;
+        if (item.parent_local_id != 0) {
+          const auto found = virtual_indices.find({contribution.index, item.parent_local_id});
+          if (found == virtual_indices.end()) {
+            continue;
+          }
+          parent_index = found->second;
+        }
+        if (item.semantics.hidden.value_or(false)) {
+          continue;
+        }
         SemanticNodeId& id = mounted.virtual_semantic_identities[key];
         if (id == 0) {
           id = next_semantic_identity_++;
         }
         const Rect local_bounds = item.local_bounds.value_or(mounted.bounds);
         const Rect child_bounds = mounted.LocalToWindowBounds(local_bounds);
-        const bool enabled = mounted.interaction.enabled && item.enabled;
+        const bool enabled = node_enabled && item.enabled &&
+                             (!parent_index || next.nodes[*parent_index].enabled);
         SemanticNode child = MakeSemanticNode(
             id,
-            child_parent,
+            parent_index ? next.nodes[*parent_index].id : child_parent,
             item.semantics,
             enabled,
-            false,
+            enabled && mounted.interaction.focused && contribution.state.active_child == item.local_id,
             child_bounds,
             !child_bounds.Intersects(descendant_visible_bounds)
         );
@@ -695,10 +773,37 @@ void detail::SemanticTree::BuildSemantics() {
             route.custom_actions.insert_or_assign(custom.first, detail::SemanticExtensionRoute{handle, item.local_id});
           }
         }
+        virtual_indices.emplace(key, next.nodes.size());
         next.nodes.push_back(std::move(child));
-        children.push_back(id);
+        if (parent_index) {
+          next.nodes[*parent_index].children.push_back(id);
+        } else {
+          children.push_back(id);
+        }
       }
     }
+
+    for (std::size_t index = 0; index < mounted.children.size(); ++index) {
+      if (resolved.descendants == SemanticDescendantPolicy::Exclude) {
+        break;
+      }
+      const auto adopted = adopted_children.find(index);
+      if (adopted == adopted_children.end()) {
+        continue;
+      }
+      const auto target = virtual_indices.find(adopted->second);
+      if (target == virtual_indices.end()) {
+        continue;
+      }
+      const std::size_t target_index = target->second;
+      NodeIds content = self(self, *mounted.children[index], next.nodes[target_index].id, descendant_visible_bounds,
+                             descendants_have_scroll, nullptr, true, true, next.nodes[target_index].enabled);
+      auto& target_children = next.nodes[target_index].children;
+      target_children.insert(target_children.begin(), content.begin(), content.end());
+    }
+    std::erase_if(mounted.virtual_semantic_identities, [&](const auto& entry) {
+      return !virtual_indices.contains(entry.first);
+    });
 
     if (emit_owner) {
       next.nodes[owner_index].children = std::move(children);
@@ -788,6 +893,11 @@ void detail::SemanticTree::BuildSemantics() {
   if (changed) {
     next.revision = ++semantic_revision_;
     frame_ = std::make_shared<const SemanticFrame>(std::move(next));
+    node_indices_.clear();
+    node_indices_.reserve(frame_->nodes.size());
+    for (std::size_t index = 0; index < frame_->nodes.size(); ++index) {
+      node_indices_.emplace(frame_->nodes[index].id, index);
+    }
   }
   semantic_action_routes_ = std::move(routes);
 }
@@ -796,8 +906,12 @@ bool detail::SemanticTree::PerformSemanticAction(SemanticNodeId node_id, const S
   if (!HasValidPayload(action) || !frame_) {
     return false;
   }
-  const auto node = std::ranges::find(frame_->nodes, node_id, &SemanticNode::id);
-  if (node == frame_->nodes.end() || !node->enabled ||
+  const auto found_node = node_indices_.find(node_id);
+  if (found_node == node_indices_.end()) {
+    return false;
+  }
+  const SemanticNode* node = &frame_->nodes[found_node->second];
+  if (!node->enabled ||
       (node->actions & SemanticActionMask(action.kind)) == 0) {
     return false;
   }
@@ -843,6 +957,9 @@ bool detail::SemanticTree::PerformSemanticAction(SemanticNodeId node_id, const S
                              : extension->OnSemanticAction(extension_route->local_id, action);
     if (!handled) {
       return false;
+    }
+    if (action.kind == SemanticActionKind::Focus && owner->focusable) {
+      runtime_state_.owner_.SetFocusedNode(owner->identity, true);
     }
     runtime_state_.owner_.RequestFrame();
     return true;

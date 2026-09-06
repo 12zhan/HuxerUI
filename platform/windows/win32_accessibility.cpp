@@ -34,14 +34,26 @@ bool HasAction(const SemanticNode& node, SemanticActionKind action) noexcept {
   return (node.actions & SemanticActionMask(action)) != 0;
 }
 
-const SemanticNode* FindNode(const SemanticFrame& frame, SemanticNodeId id) noexcept {
-  const auto found = std::ranges::find(frame.nodes, id, &SemanticNode::id);
-  return found == frame.nodes.end() ? nullptr : &*found;
+using SemanticIndex = std::unordered_map<SemanticNodeId, const SemanticNode*>;
+
+SemanticIndex IndexNodes(const SemanticFrame& frame) {
+  SemanticIndex result;
+  result.reserve(frame.nodes.size());
+  for (const auto& node : frame.nodes) {
+    result.emplace(node.id, &node);
+  }
+  return result;
+}
+
+const SemanticNode* FindNode(const SemanticIndex& index, SemanticNodeId id) noexcept {
+  const auto found = index.find(id);
+  return found == index.end() ? nullptr : found->second;
 }
 
 struct SemanticNodeSnapshot {
-  // The owning frame keeps the node pointer valid while UI Automation answers an off-thread query.
+  // The owning frame keeps node pointers valid, and the paired index keeps off-thread lookups on that frame.
   std::shared_ptr<const SemanticFrame> frame;
+  std::shared_ptr<const SemanticIndex> index;
   const SemanticNode* node = nullptr;
 
   explicit operator bool() const noexcept {
@@ -100,6 +112,10 @@ CONTROLTYPEID ControlType(SemanticRole role) noexcept {
     return UIA_DataGridControlTypeId;
   case SemanticRole::GridCell:
     return UIA_DataItemControlTypeId;
+  case SemanticRole::Tree:
+    return UIA_TreeControlTypeId;
+  case SemanticRole::TreeItem:
+    return UIA_TreeItemControlTypeId;
   case SemanticRole::Generic:
   case SemanticRole::Navigation:
   case SemanticRole::ScrollView:
@@ -109,12 +125,14 @@ CONTROLTYPEID ControlType(SemanticRole role) noexcept {
 }
 
 bool IsSelectionContainer(SemanticRole role) noexcept {
-  return role == SemanticRole::TabList || role == SemanticRole::Navigation || role == SemanticRole::List;
+  return role == SemanticRole::TabList || role == SemanticRole::Navigation || role == SemanticRole::List ||
+         role == SemanticRole::Tree;
 }
 
 bool SupportsInvoke(const SemanticNode& node) noexcept {
-  return HasAction(node, SemanticActionKind::Activate) && !node.checked.has_value() && !node.selected.has_value() &&
-         !node.expanded.has_value();
+  return HasAction(node, SemanticActionKind::Activate) &&
+         (node.role == SemanticRole::TreeItem ||
+          (!node.checked.has_value() && !node.selected.has_value() && !node.expanded.has_value()));
 }
 
 bool SupportsToggle(const SemanticNode& node) noexcept {
@@ -130,11 +148,26 @@ bool SupportsScroll(const SemanticNode& node) noexcept {
   return node.scroll.has_value() && HasAction(node, SemanticActionKind::Scroll);
 }
 
-bool SupportsSelection(const SemanticFrame& frame, const SemanticNode& node) noexcept {
-  return IsSelectionContainer(node.role) && std::ranges::any_of(node.children, [&frame](SemanticNodeId child) {
-           const SemanticNode* item = FindNode(frame, child);
-           return item != nullptr && item->selected.has_value();
-         });
+std::vector<const SemanticNode*> SelectionItems(const SemanticIndex& index, const SemanticNode& node) {
+  std::vector<const SemanticNode*> result;
+  std::vector<SemanticNodeId> pending = node.children;
+  for (std::size_t offset = 0; offset < pending.size(); ++offset) {
+    const SemanticNode* item = FindNode(index, pending[offset]);
+    if (item == nullptr || (node.role == SemanticRole::Tree && item->role != SemanticRole::TreeItem)) {
+      continue;
+    }
+    if (item->selected.has_value()) {
+      result.push_back(item);
+    }
+    if (node.role == SemanticRole::Tree && item->role == SemanticRole::TreeItem) {
+      pending.insert(pending.end(), item->children.begin(), item->children.end());
+    }
+  }
+  return result;
+}
+
+bool SupportsSelection(const SemanticIndex& index, const SemanticNode& node) {
+  return IsSelectionContainer(node.role) && !SelectionItems(index, node).empty();
 }
 
 constexpr std::uint16_t kFragmentRootInterface = 1U << 0U;
@@ -152,14 +185,14 @@ bool HasInterface(std::uint16_t interfaces, std::uint16_t interface_bit) noexcep
   return (interfaces & interface_bit) != 0;
 }
 
-std::uint16_t ProviderInterfaces(const SemanticFrame& frame, const SemanticNode& node) noexcept {
+std::uint16_t ProviderInterfaces(const SemanticFrame& frame, const SemanticIndex& index, const SemanticNode& node) {
   std::uint16_t interfaces = node.id == frame.root ? kFragmentRootInterface : 0;
   interfaces |= SupportsInvoke(node) ? kInvokeInterface : 0;
   interfaces |= SupportsToggle(node) ? kToggleInterface : 0;
   interfaces |= SupportsValue(node) ? kValueInterface : 0;
   interfaces |= node.range.has_value() ? kRangeValueInterface : 0;
   interfaces |= node.selected.has_value() ? kSelectionItemInterface : 0;
-  interfaces |= SupportsSelection(frame, node) ? kSelectionInterface : 0;
+  interfaces |= SupportsSelection(index, node) ? kSelectionInterface : 0;
   interfaces |= node.expanded.has_value() ? kExpandCollapseInterface : 0;
   interfaces |= HasAction(node, SemanticActionKind::ShowOnScreen) ? kScrollItemInterface : 0;
   interfaces |= SupportsScroll(node) ? kScrollInterface : 0;
@@ -229,27 +262,33 @@ HRESULT SetDoubleVariant(VARIANT* value, double number) noexcept {
   return S_OK;
 }
 
-bool StructureChanged(const SemanticFrame* previous, const SemanticFrame* current) noexcept {
+bool StructureChanged(const SemanticFrame* previous, const SemanticFrame* current) {
   if (previous == nullptr || current == nullptr) {
     return previous != current;
   }
   if (previous->root != current->root || previous->nodes.size() != current->nodes.size()) {
     return true;
   }
-  return std::ranges::any_of(current->nodes, [previous, current](const SemanticNode& node) {
-    const SemanticNode* old = FindNode(*previous, node.id);
-    return old == nullptr || old->parent != node.parent || old->children != node.children || old->role != node.role ||
-           ProviderInterfaces(*previous, *old) != ProviderInterfaces(*current, node);
-  });
+  const auto previous_index = IndexNodes(*previous);
+  const auto current_index = IndexNodes(*current);
+  return std::ranges::any_of(current->nodes,
+                             [previous, current, &previous_index, &current_index](const SemanticNode& node) {
+                               const SemanticNode* old = FindNode(previous_index, node.id);
+                               return old == nullptr || old->parent != node.parent || old->children != node.children ||
+                                      old->role != node.role ||
+                                      ProviderInterfaces(*previous, previous_index, *old) !=
+                                          ProviderInterfaces(*current, current_index, node);
+                             });
 }
 
-bool LayoutChanged(const SemanticFrame* previous, const SemanticFrame* current) noexcept {
+bool LayoutChanged(const SemanticFrame* previous, const SemanticFrame* current) {
   if (previous == nullptr || current == nullptr || previous->root != current->root ||
       previous->nodes.size() != current->nodes.size()) {
     return false;
   }
-  return std::ranges::any_of(current->nodes, [previous](const SemanticNode& node) {
-    const SemanticNode* old = FindNode(*previous, node.id);
+  const auto previous_index = IndexNodes(*previous);
+  return std::ranges::any_of(current->nodes, [&previous_index](const SemanticNode& node) {
+    const SemanticNode* old = FindNode(previous_index, node.id);
     return old != nullptr && old->bounds != node.bounds;
   });
 }
@@ -394,12 +433,11 @@ struct Win32Accessibility::State final : public std::enable_shared_from_this<Win
   }
 
   SemanticNodeSnapshot Node(SemanticNodeId id) const {
-    const std::shared_ptr<const SemanticFrame> current = Frame();
-    if (!current) {
+    std::scoped_lock lock(mutex);
+    if (!frame || !node_index) {
       return {};
     }
-    const SemanticNode* node = FindNode(*current, id);
-    return {current, node};
+    return {frame, node_index, FindNode(*node_index, id)};
   }
 
   std::shared_ptr<const SemanticFrame> Frame() const {
@@ -482,11 +520,14 @@ struct Win32Accessibility::State final : public std::enable_shared_from_this<Win
     Win32SemanticProvider* replaced = nullptr;
     {
       std::scoped_lock lock(mutex);
-      const SemanticNode* node = frame ? FindNode(*frame, id) : nullptr;
+      if (!frame || !node_index) {
+        return UIA_E_ELEMENTNOTAVAILABLE;
+      }
+      const SemanticNode* node = FindNode(*node_index, id);
       if (node == nullptr) {
         return UIA_E_ELEMENTNOTAVAILABLE;
       }
-      const std::uint16_t interfaces = ProviderInterfaces(*frame, *node);
+      const std::uint16_t interfaces = ProviderInterfaces(*frame, *node_index, *node);
       Win32SemanticProvider*& provider = providers[id];
       if (provider == nullptr || provider->Interfaces() != interfaces) {
         Win32SemanticProvider* replacement = new (std::nothrow) Win32SemanticProvider(weak_from_this(), id, interfaces);
@@ -586,6 +627,7 @@ struct Win32Accessibility::State final : public std::enable_shared_from_this<Win
   // HWND values are copied with the SemanticFrame so off-thread UI Automation queries never reach their owner.
   std::unordered_map<std::uint64_t, HWND> platform_view_handles;
   std::shared_ptr<const SemanticFrame> frame;
+  std::shared_ptr<const SemanticIndex> node_index;
   // The cache owns one COM reference; clients may retain additional references after a node is removed.
   std::unordered_map<SemanticNodeId, Win32SemanticProvider*> providers;
 };
@@ -597,7 +639,7 @@ std::shared_ptr<Win32Accessibility::State> Win32SemanticProvider::LockState() co
 SemanticNodeSnapshot Win32SemanticProvider::Node() const {
   const std::shared_ptr<Win32Accessibility::State> state = LockState();
   SemanticNodeSnapshot node = state ? state->Node(id_) : SemanticNodeSnapshot{};
-  if (node && ProviderInterfaces(*node.frame, *node) != interfaces_) {
+  if (node && ProviderInterfaces(*node.frame, *node.index, *node) != interfaces_) {
     return {};
   }
   return node;
@@ -777,7 +819,17 @@ HRESULT STDMETHODCALLTYPE Win32SemanticProvider::GetPropertyValue(PROPERTYID pro
     }
     return S_OK;
   case UIA_SizeOfSetPropertyId: {
-    const SemanticNode* parent = node->parent ? FindNode(*node.frame, *node->parent) : nullptr;
+    const SemanticNode* parent = node->parent ? FindNode(*node.index, *node->parent) : nullptr;
+    if (parent && node->role == SemanticRole::TreeItem) {
+      const std::size_t count = std::ranges::count_if(parent->children, [&node](SemanticNodeId child_id) {
+        const SemanticNode* child = FindNode(*node.index, child_id);
+        return child != nullptr && child->role == SemanticRole::TreeItem;
+      });
+      if (count <= static_cast<std::size_t>(std::numeric_limits<LONG>::max())) {
+        return SetIntVariant(value, static_cast<LONG>(count));
+      }
+      return S_OK;
+    }
     if (parent && parent->collection && parent->collection->item_count &&
         *parent->collection->item_count <= static_cast<std::size_t>(std::numeric_limits<LONG>::max())) {
       return SetIntVariant(value, static_cast<LONG>(*parent->collection->item_count));
@@ -832,7 +884,6 @@ Win32SemanticProvider::Navigate(NavigateDirection direction, IRawElementProvider
   if (!state) {
     return UIA_E_ELEMENTNOTAVAILABLE;
   }
-  const std::shared_ptr<const SemanticFrame>& frame = node.frame;
   std::optional<SemanticNodeId> destination;
   if (direction == NavigateDirection_Parent) {
     destination = node->parent;
@@ -843,7 +894,7 @@ Win32SemanticProvider::Navigate(NavigateDirection direction, IRawElementProvider
   } else if (
       (direction == NavigateDirection_NextSibling || direction == NavigateDirection_PreviousSibling) && node->parent
   ) {
-    const SemanticNode* parent = FindNode(*frame, *node->parent);
+    const SemanticNode* parent = FindNode(*node.index, *node->parent);
     if (parent != nullptr) {
       const auto found = std::ranges::find(parent->children, id_);
       if (found != parent->children.end()) {
@@ -1023,24 +1074,32 @@ Win32SemanticProvider::ElementProviderFromPoint(double x, double y, IRawElementP
     ScreenToClient(window, &point);
   }
   const Point local{static_cast<float>(point.x) / scale, static_cast<float>(point.y) / scale};
+  if (root->offscreen || !root->bounds.Contains(local)) {
+    return S_OK;
+  }
+  const auto index = IndexNodes(*frame);
   std::optional<SemanticNodeId> found;
   const auto hit_test = [&](const auto& self, SemanticNodeId candidate) -> bool {
-    const SemanticNode* node = FindNode(*frame, candidate);
-    if (node == nullptr || node->offscreen || !node->bounds.Contains(local)) {
+    const SemanticNode* node = FindNode(index, candidate);
+    if (node == nullptr || (node->scroll && (node->offscreen || !node->bounds.Contains(local)))) {
       return false;
     }
-    found = candidate;
+    // Logical semantic parents need not geometrically contain their descendants.
     for (auto child = node->children.rbegin(); child != node->children.rend(); ++child) {
       if (self(self, *child)) {
-        break;
+        return true;
       }
     }
-    return true;
+    if (!node->offscreen && node->bounds.Contains(local)) {
+      found = candidate;
+      return true;
+    }
+    return false;
   };
   if (!hit_test(hit_test, frame->root)) {
     return S_OK;
   }
-  const SemanticNode* found_node = FindNode(*frame, *found);
+  const SemanticNode* found_node = FindNode(index, *found);
   if (found_node != nullptr && found_node->platform_view_identity.has_value()) {
     const HRESULT result = state->PlatformViewElementFromPoint(*found_node->platform_view_identity, x, y, provider);
     if (SUCCEEDED(result)) {
@@ -1235,6 +1294,9 @@ HRESULT STDMETHODCALLTYPE Win32SemanticProvider::get_SmallChange(double* value) 
 
 HRESULT STDMETHODCALLTYPE Win32SemanticProvider::Select() {
   const SemanticNodeSnapshot node = Node();
+  if (node && HasAction(*node, SemanticActionKind::SetSelected)) {
+    return Perform({SemanticActionKind::SetSelected, true});
+  }
   if (!node || !node->selected.has_value() || !HasAction(*node, SemanticActionKind::Activate)) {
     return node ? UIA_E_NOTSUPPORTED : UIA_E_ELEMENTNOTAVAILABLE;
   }
@@ -1246,6 +1308,22 @@ HRESULT STDMETHODCALLTYPE Win32SemanticProvider::Select() {
 
 HRESULT STDMETHODCALLTYPE Win32SemanticProvider::AddToSelection() {
   const SemanticNodeSnapshot node = Node();
+  if (node && HasAction(*node, SemanticActionKind::SetSelected)) {
+    const SemanticIndex& index = *node.index;
+    const SemanticNode* container = node->parent ? FindNode(index, *node->parent) : nullptr;
+    while (container != nullptr && !IsSelectionContainer(container->role)) {
+      container = container->parent ? FindNode(index, *container->parent) : nullptr;
+    }
+    if (container == nullptr) {
+      return UIA_E_INVALIDOPERATION;
+    }
+    for (const SemanticNode* item : SelectionItems(index, *container)) {
+      if (item->id != node->id && item->selected.value_or(false)) {
+        return UIA_E_INVALIDOPERATION;
+      }
+    }
+    return Perform({SemanticActionKind::SetSelected, true});
+  }
   if (!node || !node->selected.has_value() || !HasAction(*node, SemanticActionKind::Activate)) {
     return node ? UIA_E_NOTSUPPORTED : UIA_E_ELEMENTNOTAVAILABLE;
   }
@@ -1253,18 +1331,22 @@ HRESULT STDMETHODCALLTYPE Win32SemanticProvider::AddToSelection() {
     return S_OK;
   }
   const std::optional<SemanticNodeId> parent = node->parent;
-  const SemanticNode* container = parent ? FindNode(*node.frame, *parent) : nullptr;
-  if (container == nullptr || !SupportsSelection(*node.frame, *container)) {
+  const SemanticNode* container = parent ? FindNode(*node.index, *parent) : nullptr;
+  if (container == nullptr || !SupportsSelection(*node.index, *container)) {
     return UIA_E_INVALIDOPERATION;
   }
   const bool has_selection = std::ranges::any_of(container->children, [&node](SemanticNodeId child) {
-    const SemanticNode* item = FindNode(*node.frame, child);
+    const SemanticNode* item = FindNode(*node.index, child);
     return item != nullptr && item->selected.value_or(false);
   });
   return has_selection ? UIA_E_INVALIDOPERATION : Perform({SemanticActionKind::Activate, std::monostate{}});
 }
 
 HRESULT STDMETHODCALLTYPE Win32SemanticProvider::RemoveFromSelection() {
+  const SemanticNodeSnapshot node = Node();
+  if (node && HasAction(*node, SemanticActionKind::SetSelected)) {
+    return Perform({SemanticActionKind::SetSelected, false});
+  }
   return UIA_E_INVALIDOPERATION;
 }
 
@@ -1293,18 +1375,13 @@ HRESULT STDMETHODCALLTYPE Win32SemanticProvider::get_SelectionContainer(IRawElem
   if (!state) {
     return UIA_E_ELEMENTNOTAVAILABLE;
   }
-  const std::shared_ptr<const SemanticFrame>& frame = node.frame;
   std::optional<SemanticNodeId> parent = node->parent;
   while (parent) {
-    const SemanticNode* candidate = FindNode(*frame, *parent);
+    const SemanticNode* candidate = FindNode(*node.index, *parent);
     if (candidate == nullptr) {
       break;
     }
-    if (IsSelectionContainer(candidate->role) &&
-        std::ranges::any_of(candidate->children, [frame](SemanticNodeId child) {
-          const SemanticNode* item = FindNode(*frame, child);
-          return item != nullptr && item->selected.has_value();
-        })) {
+    if (SupportsSelection(*node.index, *candidate)) {
       return state->Provider(candidate->id, provider);
     }
     parent = candidate->parent;
@@ -1325,18 +1402,16 @@ HRESULT STDMETHODCALLTYPE Win32SemanticProvider::GetSelection(SAFEARRAY** select
   if (!state) {
     return UIA_E_ELEMENTNOTAVAILABLE;
   }
-  const std::shared_ptr<const SemanticFrame>& frame = node.frame;
-  if (!SupportsSelection(*frame, *node)) {
+  if (!SupportsSelection(*node.index, *node)) {
     return UIA_E_NOTSUPPORTED;
   }
   std::vector<IUnknown*> selected;
-  for (SemanticNodeId child : node->children) {
-    const SemanticNode* item = FindNode(*frame, child);
-    if (item == nullptr || !item->selected.value_or(false)) {
+  for (const SemanticNode* item : SelectionItems(*node.index, *node)) {
+    if (!item->selected.value_or(false)) {
       continue;
     }
     IRawElementProviderSimple* provider = nullptr;
-    if (SUCCEEDED(state->Provider(child, &provider))) {
+    if (SUCCEEDED(state->Provider(item->id, &provider))) {
       selected.push_back(provider);
     }
   }
@@ -1378,7 +1453,7 @@ HRESULT STDMETHODCALLTYPE Win32SemanticProvider::get_CanSelectMultiple(BOOL* mul
   if (!node) {
     return UIA_E_ELEMENTNOTAVAILABLE;
   }
-  if (!SupportsSelection(*node.frame, *node)) {
+  if (!SupportsSelection(*node.index, *node)) {
     return UIA_E_NOTSUPPORTED;
   }
   *multiple = FALSE;
@@ -1393,10 +1468,10 @@ HRESULT STDMETHODCALLTYPE Win32SemanticProvider::get_IsSelectionRequired(BOOL* r
   if (!node) {
     return UIA_E_ELEMENTNOTAVAILABLE;
   }
-  if (!SupportsSelection(*node.frame, *node)) {
+  if (!SupportsSelection(*node.index, *node)) {
     return UIA_E_NOTSUPPORTED;
   }
-  *required = TRUE;
+  *required = node->role == SemanticRole::Tree ? FALSE : TRUE;
   return S_OK;
 }
 
@@ -1577,6 +1652,7 @@ void Win32Accessibility::SetDpiScale(float scale) noexcept {
 
 void Win32Accessibility::Commit(std::shared_ptr<const SemanticFrame> frame, const Win32PlatformViews* platform_views) {
   std::unordered_map<std::uint64_t, HWND> platform_view_handles;
+  std::shared_ptr<const SemanticIndex> node_index;
   if (frame && platform_views != nullptr) {
     for (const SemanticNode& node : frame->nodes) {
       if (!node.platform_view_identity.has_value()) {
@@ -1586,6 +1662,9 @@ void Win32Accessibility::Commit(std::shared_ptr<const SemanticFrame> frame, cons
         platform_view_handles.emplace(*node.platform_view_identity, view);
       }
     }
+  }
+  if (frame) {
+    node_index = std::make_shared<SemanticIndex>(IndexNodes(*frame));
   }
 
   std::shared_ptr<const SemanticFrame> previous;
@@ -1597,6 +1676,7 @@ void Win32Accessibility::Commit(std::shared_ptr<const SemanticFrame> frame, cons
     }
     previous = state_->frame;
     state_->frame = frame;
+    state_->node_index = std::move(node_index);
     state_->platform_view_handles = std::move(platform_view_handles);
     window = state_->window;
   }
@@ -1619,8 +1699,9 @@ void Win32Accessibility::Commit(std::shared_ptr<const SemanticFrame> frame, cons
   if (!previous) {
     return;
   }
+  const auto previous_index = IndexNodes(*previous);
   for (const SemanticNode& node : frame->nodes) {
-    const SemanticNode* old = FindNode(*previous, node.id);
+    const SemanticNode* old = FindNode(previous_index, node.id);
     if (old == nullptr) {
       continue;
     }
@@ -1750,6 +1831,7 @@ void Win32Accessibility::Reset() noexcept {
     state_->runtime = nullptr;
     state_->window = nullptr;
     state_->frame.reset();
+    state_->node_index.reset();
     state_->platform_view_handles.clear();
   }
   if (window != nullptr) {
