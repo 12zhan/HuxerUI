@@ -7,7 +7,7 @@
 <p align="center">One shared runtime for Windows, macOS, Linux, Web, Android, and iOS.</p>
 
 HuxerUI provides C++20 components, typed state, responsive layout, input, text editing, navigation, animation, accessibility semantics, resources, files, HTTP, and first-class platform integration.
-Application code stays platform-neutral while each backend uses its platform windowing, text, input, accessibility, and rendering services.
+Application code stays platform-neutral while each backend uses the windowing, text, input, accessibility, and rendering services it supports.
 
 ## Install the SDK
 
@@ -105,6 +105,14 @@ See [Platform Support](docs/guide/platforms.md) for host requirements and platfo
 - [Examples](examples/)
 
 Repository contributors should start with [Building HuxerUI](docs/development/building.md).
+
+## Community
+
+Join the HuxerUI community on Discord or QQ.
+
+| Discord | QQ group `1090609035` |
+|:---:|:---:|
+| <img src="docs/assets/community-discord.png" width="280" alt="Discord invitation QR code"> | <img src="docs/assets/community-qq.jpg" width="280" alt="QQ group invitation QR code"> |
 
 ## License
 

@@ -9,8 +9,8 @@ Each backend uses platform lifecycle, input, text, accessibility, file, network,
 |---|---|---:|---:|---:|---:|---:|---:|
 | Windows | Direct2D and DirectWrite | Yes | UI Automation | Yes | Yes | AppCapability | Yes |
 | macOS | Core Graphics and Core Text | Yes | AppKit accessibility | Yes | Yes | Camera and microphone | Yes |
-| Linux | GSK, Cairo, and Pango | Yes | Not implemented | No | Yes | Unavailable | StatusNotifierItem host |
-| Web | Canvas 2D and browser text metrics | Yes | Not implemented | Yes | Yes | Query only | No |
+| Linux | GSK, Cairo, and Pango | Yes | Not supported | No | Yes | Unavailable | StatusNotifierItem host |
+| Web | Canvas 2D and browser text metrics | Yes | Not supported | Yes | Yes | Query only | No |
 | Android | Android Canvas and StaticLayout | Yes | AccessibilityNodeInfo | Yes | Yes | Camera and microphone | No |
 | iOS | Core Graphics and Core Text | Yes | UIKit accessibility | Yes | Yes | Camera and microphone | No |
 
@@ -87,7 +87,7 @@ Official Linux SDK binaries require glibc 2.35 or later.
 Application packages retain the distribution-owned runtime stack and may require newer system ABI versions according to their binaries; see [Packaging Applications](packaging.md#desktop-system-requirements).
 
 Linux builds are provided for x86_64 and aarch64 hosts.
-PlatformView and a platform accessibility bridge are not implemented.
+PlatformView is not implemented, and a platform accessibility bridge is not supported.
 System tray presentation requires an active StatusNotifierItem watcher and host; `IsAvailable()` tracks hosts appearing or disappearing at runtime.
 
 Native libraries include `<huxerui/linux/external_texture.h>` for `linux::PixelTexture`, `linux::GlTexture`, and `linux::GdkTexture`.
@@ -143,6 +143,7 @@ The `example_external_texture` Web build demonstrates Canvas2D and WebGL2 produc
 Typed routed navigation can bind the authoritative `NavigationPath` to browser URL and history state.
 Browser restrictions still govern clipboard, file pickers, autoplay, cross-origin requests, and storage persistence.
 Camera and microphone permission state is queried through the Permissions API when supported; requesting access remains coupled to browser media acquisition and is not emulated by the shared permission API.
+HuxerUI-rendered content does not have a semantic DOM accessibility bridge; DOM PlatformViews retain their browser-provided accessibility.
 
 ## Android
 

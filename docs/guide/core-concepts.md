@@ -207,7 +207,7 @@ See [Application Permissions](../design/permissions.md) for status meanings, nat
 ## Runtime model
 
 The shared Runtime owns composition, reconciliation, layout, interaction, scrolling, animation, semantics, and retained scene generation.
-Platform adapters own platform lifecycle, frame scheduling, event conversion, text services, accessibility bridges, and scene rendering.
+Platform adapters own platform lifecycle, frame scheduling, event conversion, text services, supported accessibility bridges, and scene rendering.
 
 ```text
 component declarations
@@ -215,7 +215,7 @@ component declarations
   -> reconciliation and MountedNode state
   -> layout, interaction, animation, and semantics
   -> immutable frame commit
-  -> platform renderer and accessibility bridge
+  -> platform renderer and, where supported, accessibility bridge
 ```
 
 See [Architecture Design](../design/architecture.md) for internal ownership and invariants.

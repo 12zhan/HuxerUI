@@ -3,14 +3,14 @@
 This document defines the implemented platform-neutral semantics foundation and records deferred component and platform coverage explicitly.
 
 Semantics is shared Runtime output.
-Components and applications declare meaning, Runtime resolves the committed semantic hierarchy, and platform adapters expose that hierarchy through platform accessibility APIs.
+Components and applications declare meaning, Runtime resolves the committed semantic hierarchy, and supported platform bridges expose that hierarchy through accessibility APIs.
 Renderers do not infer semantics from pixels or PaintCommands.
 
 ## Goals
 
 - Give built-in and custom controls one shared model for roles, names, values, states, actions, focus, collections, and geometry.
 - Preserve the existing `View`, modifier, typed event, `NodeExtension`, Runtime, and PlatformAdapter boundaries.
-- Publish immutable committed data that platform accessibility objects can retain safely after `BuildFrame()` returns.
+- Publish immutable committed data that supported platform accessibility objects can retain safely after `BuildFrame()` returns.
 - Support self-drawn composite controls without creating fake MountedNodes or platform Views.
 - Keep Runtime input focus, text-input ownership, and platform accessibility focus distinct.
 - Prevent TextField-owned secure content from entering committed semantics.
@@ -32,7 +32,7 @@ A PlatformView supplies or bridges its platform accessibility subtree and suppre
 | Components and application Views | Declare platform-neutral semantic properties |
 | NodeExtension | Contribute retained state, virtual semantic children, and semantic-only behavior |
 | Runtime-owned SemanticTree | Resolve the hierarchy, identity, hard state, geometry, secure-data policy, and actions |
-| Platform accessibility adapter | Retain `SemanticFrame`, expose platform objects, translate platform actions, and issue platform notifications |
+| Supported platform accessibility adapter | Retain `SemanticFrame`, expose platform objects, translate platform actions, and issue platform notifications |
 | Renderer | Render `RenderScene`; it does not construct semantics |
 
 The flow is:
@@ -43,7 +43,7 @@ component defaults
     + application Semantics overrides
     + Runtime focus, visibility, security, and geometry
         -> SemanticFrame
-        -> platform accessibility hierarchy
+        -> supported platform accessibility hierarchy
         -> SemanticAction
         -> Runtime
 ```
@@ -419,7 +419,7 @@ It contains no pointer to MountedNode, ViewSpec, NodeExtension, RenderNode, or a
 
 `SemanticFrame` is immutable after publication.
 It represents the same reconciliation, layout, presentation, focus, and layer state as the surrounding `FrameCommit`.
-A platform adapter retains the shared pointer for as long as platform accessibility queries may reference it.
+A platform adapter with accessibility support retains the shared pointer for as long as platform accessibility queries may reference it.
 
 ## PlatformView semantic bridge
 
@@ -428,7 +428,7 @@ An optional Runtime-owned platform-view identity marks anchor nodes in `Semantic
 The anchor carries the same stable PlatformView identity as `PlacePlatformViewCommand`, while its parent and sibling position come from ordinary semantic resolution.
 Visual `RenderComposition` order and accessibility traversal are derived from the same committed mounted tree but remain distinct outputs: paint-only decoration does not become accessible merely because it occupies a later render slice.
 
-The platform accessibility adapter resolves the anchor identity against the PlatformView instance from the same committed frame and exposes that platform object's accessibility root at the anchor position.
+On a supported backend, the platform accessibility adapter resolves the anchor identity against the PlatformView instance from the same committed frame and exposes that platform object's accessibility root at the anchor position.
 The anchor is a structural substitution point rather than an additional generic accessible object, so assistive technology encounters the platform root once.
 It suppresses semantic descendants that would duplicate the platform subtree, but HuxerUI semantic siblings before and after the anchor remain in their declared order.
 The bridge does not copy platform labels, actions, selection, or editable content into shared Runtime state.
@@ -436,14 +436,14 @@ Accessibility queries and actions inside the subtree remain owned by the platfor
 PlatformPayload events notify typed application EventBindings and do not substitute for platform accessibility queries or actions.
 Conversely, an accessibility action inside the platform subtree is not mirrored as a PlatformModule event unless the platform component independently emits that documented application event.
 
-Applying a new frame updates composition and semantic bridge references before issuing accessibility structure notifications.
+An implemented bridge updates composition and semantic bridge references before issuing accessibility structure notifications for a new frame.
 Replacement or removal first makes the anchor unavailable to new queries, then invalidates retained platform accessibility wrappers, and only then destroys the PlatformView instance.
 A stale query fails safely against the newest committed identity instead of dereferencing a removed platform object.
 
 Android exposes the PlatformView as a real accessible child alongside provider-backed HuxerUI virtual nodes and preserves the anchor's sibling position.
 UIKit and AppKit insert the platform accessibility root into their retained container-child order at the anchor.
 Windows bridges a child HWND or provider fragment root at the matching UI Automation position.
-Web uses the real PlatformView DOM subtree at the corresponding semantic DOM position and does not create a duplicate hidden element for the anchor.
+Web PlatformView elements retain their native DOM accessibility independently; the Runtime anchor is not projected into browser accessibility.
 
 Runtime increments the nonzero revision and creates a new `SemanticFrame` only when semantic content, structure, focus, or geometry changes.
 A color-only render frame reuses the previous semantic frame.
@@ -684,11 +684,10 @@ The presentation does not create a SnackBar role, trap focus, or move focus when
 
 ## Platform mapping
 
-Each adapter retains the newest `SemanticFrame`; adapters with retained platform accessibility objects cache them by SemanticNodeId.
+Adapters with platform accessibility support retain the newest `SemanticFrame` and cache retained platform objects by SemanticNodeId.
 Platform objects never retain MountedNode or NodeExtension pointers.
 
 The Windows, macOS, Android, and iOS bridges are implemented.
-The remaining platform subsections define the intended adapter boundary, not current support.
 
 ### Windows
 
@@ -722,14 +721,14 @@ AppKit calls and Runtime actions remain on the main thread.
 
 ### Linux
 
-The GTK host does not yet project the shared SemanticFrame into an AT-SPI subtree.
-GTK exposes the native top-level surface, while complete role, state, hierarchy, geometry, action, value, selection, text, collection, and event mapping remains deferred.
+The GTK host does not project the shared SemanticFrame into an AT-SPI subtree, and an AT-SPI bridge is outside the supported Linux backend scope.
+GTK exposes the native top-level surface, while HuxerUI-rendered role, state, hierarchy, geometry, action, value, selection, text, collection, and event data is not published to platform accessibility services.
 
 ### Web
 
-The Web adapter does not yet project the shared SemanticFrame into semantic DOM.
+The Web adapter does not project the shared SemanticFrame into semantic DOM, and a semantic DOM bridge is outside the supported Web backend scope.
 The Canvas and hidden text-input elements are excluded from accessibility to avoid exposing duplicate or misleading nodes.
-A future bridge must map meaningful nodes to built-in HTML semantics, use ARIA only where HTML is insufficient, and coordinate browser focus without becoming a visual renderer.
+Native DOM PlatformViews retain their browser-provided accessibility without exposing HuxerUI-rendered descendants.
 
 ### Android
 
@@ -862,7 +861,7 @@ Manual validation uses the platform screen readers and accessibility inspectors 
 Unavailable platforms and tools remain explicitly unverified.
 
 Windows UI Automation, AppKit, Android AccessibilityNodeProvider, and UIKit consume the shared contract.
-Linux and Web do not currently provide platform accessibility mappings.
+Linux and Web do not provide platform accessibility mappings, and those bridges are not planned.
 
 Shared public API and Runtime changes require common tests and every affected platform build available locally.
 Each platform adapter is validated on its platform; unavailable platforms remain unverified.

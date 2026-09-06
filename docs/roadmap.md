@@ -5,7 +5,6 @@ Current behavior is documented in the user guides, while detailed constraints li
 
 ## Accessibility
 
-- Add platform accessibility bridges for Linux and Web.
 - Expand platform text-editing and collection mappings where the shared semantic contract already provides the required data.
 - Keep accessibility behavior derived from one shared `SemanticFrame` rather than platform-specific component logic.
 

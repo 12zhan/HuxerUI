@@ -9,15 +9,15 @@ This document defines the HuxerUI Web backend contract, including application st
 - Produce an ES module and WebAssembly application that can be mounted into a browser-owned host element.
 - Preserve logical coordinates, retained PaintSequences, Runtime damage, controlled text editing, typed resources, and platform-owned services.
 - Support mouse, touch, pen, wheel, keyboard, browser IME, high-density displays, resizing, and asynchronous image decoding.
-- Leave room for future accessibility, worker rendering, and alternative renderers without exposing a second public UI surface.
+- Leave room for worker rendering and alternative renderers without exposing a second public UI surface.
 
 ## Non-goals
 
-The Web backend does not provide DOM rendering for ordinary Views, server-side rendering, hydration, CSS layout, WebGPU, pthreads, OffscreenCanvas workers, or PWA packaging.
+The Web backend does not provide DOM rendering for ordinary Views, a semantic DOM accessibility bridge, server-side rendering, hydration, CSS layout, WebGPU, pthreads, OffscreenCanvas workers, or PWA packaging.
 
 The Web backend targets a composition-root-owned application surface. Keyboard and wheel events return Runtime's explicit consumption result to the browser. Embedding HuxerUI inside a page that must conditionally return touch gestures to surrounding DOM content remains deferred until that path exposes equivalent ownership results.
 
-A semantic DOM bridge is not part of the current backend; Canvas output alone does not expose the shared semantic tree to browser accessibility.
+Canvas output does not expose the shared semantic tree to browser accessibility, and a semantic DOM bridge is not planned.
 
 ## Current implementation
 
@@ -27,7 +27,7 @@ Repository examples generate directly runnable HTML, ES module, WebAssembly, and
 The backend has been exercised with stateful pointer interaction, wheel scrolling, secure single-line input, multiline input, packaged localized resources, and asynchronous image repaint in a Chromium-based browser.
 
 The current text layout is intentionally conservative and still requires broader complex-script, bidirectional, grapheme, and browser-consistency validation.
-Exact offscreen group-opacity compositing, clipboard operations outside browser editing events, semantics and accessibility, embedded-page gesture arbitration, multi-browser automation, and real mobile-browser IME validation remain deferred.
+Exact offscreen group-opacity compositing, clipboard operations outside browser editing events, embedded-page gesture arbitration, multi-browser automation, and real mobile-browser IME validation remain deferred.
 
 ## Ownership
 
@@ -266,14 +266,11 @@ Factories must keep their visual content within the returned subtree; the adapte
 ## Accessibility and semantics
 
 Canvas pixels alone do not provide a browser accessibility tree.
-Runtime publishes the platform-neutral `SemanticFrame` defined by [Semantics and Accessibility Design](semantics.md), but the Web adapter does not currently expose that frame through semantic DOM.
+Runtime publishes the platform-neutral `SemanticFrame` defined by [Semantics and Accessibility Design](semantics.md), but the Web adapter does not expose that frame through semantic DOM.
 PlatformView elements retain their built-in DOM accessibility, while HuxerUI-rendered content has no browser accessibility bridge.
-
-Any Web bridge must derive from committed semantics rather than PaintCommands, remain visually unobtrusive, preserve browser focus coordination with hidden text input, and avoid turning semantic DOM into a second renderer.
 
 ## Future work
 
-- Project committed `SemanticFrame` data into a nonvisual semantic DOM accessibility bridge.
 - Add PWA activation and lifecycle integration without moving application navigation policy into PlatformAdapter.
 - Consider workers and OffscreenCanvas only after profiling demonstrates a material main-thread bottleneck and ownership across threads is defined.
 
@@ -303,9 +300,8 @@ Web platform work requires:
 - Resource tests for preload completion, locale, density variants, missing payloads, asynchronous image readiness, cache lifetime, and repaint.
 - Focused rendering checks in Chromium, Firefox, and WebKit, with screenshot tests used as smoke coverage rather than the sole semantic assertion.
 - Manual mobile-browser validation for real keyboards and IMEs that automation cannot reproduce faithfully.
-- Accessibility validation for the platform-neutral semantics tree and browser mapping.
 
-Unavailable browsers, operating systems, mobile IMEs, and accessibility tools are reported explicitly rather than treated as passing.
+Unavailable browsers, operating systems, and mobile IMEs are reported explicitly rather than treated as passing.
 
 ## Invariants
 
