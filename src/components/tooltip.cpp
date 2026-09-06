@@ -101,6 +101,11 @@ bool IsFiniteNonnegative(double value) noexcept {
   return std::isfinite(value) && value >= 0.0;
 }
 
+bool IsValidCornerRadii(const CornerRadii& radii) noexcept {
+  return IsFiniteNonnegative(radii.top_left) && IsFiniteNonnegative(radii.top_right) &&
+         IsFiniteNonnegative(radii.bottom_right) && IsFiniteNonnegative(radii.bottom_left);
+}
+
 bool IsValidTooltipInsets(const EdgeInsets& insets) noexcept {
   return IsFiniteNonnegative(insets.top) && IsFiniteNonnegative(insets.right) && IsFiniteNonnegative(insets.bottom) &&
          IsFiniteNonnegative(insets.left);
@@ -113,7 +118,7 @@ bool IsValidTooltipShadow(const Shadow& shadow) noexcept {
 
 void ValidateTooltipStyle(const TooltipStyle& style) {
   if (!IsValidTooltipInsets(style.padding) || !IsValidTooltipShadow(style.shadow) ||
-      !IsFiniteNonnegative(style.corner_radius) || !IsFiniteNonnegative(style.minimum_height) ||
+      !IsValidCornerRadii(style.corner_radii) || !IsFiniteNonnegative(style.minimum_height) ||
       !std::isfinite(style.maximum_width) || style.maximum_width <= 0.0F || !IsFiniteNonnegative(style.gap) ||
       !IsFiniteNonnegative(style.viewport_margin) || !IsFiniteNonnegative(style.hover_delay) ||
       !IsFiniteNonnegative(style.exit_delay) || !IsFiniteNonnegative(style.long_press_delay) ||
@@ -188,7 +193,7 @@ ViewFactory TooltipContent(std::weak_ptr<TooltipTargetState> target, std::string
             Frame{.max_width = style.maximum_width, .min_height = style.minimum_height},
             Padding{style.padding},
             Background{style.background},
-            CornerRadius{style.corner_radius},
+            CornerRadius{style.corner_radii},
             style.shadow,
             TooltipSurfaceHover{target},
             std::move(semantics)

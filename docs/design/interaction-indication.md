@@ -203,7 +203,7 @@ Component-specific disabled, selected, checked, invalid, and other controlled ap
 
 ## VisualFill
 
-`VisualFill` is the common immutable value for ordinary backgrounds and interaction layers.
+`VisualFill` is the common immutable value for ordinary backgrounds, component and presentation surface fills, and interaction layers.
 
 It supports:
 
@@ -325,6 +325,22 @@ An absent or transparent `Background` combined with `Border` produces a pure out
 A zero-width border explicitly suppresses an inherited or normal border.
 
 Borders remain color-based; supporting gradient path strokes does not implicitly widen the Border modifier or Theme contract.
+
+## Corner geometry and modifier
+
+`CornerRadii` is the platform-neutral geometry value shared by component styles, presentation styles, painting, clipping, borders, and shadows.
+It has no modifier descriptor and does not participate in View reconciliation by itself.
+
+`CornerRadius` is the View modifier that applies a `CornerRadii` value to a declaration.
+It supports a default construction, one explicit uniform `float`, one explicit `CornerRadii`, and four per-corner values:
+
+```cpp
+CornerRadius(12.0F)
+CornerRadius(16.0F, 4.0F, 16.0F, 4.0F)
+CornerRadius(CornerRadii::Top(16.0F))
+```
+
+Keeping geometry and modifier roles separate lets Theme styles carry asymmetric shape data without acquiring reconciliation behavior.
 
 ## Indication composition
 

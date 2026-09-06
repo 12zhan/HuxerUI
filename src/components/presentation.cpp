@@ -748,6 +748,12 @@ bool ValidInsets(const EdgeInsets& insets) noexcept {
          std::isfinite(insets.bottom) && insets.bottom >= 0.0F && std::isfinite(insets.left) && insets.left >= 0.0F;
 }
 
+bool ValidCornerRadii(const CornerRadii& radii) noexcept {
+  return std::isfinite(radii.top_left) && radii.top_left >= 0.0F && std::isfinite(radii.top_right) &&
+         radii.top_right >= 0.0F && std::isfinite(radii.bottom_right) && radii.bottom_right >= 0.0F &&
+         std::isfinite(radii.bottom_left) && radii.bottom_left >= 0.0F;
+}
+
 bool ValidMotion(const PresentationMotion& motion) noexcept {
   return std::isfinite(motion.initial_scale) && motion.initial_scale > 0.0F && std::isfinite(motion.slide_distance) &&
          motion.slide_distance >= 0.0F;
@@ -755,9 +761,9 @@ bool ValidMotion(const PresentationMotion& motion) noexcept {
 
 void ValidateToastStyle(const ToastStyle& style) {
   if (!ValidInsets(style.padding) || !ValidInsets(style.viewport_padding) || !ValidShadow(style.shadow) ||
-      !std::isfinite(style.corner_radius) || style.corner_radius < 0.0F || !std::isfinite(style.minimum_height) ||
-      style.minimum_height < 0.0F || !std::isfinite(style.maximum_width) ||
-      style.maximum_width <= 0.0F || (style.motion.has_value() && !ValidMotion(*style.motion))) {
+      !ValidCornerRadii(style.corner_radii) || !std::isfinite(style.minimum_height) || style.minimum_height < 0.0F ||
+      !std::isfinite(style.maximum_width) || style.maximum_width <= 0.0F ||
+      (style.motion.has_value() && !ValidMotion(*style.motion))) {
     throw std::invalid_argument(
         "HuxerUI toast geometry, shadow, and motion must be finite with positive maximum width and non-negative extents"
     );
@@ -767,10 +773,10 @@ void ValidateToastStyle(const ToastStyle& style) {
 void ValidateSnackBarStyle(const SnackBarStyle& style) {
   if (!ValidInsets(style.padding) || !ValidInsets(style.viewport_padding) || !ValidInsets(style.action_padding) ||
       !ValidShadow(style.shadow) || !std::isfinite(style.content_spacing) || style.content_spacing < 0.0F ||
-      !std::isfinite(style.corner_radius) || style.corner_radius < 0.0F || !std::isfinite(style.minimum_height) ||
-      style.minimum_height < 0.0F || !std::isfinite(style.maximum_width) || style.maximum_width <= 0.0F ||
+      !ValidCornerRadii(style.corner_radii) || !std::isfinite(style.minimum_height) || style.minimum_height < 0.0F ||
+      !std::isfinite(style.maximum_width) || style.maximum_width <= 0.0F ||
       !std::isfinite(style.action_minimum_height) || style.action_minimum_height < 0.0F ||
-      !std::isfinite(style.action_corner_radius) || style.action_corner_radius < 0.0F ||
+      !ValidCornerRadii(style.action_corner_radii) ||
       (style.motion.has_value() && !ValidMotion(*style.motion))) {
     throw std::invalid_argument(
         "HuxerUI SnackBar geometry, shadow, and motion must be finite with positive maximum width and non-negative "
@@ -783,9 +789,9 @@ void ValidateDialogStyle(const DialogStyle& style) {
   if (!ValidInsets(style.content_padding) || !ValidInsets(style.action_padding) || !ValidShadow(style.shadow) ||
       !std::isfinite(style.content_spacing) || style.content_spacing < 0.0F || !std::isfinite(style.action_spacing) ||
       style.action_spacing < 0.0F || !std::isfinite(style.action_separator_thickness) ||
-      style.action_separator_thickness < 0.0F || !std::isfinite(style.action_corner_radius) ||
-      style.action_corner_radius < 0.0F || !std::isfinite(style.minimum_action_height) ||
-      style.minimum_action_height < 0.0F || !std::isfinite(style.corner_radius) || style.corner_radius < 0.0F ||
+      style.action_separator_thickness < 0.0F || !ValidCornerRadii(style.action_corner_radii) ||
+      !std::isfinite(style.minimum_action_height) || style.minimum_action_height < 0.0F ||
+      !ValidCornerRadii(style.corner_radii) ||
       !std::isfinite(style.minimum_width) || style.minimum_width < 0.0F || !std::isfinite(style.maximum_width) ||
       style.maximum_width <= 0.0F || style.minimum_width > style.maximum_width ||
       !std::isfinite(style.viewport_margin) || style.viewport_margin < 0.0F ||
@@ -807,11 +813,8 @@ std::shared_ptr<detail::LayerTransitionState> BottomSheetTransition(const Bottom
 }
 
 void ValidateBottomSheetStyle(const BottomSheetStyle& style) {
-  const CornerRadii& radii = style.corner_radii;
-  if (!std::isfinite(radii.top_left) || radii.top_left < 0.0F || !std::isfinite(radii.top_right) ||
-      radii.top_right < 0.0F || !std::isfinite(radii.bottom_right) || radii.bottom_right < 0.0F ||
-      !std::isfinite(radii.bottom_left) || radii.bottom_left < 0.0F || !std::isfinite(style.maximum_width) ||
-      style.maximum_width <= 0.0F || !std::isfinite(style.drag_handle_size.width) ||
+  if (!ValidCornerRadii(style.corner_radii) || !std::isfinite(style.maximum_width) || style.maximum_width <= 0.0F ||
+      !std::isfinite(style.drag_handle_size.width) ||
       style.drag_handle_size.width < 0.0F || !std::isfinite(style.drag_handle_size.height) ||
       style.drag_handle_size.height < 0.0F || !ValidInsets(style.drag_handle_padding) || !ValidShadow(style.shadow)) {
     throw std::invalid_argument(
@@ -920,7 +923,7 @@ ViewFactory SnackBarContent(
           .disabled_label = style.action_text_style.foreground,
           .padding = style.action_padding,
           .minimum_height = style.action_minimum_height,
-          .corner_radius = style.action_corner_radius,
+          .corner_radii = style.action_corner_radii,
           .indication = style.action_indication,
       });
       children.push_back(Theme {std::move(action_theme), std::move(action_button)});
@@ -936,7 +939,7 @@ ViewFactory SnackBarContent(
           CrossAlign{CrossAxisAlignment::Center},
           Padding{style.padding},
           Background{style.background},
-          CornerRadius{style.corner_radius},
+          CornerRadius{style.corner_radii},
           ClipChildren{},
           style.shadow,
           SnackBarLifetime{service, pause, *id, duration, application_active}
@@ -1207,7 +1210,7 @@ LayerOptions MenuLayerOptions(MenuOptions options, bool submenu) {
 }
 
 void ValidateMenuStyle(const MenuStyle& style) {
-  if (!std::isfinite(style.corner_radius) || style.corner_radius < 0.0F || !std::isfinite(style.minimum_width) ||
+  if (!ValidCornerRadii(style.corner_radii) || !std::isfinite(style.minimum_width) ||
       style.minimum_width < 0.0F || !std::isfinite(style.minimum_item_height) || style.minimum_item_height < 0.0F ||
       !std::isfinite(style.separator_thickness) || style.separator_thickness < 0.0F ||
       !std::isfinite(style.item_content_spacing) || style.item_content_spacing < 0.0F ||
@@ -2065,7 +2068,7 @@ View MenuService::Surface(
       Padding{style.content_padding},
       CrossAlign{CrossAxisAlignment::Stretch},
       Background{style.background},
-      CornerRadius{style.corner_radius},
+      CornerRadius{style.corner_radii},
       ClipChildren{},
       style.shadow,
       detail::BuiltInSemantics{MenuContainerSemantics(item_count)}
@@ -2121,7 +2124,7 @@ View DialogService::StandardContent(
     }
 
     const TextStyle& text_style = is_positive ? style.positive_action_style : style.negative_action_style;
-    const Color background = is_positive ? style.positive_action_background : style.negative_action_background;
+    const VisualFill& background = is_positive ? style.positive_action_background : style.negative_action_background;
     const Indication& indication =
         is_positive ? style.positive_action_indication : style.negative_action_indication;
 
@@ -2135,7 +2138,7 @@ View DialogService::StandardContent(
                                action_frame,
                                Padding{style.action_padding},
                                Background{background},
-                               CornerRadius{style.action_corner_radius},
+                               CornerRadius{style.action_corner_radii},
                                indication,
                                Focusable{},
                                detail::BuiltInSemantics{std::move(action_semantics)}
@@ -2187,7 +2190,7 @@ View DialogService::StandardContent(
       Spacing{style.content_spacing},
       CrossAlign{CrossAxisAlignment::Stretch},
       Background{style.background},
-      CornerRadius{style.corner_radius},
+      CornerRadius{style.corner_radii},
       style.shadow
   );
 }
@@ -2449,7 +2452,7 @@ LayerId detail::ToastService::Show(
                   surface_frame,
                   Padding{style.padding},
                   Background{style.background},
-                  CornerRadius{style.corner_radius},
+                  CornerRadius{style.corner_radii},
                   style.shadow,
                   ToastLifetime{
                       service,

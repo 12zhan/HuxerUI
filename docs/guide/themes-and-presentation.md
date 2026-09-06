@@ -29,6 +29,25 @@ Customize each container and its foreground together to preserve readable contra
 Each built-in component resolves its typed style from the closest Theme.
 Styles cover geometry, color, typography, indication, and motion owned by that component.
 
+Component and presentation surface fills use `VisualFill`, so a Theme can supply a solid color, gradient, image asset, or image resource without changing the component API.
+Ordinary rectangular outlines use `Border`; styles whose default has no outline expose `std::optional<Border>`.
+Surface shape uses the pure geometry value `CornerRadii`, including asymmetric values such as `CornerRadii::Top(16.0F)`.
+`CornerRadius` remains the View modifier that applies those radii to a declaration:
+
+```cpp
+ButtonStyle style = ButtonStyle::Default();
+style.background = LinearGradient{
+    .stops = {{0.0F, Color::Rgb(75, 92, 255)}, {1.0F, Color::Rgb(142, 68, 255)}},
+};
+style.corner_radii = CornerRadii{16.0F, 4.0F, 16.0F, 4.0F};
+
+ThemeDefinition definition;
+definition.Set(style);
+```
+
+Foregrounds, indicators, dividers, scrims, tracks, and colors used by retained animation or opacity calculations remain `Color`.
+`Indication` owns only transient focus, hover, press, and ripple presentation; normal backgrounds, borders, and surface geometry remain in the component style.
+
 Flat and Material are independent systems, not a shared style with a few color substitutions.
 For example, a Flat `TextFieldStyle` can use an outlined surface without a visible floating label while keeping the label in semantics.
 Flat pickers use compact geometry, restrained outlines, and rounded-square date selections; Material pickers use larger tonal surfaces, circular date selections, and separate time-field, period-group, and dial selection colors.
@@ -36,7 +55,7 @@ Flat pickers use compact geometry, restrained outlines, and rounded-square date 
 ## Interaction indication
 
 Interactive components derive visual state from shared interaction facts such as hovered, focused, pressed, dragged, selected, and disabled.
-The active indication can paint background, border, content tint, focus ring, or ripple without changing layout.
+The active indication can paint a state layer, state border, content tint, focus ring, or ripple without changing layout.
 
 Application code can provide a custom `Indication` or remove transient indication where that is semantically appropriate.
 Normal component appearance remains in its component style rather than being duplicated as an interaction state.

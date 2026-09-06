@@ -834,12 +834,13 @@ TextField uses a semantic style key:
 
 ```cpp
 struct TextFieldVariantStyle {
-  Color background;
-  std::optional<Color> disabled_background;
+  VisualFill background;
+  std::optional<VisualFill> disabled_background;
   Color border;
   Color hovered_border;
   Color focused_border;
   Color disabled_border;
+  CornerRadii corner_radii;
   float minimum_height = 0.0F;
 };
 
@@ -874,7 +875,6 @@ struct TextFieldStyle {
   float caret_width = 2.0F;
   float border_width = 1.0F;
   float focused_border_width = 2.0F;
-  float corner_radius = 0.0F;
   EdgeInsets padding;
   float leading_icon_size = 0.0F;
   float trailing_icon_size = 0.0F;
@@ -897,7 +897,7 @@ Flat and Material Theme definitions provide their own TextField styles. Material
 
 Standard uses a transparent container and bottom state indicator. Filled adds a top-rounded container fill to the same indicator geometry. Outlined keeps the same radius on all four corners and uses a segmented top outline so a floating label does not depend on painting an opaque background over the border. Material Filled and Standard indicators use `on_surface_variant`, while Outlined uses `outline`; hover, focus, and disabled colors also resolve from the selected variant bundle. Container backgrounds are painted only within the editor frame and never extend through supporting text.
 
-Each `TextFieldVariantStyle` owns one variant's background, optional disabled background, stateful border colors, and minimum height. An absent disabled background falls back to the ordinary background. `TextFieldStyle::variant` selects the Theme default, while an explicit component variant selects the corresponding bundle without duplicating active aliases. TextField draws its hover, focus, validation, and disabled states from these style values, so the common node indication and focus ring do not surround supporting text. Hover changes only the variant's indicator or outline, and disabled colors are resolved per element instead of reducing the opacity of the complete field subtree.
+Each `TextFieldVariantStyle` owns one variant's `VisualFill` background, optional disabled fill, stateful indicator or outline colors, `CornerRadii`, and minimum height. An absent disabled background falls back to the ordinary background. `TextFieldStyle::variant` selects the Theme default, while an explicit component variant selects the corresponding bundle without duplicating active aliases. TextField draws its hover, focus, validation, and disabled states from these style values, so the common node indication and focus ring do not surround supporting text. Hover changes only the variant's indicator or outline, and disabled colors are resolved per element instead of reducing the opacity of the complete field subtree.
 
 `TextFieldStyle::show_label` controls only visual label layout and painting. When it is `false`, `TextField::Label()` still supplies the accessibility label, while the placeholder remains in the editing line and Outlined paints a continuous border without a cutout. `label_spacing` defines the gap between a floating label and editable text for Standard and Filled fields.
 
@@ -905,7 +905,7 @@ Each `TextFieldVariantStyle` owns one variant's background, optional disabled ba
 
 Text input configuration, selection behavior, an explicit variant, label and placeholder content, and icon assets are not Theme values.
 
-The selection overlay resolves handle colors from the focused control: `TextFieldStyle::caret` for editable text and the current Theme primary color for `SelectionArea`. Its horizontal toolbar reuses the active `MenuStyle` surface, foreground, shape, shadow, item geometry, separators, and indication without adopting the public Menu service lifecycle. Cut, Copy, Paste, and Select All resolve from the built-in `huxerui` resource domain and use the inherited Locale for shaping. An explicitly provided `TextSelectionMenuLabels` Environment value overrides each non-empty field for that subtree, while empty fields continue to resolve their localized framework defaults. Editing actions execute on release; Cut, Copy, and Paste make the menu non-interactive until the indication exit animation finishes, while Select All retains the overlay, exposes range handles, and recomputes the remaining actions. The public Menu service keeps separate LayerStack lifecycle, anchoring, focus, and dismissal.
+The selection overlay resolves handle colors from the focused control: `TextFieldStyle::caret` for editable text and the current Theme primary color for `SelectionArea`. Its horizontal toolbar reuses the active `MenuStyle` surface fill, foreground, corner radii, shadow, item geometry, separators, and indication without adopting the public Menu service lifecycle. Resource-backed surface fills resolve against the focused control's resource context and Locale before overlay painting. Cut, Copy, Paste, and Select All resolve from the built-in `huxerui` resource domain and use the inherited Locale for shaping. An explicitly provided `TextSelectionMenuLabels` Environment value overrides each non-empty field for that subtree, while empty fields continue to resolve their localized framework defaults. Editing actions execute on release; Cut, Copy, and Paste make the menu non-interactive until the indication exit animation finishes, while Select All retains the overlay, exposes range handles, and recomputes the remaining actions. The public Menu service keeps separate LayerStack lifecycle, anchoring, focus, and dismissal.
 
 A collapsed TextField selection uses a caret-anchored menu without selection handles. This allows an empty field to expose Paste when the clipboard contains text. A range selection uses the same menu together with themed start and end handles.
 

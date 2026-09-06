@@ -6,6 +6,7 @@
 #include <vector>
 
 #include <huxerui/app.h>
+#include <huxerui/paint.h>
 #include <huxerui/render_scene.h>
 
 namespace huxerui::detail {
@@ -58,11 +59,11 @@ struct TextSelectionOverlayState {
   Rect end_handle_hit_rect;
   TextSelectionGeometry painted_geometry;
   Rect toolbar_rect;
-  Color toolbar_background;
+  VisualFill toolbar_background = Color::Transparent();
   Color toolbar_separator;
   Shadow toolbar_shadow;
   EdgeInsets toolbar_separator_padding;
-  float toolbar_corner_radius = 0.0F;
+  CornerRadii toolbar_corner_radii;
   float toolbar_separator_thickness = 0.0F;
   bool toolbar_separators = false;
   TextStyle toolbar_text_style;

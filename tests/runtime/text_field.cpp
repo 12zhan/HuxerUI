@@ -219,6 +219,18 @@ View DefaultVariantTextFieldStyleApp() {
   };
 }
 
+View ResourceFillTextFieldApp() {
+  TextFieldStyle style = TextFieldStyle::Default();
+  style.variant = TextFieldVariant::Filled;
+  style.filled.background = ImageResource("test", "images/density");
+  ThemeDefinition definition;
+  definition.Set(style);
+  return Theme {
+    std::move(definition),
+    TextField(TextEditingValue::FromText("Value")).With(huxerui::Frame{.width = 160.0F}),
+  };
+}
+
 View StableTextFieldApp() {
   auto trigger = UseState(0);
   text_field_recompose_trigger = trigger;
@@ -604,6 +616,9 @@ View TextSelectionOverlayApp() {
   style.caret = Color::Rgb(214, 55, 48);
   ThemeDefinition definition = FlatThemeDefinition();
   definition.Set(style);
+  MenuStyle menu_style = MenuStyle::Default();
+  menu_style.background = ImageResource("test", "images/density");
+  definition.Set(menu_style);
   return Theme {
     std::move(definition),
     ProvideEnvironment(
@@ -999,7 +1014,7 @@ TEST_CASE("TestTextFieldResolvesThemeDefaultVariantStyle") {
   const detail::MountedNode* field = FindMountedNodeKind(*runtime.RootNode(), detail::NodeKind::TextField);
   REQUIRE(field != nullptr);
   REQUIRE(field->bounds.height == 52.0F);
-  REQUIRE(field->properties.corner_radii == CornerRadii::Top(TextFieldStyle::Default().corner_radius));
+  REQUIRE(field->properties.corner_radii == TextFieldStyle::Default().filled.corner_radii);
   REQUIRE(FindPresentedRectWithColor(scene, Color::Rgb(38, 50, 56), Size{160.0F, 52.0F}).has_value());
 }
 
@@ -1017,7 +1032,7 @@ TEST_CASE("TestMaterialTextFieldFloatsLabelAndRevealsPlaceholderOnFocus") {
   const detail::MountedNode* field = FindMountedNodeKind(*runtime.RootNode(), detail::NodeKind::TextField);
   REQUIRE(field != nullptr);
   REQUIRE(field->bounds.height == style.filled.minimum_height);
-  REQUIRE(field->properties.corner_radii == CornerRadii::Top(style.corner_radius));
+  REQUIRE(field->properties.corner_radii == style.filled.corner_radii);
   REQUIRE(FindPresentedRectWithColor(resting, style.filled.background, Size{160.0F, 56.0F}).has_value());
   REQUIRE(FindTextFieldIndicator(resting, style.filled.border, 160.0F, style.border_width) != nullptr);
   REQUIRE(FindBorderWithColor(resting, style.filled.border) == nullptr);
@@ -1074,7 +1089,7 @@ TEST_CASE("TestMaterialTextFieldSupportsOutlinedVariant") {
 
   const detail::MountedNode* field = FindMountedNodeKind(*runtime.RootNode(), detail::NodeKind::TextField);
   REQUIRE(field != nullptr);
-  REQUIRE(field->properties.corner_radii == CornerRadii(style.corner_radius));
+  REQUIRE(field->properties.corner_radii == style.outlined.corner_radii);
   REQUIRE(FindRectWithColor(scene, style.filled.background) == nullptr);
   const DrawTextCommand* label = FindText(scene, "Email");
   const DrawTextCommand* text = FindText(scene, "Value");
@@ -1103,6 +1118,17 @@ TEST_CASE("TestMaterialTextFieldSupportsOutlinedVariant") {
   const Rect focused_outline_bounds = focused_outline->path.Bounds();
   REQUIRE(caret->rect.y + caret->rect.height * 0.5F ==
           Catch::Approx(focused_outline_bounds.y + focused_outline_bounds.height * 0.5F));
+}
+
+TEST_CASE("TestTextFieldResolvesResourceBackedVariantFill") {
+  TestPlatform platform;
+  platform.platform_resources = BuiltinTestResources();
+  Runtime runtime{ResourceFillTextFieldApp, platform};
+  runtime.SetWindowMetrics({.viewport = {200.0F, 80.0F}});
+  const FlattenedScene& scene = runtime.BuildFrame();
+  REQUIRE(std::ranges::any_of(scene.Commands(), [](const PaintCommand& command) {
+    return std::holds_alternative<DrawImageCommand>(command);
+  }));
 }
 
 TEST_CASE("TestMaterialTextFieldSupportsStandardVariant") {
@@ -1176,7 +1202,7 @@ TEST_CASE("TestTextFieldCanHideItsVisualLabelWithoutDroppingSemantics") {
   content.width -= leading_slot;
   REQUIRE(std::ranges::any_of(scene.Commands(), [mounted, &style](const PaintCommand& command) {
     const auto* clip = std::get_if<PushClipCommand>(&command);
-    return clip && clip->rect == mounted->bounds && clip->corner_radius == style.corner_radius;
+    return clip && clip->rect == mounted->bounds && clip->corner_radius == style.outlined.corner_radii.top_left;
   }));
   REQUIRE(std::ranges::any_of(scene.Commands(), [content](const PaintCommand& command) {
     const auto* clip = std::get_if<PushClipCommand>(&command);
@@ -1246,7 +1272,7 @@ TEST_CASE("TestFlatTextFieldSupportsFilledVariant") {
   const detail::MountedNode* field = FindMountedNodeKind(*runtime.RootNode(), detail::NodeKind::TextField);
   REQUIRE(field != nullptr);
   REQUIRE(field->bounds.height == style.filled.minimum_height);
-  REQUIRE(field->properties.corner_radii == CornerRadii::Top(style.corner_radius));
+  REQUIRE(field->properties.corner_radii == style.filled.corner_radii);
   REQUIRE(FindPresentedRectWithColor(scene, style.filled.background, Size{180.0F, 44.0F}).has_value());
   REQUIRE(FindTextFieldIndicator(scene, style.filled.border, 180.0F, style.border_width) != nullptr);
   REQUIRE(FindBorderWithColor(scene, style.filled.border) == nullptr);
@@ -3004,6 +3030,7 @@ TEST_CASE("TestTextFieldSelectionOverlayUsesThemeAndLocalizedLabels") {
   TextFieldClipboard clipboard;
   TestPlatform platform;
   platform.platform_clipboard = &clipboard;
+  platform.platform_resources = BuiltinTestResources();
   Runtime runtime{TextSelectionOverlayApp, platform};
   runtime.SetWindowMetrics({.viewport = {240.0F, 120.0F}});
   runtime.BuildFrame();
@@ -3018,11 +3045,15 @@ TEST_CASE("TestTextFieldSelectionOverlayUsesThemeAndLocalizedLabels") {
   const FlattenedScene& overlay = runtime.BuildFrame();
   const DrawTextCommand* copy = FindText(overlay, "复制");
   REQUIRE(copy != nullptr);
+  REQUIRE(std::ranges::any_of(overlay.Commands(), [](const PaintCommand& command) {
+    return std::holds_alternative<DrawImageCommand>(command);
+  }));
   const MenuStyle menu_style = ThemeDefinitionValue<MenuStyle>(FlatThemeDefinition());
   REQUIRE(std::ranges::any_of(overlay.Commands(), [&menu_style](const PaintCommand& command) {
     const auto* shadow = std::get_if<DrawShadowCommand>(&command);
     return shadow != nullptr && shadow->color == menu_style.shadow.color &&
-           shadow->blur_radius == menu_style.shadow.blur_radius && shadow->corner_radius == menu_style.corner_radius;
+           shadow->blur_radius == menu_style.shadow.blur_radius &&
+           shadow->corner_radius == menu_style.corner_radii.top_left;
   }));
   const std::size_t themed_handles = std::ranges::count_if(overlay.Commands(), [](const PaintCommand& command) {
     const auto* circle = std::get_if<huxerui::DrawCircleCommand>(&command);

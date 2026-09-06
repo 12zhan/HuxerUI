@@ -144,16 +144,19 @@ struct SegmentedButtonLayoutPolicy {
   }
 };
 
-CornerRadii SegmentCornerRadii(std::size_t index, std::size_t count, float radius) {
-  const float value = std::max(0.0F, radius);
+CornerRadii SegmentCornerRadii(std::size_t index, std::size_t count, CornerRadii radii) {
+  radii.top_left = std::max(0.0F, radii.top_left);
+  radii.top_right = std::max(0.0F, radii.top_right);
+  radii.bottom_right = std::max(0.0F, radii.bottom_right);
+  radii.bottom_left = std::max(0.0F, radii.bottom_left);
   if (count <= 1) {
-    return CornerRadii{value};
+    return radii;
   }
   if (index == 0) {
-    return {value, 0.0F, 0.0F, value};
+    return {radii.top_left, 0.0F, 0.0F, radii.bottom_left};
   }
   if (index + 1 == count) {
-    return {0.0F, value, value, 0.0F};
+    return {0.0F, radii.top_right, radii.bottom_right, 0.0F};
   }
   return {};
 }
@@ -208,11 +211,8 @@ private:
     }
     spec->properties.padding = style.padding;
     spec->properties.background = selected ? style.selected_background : style.background;
-    spec->properties.border = Border{
-        selected ? style.selected_border : style.border,
-        std::max(0.0F, style.border_width),
-    };
-    spec->properties.corner_radii = SegmentCornerRadii(index, count, style.corner_radius);
+    spec->properties.border = selected ? style.selected_border : style.border;
+    spec->properties.corner_radii = SegmentCornerRadii(index, count, style.corner_radii);
     spec->properties.frame.min_width = std::max(0.0F, style.minimum_segment_width);
     spec->properties.frame.min_height = std::max(0.0F, style.minimum_height);
     spec->properties.text_layout_options = {
@@ -262,11 +262,11 @@ private:
         .row_count = 1,
         .column_count = spec->children.size(),
     };
-    spec->properties.corner_radii = std::max(0.0F, style.corner_radius);
+    spec->properties.corner_radii = SegmentCornerRadii(0, 1, style.corner_radii);
     spec->properties.clip_children = true;
     spec->layout_values.insert_or_assign(
         typeid(SegmentedButtonBorderWidth),
-        detail::MakeErasedLayoutValue(std::max(0.0F, style.border_width))
+        detail::MakeErasedLayoutValue(std::max(0.0F, std::max(style.border.width, style.selected_border.width)))
     );
     spec->modifiers.push_back(detail::MakeModifierSpec(SegmentedButtonBehavior{
         selected_index,

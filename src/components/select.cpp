@@ -93,8 +93,13 @@ void ValidateSelectStyle(const SelectStyle& style) {
            std::isfinite(insets.bottom) && insets.bottom >= 0.0F && std::isfinite(insets.left) && insets.left >= 0.0F;
   };
   const bool valid_shadow = std::isfinite(style.popup_shadow.offset.x) && std::isfinite(style.popup_shadow.offset.y) &&
-                            std::isfinite(style.popup_shadow.blur_radius) && style.popup_shadow.blur_radius >= 0.0F &&
-                            std::isfinite(style.popup_shadow.spread);
+                             std::isfinite(style.popup_shadow.blur_radius) && style.popup_shadow.blur_radius >= 0.0F &&
+                             std::isfinite(style.popup_shadow.spread);
+  const auto valid_radii = [](const CornerRadii& radii) {
+    return std::isfinite(radii.top_left) && radii.top_left >= 0.0F && std::isfinite(radii.top_right) &&
+           radii.top_right >= 0.0F && std::isfinite(radii.bottom_right) && radii.bottom_right >= 0.0F &&
+           std::isfinite(radii.bottom_left) && radii.bottom_left >= 0.0F;
+  };
   const bool valid = valid_insets(style.trigger_padding) && valid_insets(style.item_padding) &&
                      valid_insets(style.popup_padding) && valid_shadow && std::isfinite(style.content_spacing) &&
                      style.content_spacing >= 0.0F && std::isfinite(style.minimum_width) &&
@@ -104,9 +109,8 @@ void ValidateSelectStyle(const SelectStyle& style) {
                      std::isfinite(style.maximum_popup_height) && style.maximum_popup_height > 0.0F &&
                      std::isfinite(style.indicator_size) && style.indicator_size >= 0.0F &&
                      std::isfinite(style.validation_spacing) && style.validation_spacing >= 0.0F &&
-                     std::isfinite(style.corner_radius) && style.corner_radius >= 0.0F &&
-                     std::isfinite(style.popup_corner_radius) && style.popup_corner_radius >= 0.0F &&
-                     std::isfinite(style.border_width) && style.border_width >= 0.0F;
+                     valid_radii(style.corner_radii) && valid_radii(style.popup_corner_radii) &&
+                     std::isfinite(style.border.width) && style.border.width >= 0.0F;
   if (!valid) {
     throw std::invalid_argument(
         "HuxerUI Select geometry and shadow must be finite with positive popup height and non-negative extents"
@@ -505,7 +509,7 @@ View SelectPopupContent(detail::ViewItemSource source, SelectStyle style,
           Padding{style.popup_padding},
           Background{style.popup_background},
           Foreground{style.foreground},
-          CornerRadius{style.popup_corner_radius},
+          CornerRadius{style.popup_corner_radii},
           ClipChildren{},
           style.popup_shadow,
           detail::BuiltInSemantics{std::move(semantics)},
@@ -796,6 +800,10 @@ std::function<View()> MakeSelectScopeFactory(SelectConfiguration configuration) 
                          .Tint(style.indicator)
                          .With(indicator_frame, detail::BuiltInSemantics{Semantics{.hidden = true}});
 
+    Border border = style.border;
+    if (configuration.validation.IsInvalid()) {
+      border.color = style.validation_error;
+    }
     View trigger = Row {
       std::move(selected),
       std::move(indicator),
@@ -805,11 +813,8 @@ std::function<View()> MakeSelectScopeFactory(SelectConfiguration configuration) 
         Spacing{style.content_spacing},
         CrossAlign{CrossAxisAlignment::Center},
         Background{style.background},
-        Border{
-            configuration.validation.IsInvalid() ? style.validation_error : style.border,
-            style.border_width,
-        },
-        CornerRadius{style.corner_radius},
+        border,
+        CornerRadius{style.corner_radii},
         ClipChildren{},
         Foreground{style.foreground}
     );

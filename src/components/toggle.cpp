@@ -1,6 +1,7 @@
 #include <huxerui/view.h>
 
 #include <algorithm>
+#include <any>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -11,6 +12,7 @@
 #include <huxerui/animation.h>
 #include <huxerui/theme.h>
 
+#include "graphics/paint_internal.h"
 #include "huxerui_builtin_resources.h"
 #include "runtime/mounted_node_internal.h"
 #include "indication_internal.h"
@@ -168,18 +170,20 @@ private:
     const Rect frame = detail::ResolveToggleControlBounds(static_cast<const detail::MountedNode&>(node));
     const bool disabled = AppliesDisabledAppearance(node);
     if (checked_) {
-      const Color background =
+      const VisualFill& background =
           disabled ? checkbox_style_.disabled_checked_background : checkbox_style_.checked_background;
       const Color checkmark = disabled ? checkbox_style_.disabled_checkmark : checkbox_style_.checkmark;
-      context.DrawRect(frame, background, std::max(0.0F, checkbox_style_.corner_radius));
+      detail::PaintVisualFill(context, frame, background, checkbox_style_.corner_radii);
       context.DrawImage(checkmark_, frame, checkmark);
       return;
     }
+    const Border& border =
+        disabled ? checkbox_style_.disabled_unchecked_border : checkbox_style_.unchecked_border;
     context.DrawBorder(
         frame,
-        disabled ? checkbox_style_.disabled_unchecked_border : checkbox_style_.unchecked_border,
-        StrokeStyle{.width = std::max(0.0F, checkbox_style_.border_width)},
-        std::max(0.0F, checkbox_style_.corner_radius)
+        border.color,
+        StrokeStyle{.width = std::max(0.0F, border.width)},
+        checkbox_style_.corner_radii
     );
   }
 
@@ -268,17 +272,32 @@ private:
 const detail::ModifierDescriptor& ToggleVisual::Descriptor() {
   static const detail::ModifierDescriptor descriptor = [] {
     detail::ModifierDescriptor result = detail::ModifierDescriptorFor<ToggleVisual, ToggleVisualExtension>();
-    result.compile = [](detail::ViewSpec&,
+    result.compile = [](detail::ViewSpec& spec,
                         detail::ModifierSpec& modifier,
                         const std::shared_ptr<const Environment>& environment,
                         detail::AppResources& resources) {
       const auto& declaration = *static_cast<const ToggleVisual*>(modifier.value.get());
-      if (!declaration.checkmark.has_value() || !detail::NeedsResourceResolution(*declaration.checkmark)) {
-        return;
+      if (declaration.kind == ToggleVisualKind::Checkbox) {
+        const auto found = spec.layout_values.find(typeid(CheckboxStyleBinding));
+        if (found != spec.layout_values.end()) {
+          if (const auto* unresolved = std::any_cast<CheckboxStyle>(&found->second.value)) {
+            CheckboxStyle style = *unresolved;
+            const bool needs_locale = detail::NeedsResourceResolution(style.checked_background) ||
+                                      detail::NeedsResourceResolution(style.disabled_checked_background);
+            const Locale locale =
+                needs_locale ? detail::ResolveResourceLocale(environment, resources) : Locale::Default();
+            style.checked_background = detail::ResolveVisualFill(style.checked_background, resources, locale);
+            style.disabled_checked_background =
+                detail::ResolveVisualFill(style.disabled_checked_background, resources, locale);
+            found->second = detail::MakeErasedLayoutValue(std::move(style));
+          }
+        }
       }
-      modifier.value = std::make_shared<ToggleVisual>(
-          CompileToggleVisual(declaration, environment, resources)
-      );
+      if (declaration.checkmark.has_value() && detail::NeedsResourceResolution(*declaration.checkmark)) {
+        modifier.value = std::make_shared<ToggleVisual>(
+            CompileToggleVisual(declaration, environment, resources)
+        );
+      }
     };
     return result;
   }();

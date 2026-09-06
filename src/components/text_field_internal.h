@@ -38,13 +38,7 @@ ResolveTextFieldVariantStyle(const TextFieldStyle& style, TextFieldVariant varia
 }
 
 inline CornerRadii ResolveTextFieldCornerRadii(const TextFieldStyle& style, TextFieldVariant variant) noexcept {
-  if (variant == TextFieldVariant::Filled) {
-    return CornerRadii::Top(style.corner_radius);
-  }
-  if (variant == TextFieldVariant::Outlined) {
-    return CornerRadii(style.corner_radius);
-  }
-  return {};
+  return ResolveTextFieldVariantStyle(style, variant).corner_radii;
 }
 
 struct ResolvedValidationResult {

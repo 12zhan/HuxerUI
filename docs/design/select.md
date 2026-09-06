@@ -66,7 +66,7 @@ The active choice remains mounted interaction state rather than a second control
 
 ## Theme and validation
 
-`SelectStyle` owns trigger and popup foreground, surface metrics, active and selected item backgrounds, indication, and validation presentation.
+`SelectStyle` owns trigger and popup `VisualFill` surfaces, trigger `Border`, surface `CornerRadii`, foreground and indicator colors, active and selected item colors, indication, and validation presentation.
 Flat themes resolve the shared default from their ThemeSpec; Material themes provide an explicit override.
 Light and dark variants therefore derive complete values from their corresponding ColorScheme, TypographyScheme, ShapeScheme, spacing, elevation, motion, and interaction schemes.
 Insets, spacing, surface metrics, and shadow geometry are validated before the component is mounted.

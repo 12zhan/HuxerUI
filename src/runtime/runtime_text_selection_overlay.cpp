@@ -1,6 +1,7 @@
 #include "huxerui_builtin_resources.h"
 #include "runtime_internal.h"
 #include "components/indication_internal.h"
+#include "graphics/paint_internal.h"
 #include "resources/resource_internal.h"
 #include "runtime_text_internal.h"
 #include "application/window_internal.h"
@@ -406,10 +407,10 @@ void detail::TextInteraction::PaintTextSelectionOverlay() {
         overlay.toolbar_shadow.offset,
         overlay.toolbar_shadow.blur_radius,
         overlay.toolbar_shadow.spread,
-        CornerRadii{overlay.toolbar_corner_radius}
+        overlay.toolbar_corner_radii
     );
-    context.DrawRect(overlay.toolbar_rect, overlay.toolbar_background, overlay.toolbar_corner_radius);
-    context.PushClip(overlay.toolbar_rect, overlay.toolbar_corner_radius);
+    detail::PaintVisualFill(context, overlay.toolbar_rect, overlay.toolbar_background, overlay.toolbar_corner_radii);
+    context.PushClip(overlay.toolbar_rect, overlay.toolbar_corner_radii);
     for (std::size_t index = 0; index < overlay.action_rects.size(); ++index) {
       if (index < overlay.action_indications.size() && overlay.action_indications[index]) {
         overlay.action_indications[index]->Paint(context, overlay.action_rects[index], CornerRadii{},
@@ -658,11 +659,11 @@ void detail::TextInteraction::PaintTextSelectionOverlay() {
   const float below_gap = below_y - (selection_bottom + handle_extent);
   const float toolbar_y = above_gap >= 0.0F || above_gap >= below_gap ? above_y : below_y;
   overlay.toolbar_rect = {toolbar_x, toolbar_y, toolbar_width, toolbar_height};
-  overlay.toolbar_background = menu_style.background;
+  overlay.toolbar_background = detail::ResolveVisualFill(menu_style.background, *runtime_state_.app_resources_, locale);
   overlay.toolbar_separator = menu_style.separator_color;
   overlay.toolbar_shadow = menu_style.shadow;
   overlay.toolbar_separator_padding = menu_style.separator_padding;
-  overlay.toolbar_corner_radius = menu_style.corner_radius;
+  overlay.toolbar_corner_radii = menu_style.corner_radii;
   overlay.toolbar_separator_thickness = menu_style.separator_thickness;
   overlay.toolbar_separators =
       menu_style.separator_mode == MenuSeparatorMode::BetweenItems && menu_style.separator_thickness > 0.0F;

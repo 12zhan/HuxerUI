@@ -817,7 +817,7 @@ TEST_CASE("TestMenuUsesNaturalOrExplicitSurfaceWidthAndOptionalImages") {
 
   const auto menu_clip = std::ranges::find_if(natural.Commands(), [](const PaintCommand& command) {
     const auto* clip = std::get_if<PushClipCommand>(&command);
-    return clip && clip->corner_radius == MenuStyle::Default().corner_radius;
+    return clip && clip->corner_radius == MenuStyle::Default().corner_radii.top_left;
   });
   REQUIRE(menu_clip != natural.Commands().end());
 

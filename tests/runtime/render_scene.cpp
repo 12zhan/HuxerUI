@@ -544,6 +544,13 @@ TEST_CASE("FullCornerRadiusProducesMatchingCapsulePaintAndChildClip") {
   REQUIRE(child_clip->corner_radius == 20.0F);
 }
 
+TEST_CASE("CornerRadiusConstructorsPreserveCornerGeometry") {
+  REQUIRE(CornerRadius{}.value == CornerRadii{});
+  REQUIRE(CornerRadius{12.0F}.value == CornerRadii{12.0F});
+  REQUIRE(CornerRadius{CornerRadii::Top(16.0F)}.value == CornerRadii::Top(16.0F));
+  REQUIRE((CornerRadius{16.0F, 4.0F, 16.0F, 4.0F}.value == CornerRadii{16.0F, 4.0F, 16.0F, 4.0F}));
+}
+
 TEST_CASE("ClipChildrenUsesTheResolvedIndicationCornerRadii") {
   TestPlatform platform;
   Runtime runtime{AnimatedClipChildrenApp, platform};

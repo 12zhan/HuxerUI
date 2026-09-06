@@ -38,7 +38,7 @@ ThemeDefinition EffectsTheme() {
   button.disabled_label = Color::Rgb(255, 255, 255, 0.4F);
   button.padding = EdgeInsets::Symmetric(26.0F, 13.0F);
   button.minimum_height = 52.0F;
-  button.corner_radius = spotlight.corner_radius;
+  button.corner_radii = CornerRadii{spotlight.corner_radius};
   button.indication = Indication{
       .press = IndicationLayer{.fill = Color::Rgb(255, 255, 255, 0.1F)},
   };

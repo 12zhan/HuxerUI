@@ -150,15 +150,15 @@ Unchanged frame builds reuse measured dial labels instead of repeating text meas
 Every configuration update refreshes the cache because availability predicates cannot be compared for equality.
 
 Theme supplies separate `DatePickerStyle` and `TimePickerStyle` values.
-Styles own colors, typography, padding, cell or dial dimensions, selection geometry, borders, labels, and validation presentation.
+Styles own surface `VisualFill` values, foreground and indicator colors, typography, padding, cell or dial dimensions, selection geometry, optional outer `Border` values, labels, and validation presentation.
 Geometry is validated before composition.
 
 TimePicker measures its preferred content width as the larger of the dial diameter and the complete time header.
 The header includes two field widths, the separator width, and, only in 12-hour presentation, period spacing and the period-group width.
 Painting, pointer hit testing, and semantics share those rectangles.
-The AM/PM selection is clipped to one rounded group with a shared outline and divider, not two independent pills.
+The AM/PM selection is clipped to one `CornerRadii` group with a shared `Border` and divider, not two independent pills.
 The active time field, selected period, and dial handle have independent foreground/background pairs.
-An invalid picker retains at least a one-DIP error outline even when the theme omits the ordinary surface border.
+An invalid picker derives a one-DIP-or-wider error outline even when the theme omits the ordinary optional surface border.
 
 Material styling follows the [Material Components time-picker tokens](https://github.com/material-components/material-components-android/blob/master/lib/java/com/google/android/material/timepicker/res/values/tokens.xml): surface-container-high outer surface, surface-container-highest inactive fields and dial, primary-container active field, tertiary-container active period, and primary dial handle.
 Flat styling uses its own compact dimensions, subtle outlines, and rounded-square calendar selection rather than inheriting Material geometry.

@@ -73,7 +73,7 @@ Windows retains UI Automation ComboBox with Value and ExpandCollapse patterns, A
 ## Theme and validation
 
 TextFieldStyle owns all visible field states and metrics.
-ComboBoxStyle owns only popup background and foreground, active item background, item and surface padding, indication, shadow, corner radius, minimum item height, and maximum popup height.
+ComboBoxStyle owns only the popup `VisualFill`, foreground and active-item colors, item and surface padding, indication, shadow, `CornerRadii`, minimum item height, and maximum popup height.
 Flat themes derive this style from ThemeSpec and Material themes install an explicit style override.
 Geometry and shadow inputs are validated before the composed field mounts.
 

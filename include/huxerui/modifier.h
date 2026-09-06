@@ -739,6 +739,12 @@ struct Frame {
 /// Text("Rounded").With(Background(Color::White()), CornerRadius(12.0F));
 /// @endcode
 struct CornerRadius {
+  CornerRadius() = default;
+  explicit CornerRadius(float value) : value(value) {}
+  explicit CornerRadius(CornerRadii value) : value(value) {}
+  CornerRadius(float top_left, float top_right, float bottom_right, float bottom_left)
+      : value(top_left, top_right, bottom_right, bottom_left) {}
+
   /// Returns the modifier descriptor used by View::With().
   static const detail::ModifierDescriptor& Descriptor();
 

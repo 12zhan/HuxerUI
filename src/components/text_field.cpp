@@ -1,6 +1,7 @@
 #include "runtime/mounted_node_internal.h"
 #include "runtime/gesture_internal.h"
 #include "graphics/geometry_internal.h"
+#include "graphics/paint_internal.h"
 #include "resources/resource_internal.h"
 #include "text_field_internal.h"
 #include "text/text_input_internal.h"
@@ -287,8 +288,8 @@ struct TextFieldVariantVisual {
     static const detail::ModifierDescriptor descriptor{
         [](detail::ViewSpec& spec,
            detail::ModifierSpec& modifier,
-           const std::shared_ptr<const Environment>&,
-           detail::AppResources&) {
+           const std::shared_ptr<const Environment>& environment,
+           detail::AppResources& resources) {
           TextFieldStyle style = TextFieldStyle::Default();
           const auto found = spec.layout_values.find(typeid(detail::TextFieldStyleBinding));
           if (found != spec.layout_values.end()) {
@@ -296,6 +297,22 @@ struct TextFieldVariantVisual {
               style = *resolved;
             }
           }
+          std::optional<Locale> locale;
+          const auto resolve_fill = [&environment, &resources, &locale](VisualFill& fill) {
+            if (!locale.has_value() && detail::NeedsResourceResolution(fill)) {
+              locale = detail::ResolveResourceLocale(environment, resources);
+            }
+            fill = detail::ResolveVisualFill(fill, resources, locale.value_or(Locale::Default()));
+          };
+          for (TextFieldVariantStyle* variant_style : {&style.standard, &style.filled, &style.outlined}) {
+            resolve_fill(variant_style->background);
+            if (variant_style->disabled_background.has_value()) {
+              resolve_fill(*variant_style->disabled_background);
+            }
+          }
+          spec.layout_values.insert_or_assign(
+              typeid(detail::TextFieldStyleBinding), detail::MakeErasedLayoutValue(style)
+          );
           const auto* visual = static_cast<const TextFieldVariantVisual*>(modifier.value.get());
           const TextFieldVariant variant = visual->variant.value_or(style.variant);
           if (visual->clear_node_background) {
@@ -692,12 +709,10 @@ public:
     const Rect editor_frame = EditorFrame(node);
     const Rect content = EditorContentRect(node);
     const Point origin = TextOrigin(node);
-    const Color background = disabled_appearance
-                                 ? variant_style_.disabled_background.value_or(variant_style_.background)
-                                 : variant_style_.background;
-    if (background.alpha > 0.0F) {
-      context.DrawRect(editor_frame, background, corner_radii_);
-    }
+    const VisualFill& background = disabled_appearance && variant_style_.disabled_background.has_value()
+                                       ? *variant_style_.disabled_background
+                                       : variant_style_.background;
+    detail::PaintVisualFill(context, editor_frame, background, corner_radii_);
     context.PushClip(editor_frame, corner_radii_);
     context.PushClip(content);
 

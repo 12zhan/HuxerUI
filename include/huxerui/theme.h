@@ -12,7 +12,10 @@
 #include <huxerui/animation.h>
 #include <huxerui/color.h>
 #include <huxerui/environment.h>
+#include <huxerui/geometry.h>
 #include <huxerui/indication.h>
+#include <huxerui/modifier.h>
+#include <huxerui/paint.h>
 #include <huxerui/text.h>
 #include <huxerui/view.h>
 #include <huxerui/window.h>
@@ -119,14 +122,14 @@ struct ThemeSpec {
 };
 
 struct ButtonStyle {
-  Color background = Color::Rgb(31, 111, 235);
+  VisualFill background = Color::Rgb(31, 111, 235);
   TextStyle label_style{Font::System(14.0F), Color::White()};
-  Color disabled_background = Color::Rgb(31, 35, 40, 0.1F);
+  VisualFill disabled_background = Color::Rgb(31, 35, 40, 0.1F);
   Color disabled_label = Color::Rgb(31, 35, 40, 0.38F);
   EdgeInsets padding = EdgeInsets::Symmetric(14.0F, 8.0F);
   float minimum_width = 0.0F;
   float minimum_height = 0.0F;
-  float corner_radius = 8.0F;
+  CornerRadii corner_radii{8.0F};
   std::optional<Indication> indication{};
 
   static ButtonStyle Default();
@@ -149,24 +152,23 @@ struct IconButtonStyle {
 };
 
 struct ChipStyle {
-  Color background = Color::White();
-  Color selected_background = Color::Rgb(31, 111, 235);
+  VisualFill background = Color::White();
+  VisualFill selected_background = Color::Rgb(31, 111, 235);
   TextStyle label_style{Font::System(14.0F), Color::Rgb(31, 35, 40)};
   Color selected_label = Color::White();
-  Color disabled_background = Color::Rgb(31, 35, 40, 0.08F);
-  Color disabled_selected_background = Color::Rgb(31, 35, 40, 0.12F);
+  VisualFill disabled_background = Color::Rgb(31, 35, 40, 0.08F);
+  VisualFill disabled_selected_background = Color::Rgb(31, 35, 40, 0.12F);
   Color disabled_label = Color::Rgb(31, 35, 40, 0.38F);
   Color disabled_selected_label = Color::Rgb(31, 35, 40, 0.38F);
-  Color border = Color::Rgb(31, 35, 40, 0.24F);
-  Color selected_border = Color::Transparent();
-  Color disabled_border = Color::Rgb(31, 35, 40, 0.12F);
-  Color disabled_selected_border = Color::Transparent();
+  Border border{Color::Rgb(31, 35, 40, 0.24F), 1.0F};
+  std::optional<Border> selected_border;
+  Border disabled_border{Color::Rgb(31, 35, 40, 0.12F), 1.0F};
+  std::optional<Border> disabled_selected_border;
   EdgeInsets padding = EdgeInsets::Symmetric(12.0F, 5.0F);
   float icon_size = 16.0F;
   float icon_spacing = 8.0F;
   float minimum_height = 28.0F;
-  float corner_radius = 14.0F;
-  float border_width = 1.0F;
+  CornerRadii corner_radii{14.0F};
   std::optional<Indication> indication;
   std::optional<Indication> selected_indication;
 
@@ -185,19 +187,18 @@ struct DividerStyle {
 };
 
 struct SegmentedButtonStyle {
-  Color background = Color::White();
-  Color selected_background = Color::Rgb(31, 111, 235);
+  VisualFill background = Color::White();
+  VisualFill selected_background = Color::Rgb(31, 111, 235);
   TextStyle label_style{Font::System(14.0F), Color::Rgb(31, 35, 40)};
   Color selected_label = Color::White();
-  Color border = Color::Rgb(31, 35, 40, 0.24F);
-  Color selected_border = Color::Rgb(31, 111, 235);
+  Border border{Color::Rgb(31, 35, 40, 0.24F), 1.0F};
+  Border selected_border{Color::Rgb(31, 111, 235), 1.0F};
   EdgeInsets padding = EdgeInsets::Symmetric(14.0F, 7.0F);
   float icon_size = 16.0F;
   float icon_spacing = 8.0F;
   float minimum_segment_width = 48.0F;
   float minimum_height = 32.0F;
-  float corner_radius = 8.0F;
-  float border_width = 1.0F;
+  CornerRadii corner_radii{8.0F};
   std::optional<Indication> indication;
   std::optional<Indication> selected_indication;
 
@@ -212,7 +213,7 @@ enum class TabIndicatorSizing {
 };
 
 struct TabsStyle {
-  Color background = Color::Transparent();
+  VisualFill background = Color::Transparent();
   TextStyle label_style{Font::System(14.0F), Color::Rgb(31, 35, 40)};
   Color selected_label = Color::Rgb(31, 111, 235);
   Color disabled_label = Color::Rgb(31, 35, 40, 0.38F);
@@ -238,7 +239,7 @@ struct TabsStyle {
 };
 
 struct TreeViewStyle {
-  Color background = Color::Transparent();
+  VisualFill background = Color::Transparent();
   Color foreground = Color::Rgb(31, 35, 40);
   Color disabled_foreground = Color::Rgb(31, 35, 40, 0.38F);
   Color selected_background = Color::Rgb(31, 111, 235, 0.14F);
@@ -256,11 +257,11 @@ struct TreeViewStyle {
 };
 
 struct SelectStyle {
-  Color background = Color::White();
+  VisualFill background = Color::White();
   Color foreground = Color::Rgb(31, 35, 40);
-  Color border = Color::Rgb(87, 96, 106, 0.55F);
+  Border border{Color::Rgb(87, 96, 106, 0.55F), 1.0F};
   Color indicator = Color::Rgb(87, 96, 106);
-  Color popup_background = Color::White();
+  VisualFill popup_background = Color::White();
   Color active_item_background = Color::Rgb(31, 111, 235, 0.10F);
   Color selected_item_background = Color::Rgb(31, 111, 235, 0.14F);
   Color validation_error = Color::Rgb(207, 34, 46);
@@ -276,9 +277,8 @@ struct SelectStyle {
   float minimum_item_height = 36.0F;
   float maximum_popup_height = 320.0F;
   float indicator_size = 16.0F;
-  float corner_radius = 6.0F;
-  float popup_corner_radius = 6.0F;
-  float border_width = 1.0F;
+  CornerRadii corner_radii{6.0F};
+  CornerRadii popup_corner_radii{6.0F};
   std::optional<Indication> indication;
   std::optional<Indication> item_indication;
 
@@ -288,14 +288,14 @@ struct SelectStyle {
 };
 
 struct DatePickerStyle {
-  Color background = Color::White();
+  VisualFill background = Color::White();
   Color foreground = Color::Rgb(31, 35, 40);
   Color secondary_foreground = Color::Rgb(87, 96, 106);
   Color disabled_foreground = Color::Rgb(31, 35, 40, 0.38F);
   Color selected_background = Color::Rgb(31, 111, 235);
   Color selected_foreground = Color::White();
   Color hover_background = Color::Rgb(31, 111, 235, 0.08F);
-  Color border = Color::Rgb(31, 35, 40, 0.18F);
+  std::optional<Border> border = Border{Color::Rgb(31, 35, 40, 0.18F), 1.0F};
   Color validation_error = Color::Rgb(207, 34, 46);
   TextStyle title_style{Font::System(16.0F).WithWeight(FontWeight::Medium), Color::Rgb(31, 35, 40)};
   TextStyle weekday_style{Font::System(12.0F), Color::Rgb(87, 96, 106)};
@@ -307,9 +307,8 @@ struct DatePickerStyle {
   float column_spacing = 2.0F;
   float row_spacing = 2.0F;
   float header_height = 44.0F;
-  float corner_radius = 8.0F;
+  CornerRadii corner_radii{8.0F};
   float selection_corner_radius = 4.0F;
-  float border_width = 1.0F;
   float label_spacing = 6.0F;
   float validation_spacing = 4.0F;
 
@@ -319,21 +318,21 @@ struct DatePickerStyle {
 };
 
 struct TimePickerStyle {
-  Color background = Color::White();
-  Color dial_background = Color::Rgb(239, 241, 243);
+  VisualFill background = Color::White();
+  VisualFill dial_background = Color::Rgb(239, 241, 243);
   Color foreground = Color::Rgb(31, 35, 40);
   Color disabled_foreground = Color::Rgb(31, 35, 40, 0.38F);
   Color selected_background = Color::Rgb(31, 111, 235);
   Color selected_foreground = Color::White();
   /// Background of the inactive hour or minute field.
-  Color field_background = Color::Rgb(239, 241, 243);
-  Color selected_field_background = Color::Rgb(221, 235, 255);
+  VisualFill field_background = Color::Rgb(239, 241, 243);
+  VisualFill selected_field_background = Color::Rgb(221, 235, 255);
   Color selected_field_foreground = Color::Rgb(12, 65, 128);
-  Color selected_period_background = Color::Rgb(221, 235, 255);
+  VisualFill selected_period_background = Color::Rgb(221, 235, 255);
   Color selected_period_foreground = Color::Rgb(12, 65, 128);
-  Color period_border = Color::Rgb(31, 35, 40, 0.18F);
+  Border period_border{Color::Rgb(31, 35, 40, 0.18F), 1.0F};
   Color hand = Color::Rgb(31, 111, 235);
-  Color border = Color::Rgb(31, 35, 40, 0.18F);
+  std::optional<Border> border = Border{Color::Rgb(31, 35, 40, 0.18F), 1.0F};
   Color validation_error = Color::Rgb(207, 34, 46);
   TextStyle header_style{Font::System(32.0F), Color::Rgb(31, 35, 40)};
   TextStyle period_style{Font::System(12.0F).WithWeight(FontWeight::Medium), Color::Rgb(87, 96, 106)};
@@ -345,17 +344,15 @@ struct TimePickerStyle {
   float header_height = 52.0F;
   float field_width = 64.0F;
   float separator_width = 16.0F;
-  float field_corner_radius = 4.0F;
+  CornerRadii field_corner_radii{4.0F};
   /// AM/PM is one outlined group, omitted entirely for a 24-hour locale.
   float period_width = 44.0F;
   float period_spacing = 8.0F;
-  float period_corner_radius = 4.0F;
-  float period_border_width = 1.0F;
+  CornerRadii period_corner_radii{4.0F};
   float content_spacing = 16.0F;
   float selection_radius = 16.0F;
   float hand_width = 2.0F;
-  float corner_radius = 8.0F;
-  float border_width = 1.0F;
+  CornerRadii corner_radii{8.0F};
   float label_spacing = 6.0F;
   float validation_spacing = 4.0F;
 
@@ -365,12 +362,13 @@ struct TimePickerStyle {
 };
 
 struct TextFieldVariantStyle {
-  Color background = Color::Transparent();
-  std::optional<Color> disabled_background{};
+  VisualFill background = Color::Transparent();
+  std::optional<VisualFill> disabled_background{};
   Color border = Color::Rgb(87, 96, 106, 0.55F);
   Color hovered_border = Color::Rgb(31, 35, 40);
   Color focused_border = Color::Rgb(31, 111, 235);
   Color disabled_border = Color::Rgb(31, 35, 40, 0.12F);
+  CornerRadii corner_radii{6.0F};
   float minimum_height = 36.0F;
 
   bool operator==(const TextFieldVariantStyle&) const = default;
@@ -380,9 +378,10 @@ struct TextFieldStyle {
   TextFieldVariant variant = TextFieldVariant::Standard;
   // Visual label presentation is independent from the label exposed through accessibility semantics.
   bool show_label = true;
-  TextFieldVariantStyle standard{.minimum_height = 40.0F};
+  TextFieldVariantStyle standard{.corner_radii = {}, .minimum_height = 40.0F};
   TextFieldVariantStyle filled{
       .background = Color::Rgb(239, 241, 243),
+      .corner_radii = CornerRadii::Top(6.0F),
       .minimum_height = 44.0F,
   };
   TextFieldVariantStyle outlined;
@@ -411,7 +410,6 @@ struct TextFieldStyle {
   float caret_width = 2.0F;
   float border_width = 1.0F;
   float focused_border_width = 2.0F;
-  float corner_radius = 6.0F;
   EdgeInsets padding = EdgeInsets::Symmetric(10.0F, 8.0F);
   float leading_icon_size = 18.0F;
   float trailing_icon_size = 18.0F;
@@ -441,7 +439,7 @@ struct TextFieldStyle {
 /// theme.Set(style);
 /// @endcode
 struct ComboBoxStyle {
-  Color popup_background = Color::White();
+  VisualFill popup_background = Color::White();
   Color foreground = Color::Rgb(31, 35, 40);
   Color active_item_background = Color::Rgb(31, 111, 235, 0.10F);
   EdgeInsets item_padding = EdgeInsets::Symmetric(12.0F, 8.0F);
@@ -449,7 +447,7 @@ struct ComboBoxStyle {
   Shadow popup_shadow{Color::Rgb(0, 0, 0, 0.2F), {}, 8.0F, 0.0F};
   float minimum_item_height = 36.0F;
   float maximum_popup_height = 320.0F;
-  float popup_corner_radius = 6.0F;
+  CornerRadii popup_corner_radii{6.0F};
   std::optional<Indication> item_indication;
 
   static ComboBoxStyle Default();
@@ -461,14 +459,13 @@ struct CheckboxStyle {
   float size = 20.0F;
   float minimum_interactive_size = 20.0F;
   float state_layer_size = 20.0F;
-  Color checked_background = Color::Rgb(31, 111, 235);
+  VisualFill checked_background = Color::Rgb(31, 111, 235);
   Color checkmark = Color::White();
-  Color unchecked_border = Color::Rgb(87, 96, 106);
-  Color disabled_checked_background = Color::Rgb(31, 35, 40, 0.38F);
+  Border unchecked_border{Color::Rgb(87, 96, 106), 2.0F};
+  VisualFill disabled_checked_background = Color::Rgb(31, 35, 40, 0.38F);
   Color disabled_checkmark = Color::White();
-  Color disabled_unchecked_border = Color::Rgb(31, 35, 40, 0.38F);
-  float border_width = 2.0F;
-  float corner_radius = 4.0F;
+  Border disabled_unchecked_border{Color::Rgb(31, 35, 40, 0.38F), 2.0F};
+  CornerRadii corner_radii{4.0F};
 
   static CheckboxStyle Default();
 

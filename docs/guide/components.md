@@ -419,7 +419,8 @@ Neither component owns a time zone, combines date and time, opens a platform-nat
 
 `DatePickerStyle` and `TimePickerStyle` control the inline surfaces independently of the selected values.
 TimePicker separates the active field (`selected_field_background` and `selected_field_foreground`), AM/PM selection (`selected_period_background` and `selected_period_foreground`), and dial handle (`selected_background` and `selected_foreground`).
-The inactive field uses `field_background` and `header_style`; the AM/PM group uses `period_style`, `period_border`, and its own border width and corner radius.
+The inactive field uses `field_background` and `header_style`; the AM/PM group uses `period_style`, `period_border`, and `period_corner_radii`.
+The outer picker borders are optional `Border` values, while container, field, period, and dial backgrounds are `VisualFill` values and surface shapes use `CornerRadii`.
 Its preferred width fits both the dial and the complete header; 24-hour locales omit the period group and its spacing.
 
 See [Date and Time Pickers Design](../design/date-time-pickers.md) for retained browsing state, localization, clock geometry, and accessibility invariants.

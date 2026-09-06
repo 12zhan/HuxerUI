@@ -627,7 +627,7 @@ View GalleryDialogCard(State<bool> visible) {
       Padding(theme.spacing.large),
       Spacing(theme.spacing.medium),
       Background(style.background),
-      CornerRadius(style.corner_radius),
+      CornerRadius(style.corner_radii),
       style.shadow
   );
 }

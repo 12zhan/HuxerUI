@@ -1619,8 +1619,14 @@ ButtonStyle
 IconButtonStyle
 ChipStyle
 SegmentedButtonStyle
+TabsStyle
+TreeViewStyle
 SelectStyle
 DividerStyle
+DatePickerStyle
+TimePickerStyle
+TextFieldStyle
+ComboBoxStyle
 CheckboxStyle
 RadioButtonStyle
 SwitchStyle
@@ -2041,7 +2047,7 @@ dialog.Show(
 
 `StringVariant` is the shared deferred display-string representation for component, validation, semantics, and presentation APIs that accept either direct text or a `StringResource` plus positional arguments. Shared resource resolution resolves it under the effective mounted Environment, while `UseString` is the explicit composition adapter for application logic that needs immediate UTF-8.
 
-`DialogStyle` is the complete standard Dialog presentation policy. It covers the modal scrim, default placement, viewport margins, enter and exit motion, surface appearance and width constraints, content padding and alignment, title and message styles, action direction and alignment, positive and negative action appearance and indication, and action separator policy.
+`DialogStyle` is the complete standard Dialog presentation policy. It covers the modal scrim, default placement, viewport margins, enter and exit motion, surface `VisualFill` and `CornerRadii`, width constraints, content padding and alignment, title and message styles, action direction and alignment, positive and negative action fills and indication, and action separator policy.
 
 The existing custom factory remains available:
 
@@ -2067,7 +2073,7 @@ Declarative custom Dialog presentation and command-created Dialogs share style r
 
 Menu already receives semantic `MenuItem` and `MenuSection` values. `MenuSection` remains a logical boundary: Theme may render it as a separator, spacing, or no visible element.
 
-`MenuStyle` controls menu surface and item treatment, including foreground and background colors, item indication, shape, shadow, icon geometry, padding, minimum metrics, separator policy, and root or submenu motion. The menu surface clips descendants to its rounded bounds so edge-to-edge item feedback cannot escape the shape. `MenuOptions` owns call-specific anchor placement, gap, viewport margin, offset, and width decisions.
+`MenuStyle` controls menu surface and item treatment, including its `VisualFill`, foreground colors, item indication, `CornerRadii`, shadow, icon geometry, padding, minimum metrics, separator policy, and root or submenu motion. The menu surface clips descendants to its rounded bounds so edge-to-edge item feedback cannot escape the shape. `MenuOptions` owns call-specific anchor placement, gap, viewport margin, offset, and width decisions.
 
 The service retains ownership of submenu chains, focus, outside press, Cancel routing, action dispatch, and automatic chain dismissal. Theme cannot change those behavioral guarantees.
 

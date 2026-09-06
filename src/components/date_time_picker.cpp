@@ -23,7 +23,9 @@
 #include <huxerui/semantics.h>
 #include <huxerui/theme.h>
 
+#include "graphics/paint_internal.h"
 #include "huxerui_builtin_resources.h"
+#include "resources/resource_internal.h"
 #include "runtime/mounted_node_internal.h"
 
 namespace huxerui {
@@ -233,12 +235,22 @@ bool IsFiniteNonNegative(const EdgeInsets& value) {
          IsFiniteNonNegative(value.bottom) && IsFiniteNonNegative(value.left);
 }
 
+bool IsFiniteNonNegative(const CornerRadii& value) {
+  return IsFiniteNonNegative(value.top_left) && IsFiniteNonNegative(value.top_right) &&
+         IsFiniteNonNegative(value.bottom_right) && IsFiniteNonNegative(value.bottom_left);
+}
+
+bool IsFiniteNonNegative(const Border& value) {
+  return IsFiniteNonNegative(value.width);
+}
+
 void ValidateDatePickerStyle(const DatePickerStyle& style) {
   const bool valid = IsFiniteNonNegative(style.padding) && std::isfinite(style.cell_size) && style.cell_size > 0.0F &&
                      IsFiniteNonNegative(style.column_spacing) && IsFiniteNonNegative(style.row_spacing) &&
                      std::isfinite(style.header_height) && style.header_height > 0.0F &&
-                     IsFiniteNonNegative(style.corner_radius) && IsFiniteNonNegative(style.selection_corner_radius) &&
-                     IsFiniteNonNegative(style.border_width) && IsFiniteNonNegative(style.label_spacing) &&
+                     IsFiniteNonNegative(style.corner_radii) && IsFiniteNonNegative(style.selection_corner_radius) &&
+                     (!style.border.has_value() || IsFiniteNonNegative(*style.border)) &&
+                     IsFiniteNonNegative(style.label_spacing) &&
                      IsFiniteNonNegative(style.validation_spacing);
   if (!valid) {
     throw std::invalid_argument(
@@ -253,12 +265,12 @@ void ValidateTimePickerStyle(const TimePickerStyle& style) {
                      std::isfinite(style.field_width) && style.field_width > 0.0F &&
                      std::isfinite(style.separator_width) && style.separator_width > 0.0F &&
                      std::isfinite(style.period_width) && style.period_width > 0.0F &&
-                     IsFiniteNonNegative(style.field_corner_radius) && IsFiniteNonNegative(style.period_spacing) &&
-                     IsFiniteNonNegative(style.period_corner_radius) &&
-                     IsFiniteNonNegative(style.period_border_width) &&
+                     IsFiniteNonNegative(style.field_corner_radii) && IsFiniteNonNegative(style.period_spacing) &&
+                     IsFiniteNonNegative(style.period_corner_radii) && IsFiniteNonNegative(style.period_border) &&
                      IsFiniteNonNegative(style.content_spacing) && std::isfinite(style.selection_radius) &&
                      style.selection_radius > 0.0F && std::isfinite(style.hand_width) && style.hand_width > 0.0F &&
-                     IsFiniteNonNegative(style.corner_radius) && IsFiniteNonNegative(style.border_width) &&
+                     IsFiniteNonNegative(style.corner_radii) &&
+                     (!style.border.has_value() || IsFiniteNonNegative(*style.border)) &&
                      IsFiniteNonNegative(style.label_spacing) && IsFiniteNonNegative(style.validation_spacing);
   if (!valid) {
     throw std::invalid_argument(
@@ -1060,6 +1072,16 @@ struct TimePickerBehavior {
   std::string validation_message;
 };
 
+std::optional<Border> PickerBorder(std::optional<Border> border, Color validation_error, bool invalid) {
+  if (!invalid) {
+    return border;
+  }
+  Border result = border.value_or(Border{});
+  result.color = validation_error;
+  result.width = std::max(1.0F, result.width);
+  return result;
+}
+
 struct TimeGeometry {
   Rect hour;
   Rect separator;
@@ -1299,7 +1321,17 @@ public:
     const TimeGeometry geometry = MakeTimeGeometry(node.Bounds(), style_, locale_.use_12_hour);
     const TextLayoutOptions options = CenteredText(locale_);
     PaintHeader(context, geometry, options);
-    context.DrawCircle(geometry.dial_center, geometry.dial_radius, style_.dial_background);
+    detail::PaintVisualFill(
+        context,
+        Rect{
+            geometry.dial_center.x - geometry.dial_radius,
+            geometry.dial_center.y - geometry.dial_radius,
+            geometry.dial_radius * 2.0F,
+            geometry.dial_radius * 2.0F,
+        },
+        style_.dial_background,
+        CornerRadii{geometry.dial_radius}
+    );
 
     const Point selected_point = SelectedDialPoint(geometry);
     context.DrawLine(geometry.dial_center, selected_point, style_.hand,
@@ -1510,10 +1542,18 @@ private:
     TextStyle hour_style = style_.header_style;
     TextStyle minute_style = style_.header_style;
     const bool selecting_hour = mode_ == TimeSelectionMode::Hour;
-    context.DrawRect(geometry.hour, selecting_hour ? style_.selected_field_background : style_.field_background,
-                     style_.field_corner_radius);
-    context.DrawRect(geometry.minute, selecting_hour ? style_.field_background : style_.selected_field_background,
-                     style_.field_corner_radius);
+    detail::PaintVisualFill(
+        context,
+        geometry.hour,
+        selecting_hour ? style_.selected_field_background : style_.field_background,
+        style_.field_corner_radii
+    );
+    detail::PaintVisualFill(
+        context,
+        geometry.minute,
+        selecting_hour ? style_.field_background : style_.selected_field_background,
+        style_.field_corner_radii
+    );
     if (mode_ == TimeSelectionMode::Hour) {
       hour_style.foreground = style_.selected_field_foreground;
     } else {
@@ -1524,14 +1564,16 @@ private:
     context.DrawText(geometry.separator, ":", style_.header_style, options);
     context.DrawText(geometry.minute, Number(static_cast<unsigned int>(Minute()), 2), minute_style, options);
     if (locale_.use_12_hour) {
-      context.PushClip(geometry.period, style_.period_corner_radius);
-      context.DrawRect(Hour() < 12 ? geometry.am : geometry.pm, style_.selected_period_background);
+      context.PushClip(geometry.period, style_.period_corner_radii);
+      detail::PaintVisualFill(
+          context, Hour() < 12 ? geometry.am : geometry.pm, style_.selected_period_background, {}
+      );
       context.PopClip();
-      if (style_.period_border_width > 0.0F) {
-        const StrokeStyle stroke{.width = style_.period_border_width};
-        context.DrawBorder(geometry.period, style_.period_border, stroke, style_.period_corner_radius);
+      if (style_.period_border.width > 0.0F) {
+        const StrokeStyle stroke{.width = style_.period_border.width};
+        context.DrawBorder(geometry.period, style_.period_border.color, stroke, style_.period_corner_radii);
         context.DrawLine({geometry.pm.x, geometry.pm.y},
-                         {geometry.pm.x + geometry.pm.width, geometry.pm.y}, style_.period_border, stroke);
+                         {geometry.pm.x + geometry.pm.width, geometry.pm.y}, style_.period_border.color, stroke);
       }
       TextStyle period_style = style_.period_style;
       if (!CandidateForPeriod(false)) {
@@ -1738,7 +1780,30 @@ private:
 };
 
 const detail::ModifierDescriptor& TimePickerBehavior::Descriptor() {
-  return detail::ModifierDescriptorFor<TimePickerBehavior, TimePickerBehaviorExtension>();
+  static const detail::ModifierDescriptor descriptor = [] {
+    detail::ModifierDescriptor result =
+        detail::ModifierDescriptorFor<TimePickerBehavior, TimePickerBehaviorExtension>();
+    result.compile = [](detail::ViewSpec&,
+                        detail::ModifierSpec& modifier,
+                        const std::shared_ptr<const Environment>& environment,
+                        detail::AppResources& resources) {
+      TimePickerBehavior resolved = *static_cast<const TimePickerBehavior*>(modifier.value.get());
+      std::optional<Locale> locale;
+      const auto resolve_fill = [&environment, &resources, &locale](VisualFill& fill) {
+        if (!locale.has_value() && detail::NeedsResourceResolution(fill)) {
+          locale = detail::ResolveResourceLocale(environment, resources);
+        }
+        fill = detail::ResolveVisualFill(fill, resources, locale.value_or(Locale::Default()));
+      };
+      resolve_fill(resolved.style.dial_background);
+      resolve_fill(resolved.style.field_background);
+      resolve_fill(resolved.style.selected_field_background);
+      resolve_fill(resolved.style.selected_period_background);
+      modifier.value = std::make_shared<TimePickerBehavior>(std::move(resolved));
+    };
+    return result;
+  }();
+  return descriptor;
 }
 
 std::function<View()> MakeDatePickerScopeFactory(DatePickerConfiguration configuration) {
@@ -1757,9 +1822,7 @@ std::function<View()> MakeDatePickerScopeFactory(DatePickerConfiguration configu
     View picker = Canvas([](PaintContext&, Size) {}).With(
         Frame{.width = width, .height = height},
         Background{style.background},
-        Border{configuration.validation.IsInvalid() ? style.validation_error : style.border,
-               configuration.validation.IsInvalid() ? std::max(1.0F, style.border_width) : style.border_width},
-        CornerRadius{style.corner_radius},
+        CornerRadius{style.corner_radii},
         ClipChildren{},
         Focusable{},
         PointerCursor{PointerCursorKind::Hand},
@@ -1776,6 +1839,10 @@ std::function<View()> MakeDatePickerScopeFactory(DatePickerConfiguration configu
             .validation_message = validation_message,
         }
     );
+    if (const std::optional<Border> border =
+            PickerBorder(style.border, style.validation_error, configuration.validation.IsInvalid())) {
+      picker = std::move(picker).With(*border);
+    }
     View field = std::move(picker);
     if (!label.empty()) {
       field = Column {
@@ -1811,9 +1878,7 @@ std::function<View()> MakeTimePickerScopeFactory(TimePickerConfiguration configu
     View picker = Canvas([](PaintContext&, Size) {}).With(
         Frame{.width = width, .height = height},
         Background{style.background},
-        Border{configuration.validation.IsInvalid() ? style.validation_error : style.border,
-               configuration.validation.IsInvalid() ? std::max(1.0F, style.border_width) : style.border_width},
-        CornerRadius{style.corner_radius},
+        CornerRadius{style.corner_radii},
         ClipChildren{},
         Focusable{},
         PointerCursor{PointerCursorKind::Hand},
@@ -1829,6 +1894,10 @@ std::function<View()> MakeTimePickerScopeFactory(TimePickerConfiguration configu
             .validation_message = validation_message,
         }
     );
+    if (const std::optional<Border> border =
+            PickerBorder(style.border, style.validation_error, configuration.validation.IsInvalid())) {
+      picker = std::move(picker).With(*border);
+    }
     View field = std::move(picker);
     if (!label.empty()) {
       field = Column {

@@ -253,7 +253,7 @@ View TestButtonTheme(std::function<View()> content) {
                   huxerui::TextDecoration::Underline,
               },
           .padding = huxerui::EdgeInsets::All(11.0F),
-          .corner_radius = 13.0F,
+          .corner_radii = CornerRadii{13.0F},
       }
   );
   return Theme {std::move(definition), Scope(std::move(content))};
@@ -304,6 +304,14 @@ View MaterialToggleApp() {
   };
 }
 
+View ResourceFillCheckboxApp() {
+  CheckboxStyle style = CheckboxStyle::Default();
+  style.checked_background = ImageResource("test", "images/density");
+  ThemeDefinition definition;
+  definition.Set(style);
+  return Theme {std::move(definition), Checkbox(true)};
+}
+
 View MaterialLabeledToggleApp() {
   auto checkbox = UseState(false);
   auto radio = UseState(false);
@@ -350,6 +358,22 @@ View MaterialSegmentedButtonApp() {
       SegmentedButton({"Day", "Week", "Month"}, 1).OnChanged([](std::size_t) {}),
     },
   };
+}
+
+View MaterialSelectableChipApp() {
+  auto selected = UseState(false);
+  chip_selected = selected;
+  return huxerui::MaterialTheme {
+    Chip("Selectable", selected).OnChanged([selected](bool value) { selected = value; }),
+  };
+}
+
+View AsymmetricSegmentedButtonApp() {
+  SegmentedButtonStyle style = SegmentedButtonStyle::Default();
+  style.corner_radii = {16.0F, 4.0F, 12.0F, 8.0F};
+  ThemeDefinition definition;
+  definition.Set(style);
+  return Theme {std::move(definition), SegmentedButton({"Day", "Week", "Month"}, 1)};
 }
 
 View MaterialTabsApp() {
@@ -810,7 +834,7 @@ View PresentationThemeApp() {
           .background = Color::Rgb(20, 30, 40, 0.9F),
           .text_style = TextStyle{Font::System(14.0F), Color::Rgb(240, 245, 250)},
           .padding = EdgeInsets::All(10.0F),
-          .corner_radius = 9.0F,
+          .corner_radii = CornerRadii{9.0F},
       }
   );
   definition.Set(
@@ -1087,29 +1111,34 @@ TEST_CASE("TestFlatThemeHoverAndPressedIndication") {
 
   const ThemeDefinition definition = huxerui::FlatThemeDefinition();
   const ToastStyle toast_style = ThemeDefinitionValue<ToastStyle>(definition);
-  REQUIRE(toast_style.background.red == light.colors.inverse_surface.red);
+  REQUIRE(SolidFillColor(toast_style.background) != nullptr);
+  REQUIRE(SolidFillColor(toast_style.background)->red == light.colors.inverse_surface.red);
   REQUIRE_FALSE(toast_style.motion.has_value());
 
   const SnackBarStyle snack_bar_style = ThemeDefinitionValue<SnackBarStyle>(definition);
-  REQUIRE(snack_bar_style.background.red == light.colors.inverse_surface.red);
+  REQUIRE(SolidFillColor(snack_bar_style.background) != nullptr);
+  REQUIRE(SolidFillColor(snack_bar_style.background)->red == light.colors.inverse_surface.red);
   REQUIRE(snack_bar_style.action_text_style.foreground == light.colors.primary);
   REQUIRE_FALSE(snack_bar_style.motion.has_value());
 
   const TooltipStyle tooltip_style = ThemeDefinitionValue<TooltipStyle>(definition);
-  REQUIRE(tooltip_style.background.red == light.colors.inverse_surface.red);
-  REQUIRE(tooltip_style.background.alpha == light.colors.inverse_surface.alpha * 0.94F);
+  REQUIRE(SolidFillColor(tooltip_style.background) != nullptr);
+  REQUIRE(SolidFillColor(tooltip_style.background)->red == light.colors.inverse_surface.red);
+  REQUIRE(SolidFillColor(tooltip_style.background)->alpha == light.colors.inverse_surface.alpha * 0.94F);
   REQUIRE(tooltip_style.text_style.foreground == light.colors.inverse_on_surface);
   REQUIRE(tooltip_style.maximum_width == 320.0F);
   REQUIRE(tooltip_style.shadow.blur_radius == light.elevation.low);
 
   const DialogStyle dialog_style = ThemeDefinitionValue<DialogStyle>(definition);
-  REQUIRE(dialog_style.background.red == light.colors.surface.red);
+  REQUIRE(SolidFillColor(dialog_style.background) != nullptr);
+  REQUIRE(SolidFillColor(dialog_style.background)->red == light.colors.surface.red);
   REQUIRE(dialog_style.motion.has_value());
   REQUIRE(dialog_style.positive_action_indication.press.has_value());
   REQUIRE(dialog_style.negative_action_indication.press.has_value());
 
   const BottomSheetStyle bottom_sheet_style = ThemeDefinitionValue<BottomSheetStyle>(definition);
-  REQUIRE(bottom_sheet_style.background.red == light.colors.surface.red);
+  REQUIRE(SolidFillColor(bottom_sheet_style.background) != nullptr);
+  REQUIRE(SolidFillColor(bottom_sheet_style.background)->red == light.colors.surface.red);
 
   const MenuStyle menu_style = ThemeDefinitionValue<MenuStyle>(definition);
   REQUIRE(menu_style.separator_mode == MenuSeparatorMode::BetweenItems);
@@ -1119,7 +1148,9 @@ TEST_CASE("TestFlatThemeHoverAndPressedIndication") {
   REQUIRE(menu_style.item_indication.press.has_value());
 
   const ThemeDefinition dark_definition = huxerui::FlatDarkThemeDefinition();
-  REQUIRE(ThemeDefinitionValue<DialogStyle>(dark_definition).background.red == dark.colors.surface.red);
+  const DialogStyle dark_dialog_style = ThemeDefinitionValue<DialogStyle>(dark_definition);
+  REQUIRE(SolidFillColor(dark_dialog_style.background) != nullptr);
+  REQUIRE(SolidFillColor(dark_dialog_style.background)->red == dark.colors.surface.red);
 
   TestPlatform platform;
   Runtime runtime{FlatThemeInteractionApp, platform};
@@ -1172,7 +1203,7 @@ TEST_CASE("TestMaterialThemeDefinitionsAndIndication") {
 
   const ThemeDefinition definition = huxerui::MaterialThemeDefinition();
   const ButtonStyle button_style = ThemeDefinitionValue<ButtonStyle>(definition);
-  REQUIRE(button_style.corner_radius == 20.0F);
+  REQUIRE(button_style.corner_radii == CornerRadii{20.0F});
   REQUIRE(button_style.padding.left == 24.0F);
   REQUIRE(button_style.padding.top == 8.0F);
   REQUIRE(button_style.minimum_width == 58.0F);
@@ -1199,33 +1230,38 @@ TEST_CASE("TestMaterialThemeDefinitionsAndIndication") {
   const CheckboxStyle checkbox_style = ThemeDefinitionValue<CheckboxStyle>(definition);
   REQUIRE(checkbox_style.size == 18.0F);
   REQUIRE(checkbox_style.minimum_interactive_size == 48.0F);
-  REQUIRE(checkbox_style.corner_radius == 2.0F);
-  REQUIRE(checkbox_style.checked_background.red == light.colors.primary.red);
+  REQUIRE(checkbox_style.corner_radii == CornerRadii{2.0F});
+  REQUIRE(SolidFillColor(checkbox_style.checked_background) != nullptr);
+  REQUIRE(SolidFillColor(checkbox_style.checked_background)->red == light.colors.primary.red);
 
   const ChipStyle chip_style = ThemeDefinitionValue<ChipStyle>(definition);
-  REQUIRE(chip_style.background == Color::Transparent());
-  REQUIRE(chip_style.selected_background == light.colors.secondary_container);
+  REQUIRE(SolidFillColor(chip_style.background) != nullptr);
+  REQUIRE(*SolidFillColor(chip_style.background) == Color::Transparent());
+  REQUIRE(SolidFillColor(chip_style.selected_background) != nullptr);
+  REQUIRE(*SolidFillColor(chip_style.selected_background) == light.colors.secondary_container);
   REQUIRE(chip_style.label_style.foreground == light.colors.on_surface_variant);
   REQUIRE(chip_style.selected_label == light.colors.on_secondary_container);
   REQUIRE(chip_style.icon_size == 18.0F);
   REQUIRE(chip_style.icon_spacing == light.spacing.small);
   REQUIRE(chip_style.minimum_height == 32.0F);
-  REQUIRE(chip_style.corner_radius == light.shapes.small);
-  REQUIRE(chip_style.border == light.colors.outline);
+  REQUIRE(chip_style.corner_radii == CornerRadii{light.shapes.small});
+  REQUIRE(chip_style.border.color == light.colors.outline);
   REQUIRE(chip_style.indication.has_value());
   REQUIRE(chip_style.selected_indication.has_value());
   REQUIRE(chip_style.selected_indication->ripple.has_value());
   REQUIRE(chip_style.selected_indication->ripple->color.red == light.colors.on_secondary_container.red);
 
   const SegmentedButtonStyle segmented_button_style = ThemeDefinitionValue<SegmentedButtonStyle>(definition);
-  REQUIRE(segmented_button_style.background == Color::Transparent());
-  REQUIRE(segmented_button_style.selected_background == light.colors.secondary_container);
+  REQUIRE(SolidFillColor(segmented_button_style.background) != nullptr);
+  REQUIRE(*SolidFillColor(segmented_button_style.background) == Color::Transparent());
+  REQUIRE(SolidFillColor(segmented_button_style.selected_background) != nullptr);
+  REQUIRE(*SolidFillColor(segmented_button_style.selected_background) == light.colors.secondary_container);
   REQUIRE(segmented_button_style.selected_label == light.colors.on_secondary_container);
   REQUIRE(segmented_button_style.icon_size == 18.0F);
   REQUIRE(segmented_button_style.icon_spacing == light.spacing.small);
   REQUIRE(segmented_button_style.minimum_height == 40.0F);
-  REQUIRE(segmented_button_style.corner_radius == 20.0F);
-  REQUIRE(segmented_button_style.border == light.colors.outline);
+  REQUIRE(segmented_button_style.corner_radii == CornerRadii{20.0F});
+  REQUIRE(segmented_button_style.border.color == light.colors.outline);
   REQUIRE(segmented_button_style.indication.has_value());
   REQUIRE(segmented_button_style.selected_indication.has_value());
 
@@ -1287,15 +1323,18 @@ TEST_CASE("TestMaterialThemeDefinitionsAndIndication") {
   REQUIRE(slider_style.focus_ring.has_value());
   REQUIRE(slider_style.focus_ring->width == 0.0F);
   const huxerui::ToastStyle toast_style = ThemeDefinitionValue<huxerui::ToastStyle>(definition);
-  REQUIRE(toast_style.background.red == Color::Rgb(50, 47, 53).red);
+  REQUIRE(SolidFillColor(toast_style.background) != nullptr);
+  REQUIRE(SolidFillColor(toast_style.background)->red == Color::Rgb(50, 47, 53).red);
 
   const huxerui::SnackBarStyle snack_bar_style = ThemeDefinitionValue<huxerui::SnackBarStyle>(definition);
-  REQUIRE(snack_bar_style.background == light.colors.inverse_surface);
+  REQUIRE(SolidFillColor(snack_bar_style.background) != nullptr);
+  REQUIRE(*SolidFillColor(snack_bar_style.background) == light.colors.inverse_surface);
   REQUIRE(snack_bar_style.action_text_style.foreground == light.colors.primary);
   REQUIRE(snack_bar_style.motion.has_value());
 
   const huxerui::TooltipStyle tooltip_style = ThemeDefinitionValue<huxerui::TooltipStyle>(definition);
-  REQUIRE(tooltip_style.background == light.colors.inverse_surface);
+  REQUIRE(SolidFillColor(tooltip_style.background) != nullptr);
+  REQUIRE(*SolidFillColor(tooltip_style.background) == light.colors.inverse_surface);
   REQUIRE(tooltip_style.text_style.foreground == light.colors.inverse_on_surface);
   REQUIRE(tooltip_style.maximum_width == 200.0F);
   REQUIRE(tooltip_style.shadow == Shadow{});
@@ -1315,7 +1354,8 @@ TEST_CASE("TestMaterialThemeDefinitionsAndIndication") {
   REQUIRE(dialog_style.positive_action_indication.ripple->color.alpha < light.colors.primary.alpha);
 
   const huxerui::BottomSheetStyle bottom_sheet_style = ThemeDefinitionValue<huxerui::BottomSheetStyle>(definition);
-  REQUIRE(bottom_sheet_style.background.red == light.colors.surface_container_low.red);
+  REQUIRE(SolidFillColor(bottom_sheet_style.background) != nullptr);
+  REQUIRE(SolidFillColor(bottom_sheet_style.background)->red == light.colors.surface_container_low.red);
 
   const huxerui::MenuStyle menu_style = ThemeDefinitionValue<huxerui::MenuStyle>(definition);
   REQUIRE(menu_style.separator_mode == huxerui::MenuSeparatorMode::None);
@@ -1334,13 +1374,13 @@ TEST_CASE("TestMaterialThemeDefinitionsAndIndication") {
   brand.colors.primary = Color::Rgb(20, 110, 90);
   const ThemeDefinition brand_definition = huxerui::MaterialThemeDefinition(brand);
   const ButtonStyle brand_button_style = ThemeDefinitionValue<ButtonStyle>(brand_definition);
-  REQUIRE(brand_button_style.background.green == brand.colors.primary.green);
+  REQUIRE(SolidFillColor(brand_button_style.background) != nullptr);
+  REQUIRE(SolidFillColor(brand_button_style.background)->green == brand.colors.primary.green);
 
   const ThemeDefinition dark_definition = huxerui::MaterialDarkThemeDefinition();
-  REQUIRE(
-      ThemeDefinitionValue<huxerui::DialogStyle>(dark_definition).background.red ==
-      dark.colors.surface_container_high.red
-  );
+  const DialogStyle dark_dialog_style = ThemeDefinitionValue<DialogStyle>(dark_definition);
+  REQUIRE(SolidFillColor(dark_dialog_style.background) != nullptr);
+  REQUIRE(SolidFillColor(dark_dialog_style.background)->red == dark.colors.surface_container_high.red);
 
   TestPlatform platform;
   platform.platform_resources = BuiltinTestResources();
@@ -1566,6 +1606,17 @@ TEST_CASE("TestLabeledTogglesUseVisualSpacingAndOneActivationTarget") {
   REQUIRE(labeled_checkbox_checked.Get());
   REQUIRE(labeled_radio_selected.Get());
   REQUIRE(labeled_switch_checked.Get());
+}
+
+TEST_CASE("TestCheckboxResolvesResourceBackedSurfaceFill") {
+  TestPlatform platform;
+  platform.platform_resources = BuiltinTestResources();
+  Runtime runtime{ResourceFillCheckboxApp, platform};
+  runtime.SetWindowMetrics({.viewport = {40.0F, 40.0F}});
+  const FlattenedScene& scene = runtime.BuildFrame();
+  REQUIRE(std::ranges::any_of(scene.Commands(), [](const PaintCommand& command) {
+    return std::holds_alternative<DrawImageCommand>(command);
+  }));
 }
 
 TEST_CASE("TestLabeledToggleGeometryUsesContentBounds") {
@@ -1870,9 +1921,55 @@ TEST_CASE("TestMaterialChipGeometryAndColors") {
   REQUIRE(selected->style.foreground == style.selected_label);
   const bool paints_outline = std::ranges::any_of(scene.Commands(), [&style](const PaintCommand& command) {
     const auto* border = std::get_if<DrawBorderCommand>(&command);
-    return border != nullptr && border->color == style.border && border->style.width == style.border_width;
+    return border != nullptr && border->color == style.border.color && border->style.width == style.border.width;
   });
   REQUIRE(paints_outline);
+}
+
+TEST_CASE("TestMaterialSelectableChipTransitionsBetweenPresentAndAbsentBorders") {
+  TestPlatform platform;
+  Runtime runtime{MaterialSelectableChipApp, platform};
+  runtime.SetWindowMetrics({.viewport = {160.0F, 64.0F}});
+  runtime.BuildFrame();
+
+  const ChipStyle style = ThemeDefinitionValue<ChipStyle>(MaterialThemeDefinition());
+  const auto* chip = FindMountedKind(*runtime.RootNode(), detail::NodeKind::Chip);
+  REQUIRE(chip != nullptr);
+  REQUIRE(chip->resolved_border == style.border);
+
+  const Rect bounds = chip->PresentationBounds();
+  const Point pointer{bounds.x + bounds.width * 0.5F, bounds.y + bounds.height * 0.5F};
+  runtime.HandlePointerEvent(PointerEvent{PointerEventType::Move, 97, pointer});
+  runtime.BuildFrame();
+  ClickAt(runtime, pointer, 97);
+  runtime.BuildFrame();
+  REQUIRE(chip_selected.Get());
+  platform.AdvanceTime(MaterialLightThemeSpec().motion.fast * 0.5);
+  runtime.BuildFrame();
+  chip = FindMountedKind(*runtime.RootNode(), detail::NodeKind::Chip);
+  REQUIRE(chip != nullptr);
+  REQUIRE(chip->resolved_border.has_value());
+  REQUIRE(chip->resolved_border->width < style.border.width);
+  platform.AdvanceTime(MaterialLightThemeSpec().motion.fast);
+  runtime.BuildFrame();
+  chip = FindMountedKind(*runtime.RootNode(), detail::NodeKind::Chip);
+  REQUIRE(chip != nullptr);
+  REQUIRE(chip->resolved_border == style.selected_border);
+
+  ClickAt(runtime, pointer, 97);
+  runtime.BuildFrame();
+  REQUIRE_FALSE(chip_selected.Get());
+  platform.AdvanceTime(MaterialLightThemeSpec().motion.fast * 0.5);
+  runtime.BuildFrame();
+  chip = FindMountedKind(*runtime.RootNode(), detail::NodeKind::Chip);
+  REQUIRE(chip != nullptr);
+  REQUIRE(chip->resolved_border.has_value());
+  REQUIRE(chip->resolved_border->width < style.border.width);
+  platform.AdvanceTime(MaterialLightThemeSpec().motion.fast);
+  runtime.BuildFrame();
+  chip = FindMountedKind(*runtime.RootNode(), detail::NodeKind::Chip);
+  REQUIRE(chip != nullptr);
+  REQUIRE(chip->resolved_border == style.border);
 }
 
 TEST_CASE("TestHorizontalAndVerticalDividerGeometry") {
@@ -1934,7 +2031,7 @@ TEST_CASE("TestSegmentedButtonSelectionLayoutAndKeyboard") {
   REQUIRE(group->children[0]->measured_size.height >= SegmentedButtonStyle::Default().minimum_height);
   REQUIRE(
       group->children[1]->layout_offset.x ==
-      group->children[0]->measured_size.width - SegmentedButtonStyle::Default().border_width
+      group->children[0]->measured_size.width - SegmentedButtonStyle::Default().border.width
   );
   REQUIRE(group->children[0]->properties.background == SegmentedButtonStyle::Default().selected_background);
   REQUIRE(group->children[1]->properties.background == SegmentedButtonStyle::Default().background);
@@ -2035,6 +2132,23 @@ TEST_CASE("TestSegmentedButtonSelectionLayoutAndKeyboard") {
   REQUIRE(rejected_segmented_button_changes == 2);
 }
 
+TEST_CASE("TestSegmentedButtonPreservesOnlyOuterAsymmetricCorners") {
+  TestPlatform platform;
+  Runtime runtime{AsymmetricSegmentedButtonApp, platform};
+  runtime.SetWindowMetrics({.viewport = {320.0F, 64.0F}});
+  runtime.BuildFrame();
+
+  const auto* root = runtime.RootNode();
+  REQUIRE(root != nullptr);
+  REQUIRE(root->children.size() == 1);
+  const auto* group = root->children[0]->children[0].get();
+  REQUIRE(group->children.size() == 3);
+  REQUIRE(group->properties.corner_radii == CornerRadii{16.0F, 4.0F, 12.0F, 8.0F});
+  REQUIRE(group->children[0]->properties.corner_radii == CornerRadii{16.0F, 0.0F, 0.0F, 8.0F});
+  REQUIRE(group->children[1]->properties.corner_radii == CornerRadii{});
+  REQUIRE(group->children[2]->properties.corner_radii == CornerRadii{0.0F, 4.0F, 12.0F, 0.0F});
+}
+
 TEST_CASE("TestMaterialSegmentedButtonStyleAndValidation") {
   REQUIRE_THROWS_AS(
       SegmentedButton(std::vector<StringVariant>{}, 0),
@@ -2062,10 +2176,11 @@ TEST_CASE("TestMaterialSegmentedButtonStyleAndValidation") {
   REQUIRE(group->children.size() == 3);
   REQUIRE(group->children[0]->measured_size.height == style.minimum_height);
   REQUIRE(FillColor(group->children[1]->properties.background) != nullptr);
-  REQUIRE(*FillColor(group->children[1]->properties.background) == style.selected_background);
+  REQUIRE(SolidFillColor(style.selected_background) != nullptr);
+  REQUIRE(*FillColor(group->children[1]->properties.background) == *SolidFillColor(style.selected_background));
   REQUIRE(MountedIndication(*group->children[1]) != nullptr);
   REQUIRE(*MountedIndication(*group->children[1]) == *style.selected_indication);
-  REQUIRE(group->children[0]->properties.border == Border{style.border, style.border_width});
+  REQUIRE(group->children[0]->properties.border == style.border);
   const DrawTextCommand* selected = FindText(scene, "Week");
   REQUIRE(selected != nullptr);
   REQUIRE(selected->style.foreground == style.selected_label);

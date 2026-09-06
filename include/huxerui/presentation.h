@@ -17,6 +17,7 @@
 #include <huxerui/layer.h>
 #include <huxerui/layout.h>
 #include <huxerui/modifier.h>
+#include <huxerui/paint.h>
 #include <huxerui/resource.h>
 #include <huxerui/text.h>
 #include <huxerui/vector.h>
@@ -97,16 +98,16 @@ enum class VerticalPlacement {
 
 /// Defines the themed appearance and viewport placement of passive Toast feedback.
 struct ToastStyle {
-  /// Surface fill color.
-  Color background = Color::Rgb(31, 35, 40, 0.94F);
+  /// Surface fill.
+  VisualFill background = Color::Rgb(31, 35, 40, 0.94F);
   /// Message typography and foreground color.
   TextStyle text_style{Font::System(14.0F), Color::White()};
   /// Insets between the message and surface edges.
   EdgeInsets padding = EdgeInsets::Symmetric(16.0F, 12.0F);
   /// Surface shadow.
   Shadow shadow{Color::Rgb(0, 0, 0, 0.24F), {}, 10.0F, 0.0F};
-  /// Surface corner radius in DIPs.
-  float corner_radius = 8.0F;
+  /// Surface corner radii in DIPs.
+  CornerRadii corner_radii{8.0F};
   /// Minimum surface height in DIPs.
   float minimum_height = 0.0F;
   /// Maximum surface width in DIPs.
@@ -128,20 +129,20 @@ struct ToastStyle {
 ///
 /// The action remains an ordinary Button; these fields only provide its component-specific appearance.
 struct SnackBarStyle {
-  /// Surface fill color.
-  Color background = Color::Rgb(31, 35, 40);
+  /// Surface fill.
+  VisualFill background = Color::Rgb(31, 35, 40);
   /// Message typography and foreground color.
   TextStyle message_style{Font::System(14.0F), Color::White()};
   /// Action label typography and foreground color.
   TextStyle action_text_style{Font::System(14.0F), Color::Rgb(121, 192, 255)};
-  /// Action button fill color.
-  Color action_background = Color::Transparent();
+  /// Action button fill.
+  VisualFill action_background = Color::Transparent();
   /// Insets inside the action button.
   EdgeInsets action_padding = EdgeInsets::Symmetric(12.0F, 8.0F);
   /// Minimum action button height in DIPs.
   float action_minimum_height = 36.0F;
-  /// Action button corner radius in DIPs.
-  float action_corner_radius = 6.0F;
+  /// Action button corner radii in DIPs.
+  CornerRadii action_corner_radii{6.0F};
   /// Optional hover, press, focus, and disabled indication for the action button.
   std::optional<Indication> action_indication;
   /// Insets between SnackBar content and surface edges.
@@ -150,8 +151,8 @@ struct SnackBarStyle {
   float content_spacing = 8.0F;
   /// Surface shadow.
   Shadow shadow{Color::Rgb(0, 0, 0, 0.24F), {}, 10.0F, 0.0F};
-  /// Surface corner radius in DIPs.
-  float corner_radius = 8.0F;
+  /// Surface corner radii in DIPs.
+  CornerRadii corner_radii{8.0F};
   /// Minimum surface height in DIPs.
   float minimum_height = 48.0F;
   /// Maximum surface width in DIPs.
@@ -171,8 +172,8 @@ struct SnackBarStyle {
 struct DialogStyle {
   /// Full-viewport modal barrier fill color.
   Color scrim = Color::Rgb(0, 0, 0, 0.42F);
-  /// Dialog surface fill color.
-  Color background = Color::White();
+  /// Dialog surface fill.
+  VisualFill background = Color::White();
   /// Dialog surface shadow.
   Shadow shadow{Color::Rgb(0, 0, 0, 0.24F), {}, 24.0F, 0.0F};
   /// Title typography and foreground color.
@@ -183,10 +184,10 @@ struct DialogStyle {
   TextStyle positive_action_style{Font::System(14.0F), Color::White()};
   /// Negative action typography and foreground color.
   TextStyle negative_action_style{Font::System(14.0F), Color::Rgb(31, 35, 40)};
-  /// Positive action button fill color.
-  Color positive_action_background = Color::Rgb(31, 111, 235);
-  /// Negative action button fill color.
-  Color negative_action_background = Color::Transparent();
+  /// Positive action button fill.
+  VisualFill positive_action_background = Color::Rgb(31, 111, 235);
+  /// Negative action button fill.
+  VisualFill negative_action_background = Color::Transparent();
   /// Positive action interaction indication.
   Indication positive_action_indication{
       .hover = IndicationLayer{.fill = Color::Rgb(255, 255, 255, 0.1F)},
@@ -209,12 +210,12 @@ struct DialogStyle {
   float action_spacing = 8.0F;
   /// Thickness of the content-action separator in DIPs; zero disables it.
   float action_separator_thickness = 0.0F;
-  /// Standard action button corner radius in DIPs.
-  float action_corner_radius = 6.0F;
+  /// Standard action button corner radii in DIPs.
+  CornerRadii action_corner_radii{6.0F};
   /// Minimum standard action button height in DIPs.
   float minimum_action_height = 36.0F;
-  /// Dialog surface corner radius in DIPs.
-  float corner_radius = 12.0F;
+  /// Dialog surface corner radii in DIPs.
+  CornerRadii corner_radii{12.0F};
   /// Minimum Dialog width in DIPs.
   float minimum_width = 0.0F;
   /// Maximum Dialog width in DIPs.
@@ -242,8 +243,8 @@ struct DialogStyle {
 struct BottomSheetStyle {
   /// Full-viewport modal barrier fill color.
   Color scrim = Color::Rgb(0, 0, 0, 0.42F);
-  /// BottomSheet surface fill color.
-  Color background = Color::White();
+  /// BottomSheet surface fill.
+  VisualFill background = Color::White();
   /// BottomSheet surface shadow.
   Shadow shadow{Color::Rgb(0, 0, 0, 0.22F), {}, 18.0F, 0.0F};
   /// Surface corner radii, normally applied only to the top edge.
@@ -279,8 +280,8 @@ enum class MenuSeparatorMode {
 
 /// Defines the themed appearance and sizing of Menu content.
 struct MenuStyle {
-  /// Menu surface fill color.
-  Color background = Color::White();
+  /// Menu surface fill.
+  VisualFill background = Color::White();
   /// Default item label color.
   Color foreground = Color::Rgb(31, 35, 40);
   /// Default item icon tint.
@@ -308,8 +309,8 @@ struct MenuStyle {
   float icon_size = 18.0F;
   /// Menu surface shadow.
   Shadow shadow{Color::Rgb(0, 0, 0, 0.2F), {}, 16.0F, 0.0F};
-  /// Menu surface corner radius in DIPs.
-  float corner_radius = 8.0F;
+  /// Menu surface corner radii in DIPs.
+  CornerRadii corner_radii{8.0F};
   /// Minimum Menu width in DIPs.
   float minimum_width = 180.0F;
   /// Minimum item height in DIPs.
@@ -648,16 +649,16 @@ struct AnchorPlacement {
 
 /// Defines the themed appearance, placement, and timing of Tooltip content.
 struct TooltipStyle {
-  /// Tooltip surface fill color.
-  Color background = Color::Rgb(31, 35, 40, 0.94F);
+  /// Tooltip surface fill.
+  VisualFill background = Color::Rgb(31, 35, 40, 0.94F);
   /// Message typography and foreground color.
   TextStyle text_style{Font::System(13.0F), Color::White()};
   /// Insets between the message and surface edges.
   EdgeInsets padding = EdgeInsets::Symmetric(8.0F, 4.0F);
   /// Tooltip surface shadow.
   Shadow shadow{Color::Rgb(0, 0, 0, 0.18F), {}, 6.0F, 0.0F};
-  /// Surface corner radius in DIPs.
-  float corner_radius = 4.0F;
+  /// Surface corner radii in DIPs.
+  CornerRadii corner_radii{4.0F};
   /// Minimum Tooltip height in DIPs.
   float minimum_height = 24.0F;
   /// Maximum Tooltip width in DIPs.

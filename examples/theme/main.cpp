@@ -12,7 +12,7 @@ View AccentTheme(View content) {
       .background = theme.colors.error,
       .label_style = TextStyle{Font::System(theme.typography.label_large), theme.colors.on_primary},
       .padding = EdgeInsets::Symmetric(theme.spacing.medium, theme.spacing.small),
-      .corner_radius = theme.shapes.large,
+      .corner_radii = CornerRadii{theme.shapes.large},
   });
   return Theme {std::move(definition), content};
 }

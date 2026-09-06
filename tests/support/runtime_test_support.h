@@ -896,6 +896,11 @@ inline const Color* SolidBrushColor(const Brush& brush) {
   return std::get_if<Color>(&brush.Get());
 }
 
+inline const Color* SolidFillColor(const huxerui::VisualFill& fill) {
+  const auto* brush = std::get_if<Brush>(&fill.Get());
+  return brush != nullptr ? SolidBrushColor(*brush) : nullptr;
+}
+
 inline bool BrushIsColor(const Brush& brush, Color expected) {
   const Color* color = SolidBrushColor(brush);
   return color != nullptr && *color == expected;
@@ -909,6 +914,11 @@ inline const DrawRectCommand* FindRectWithColor(const FlattenedScene& scene, Col
     }
   }
   return nullptr;
+}
+
+inline const DrawRectCommand* FindRectWithColor(const FlattenedScene& scene, const huxerui::VisualFill& expected) {
+  const Color* color = SolidFillColor(expected);
+  return color != nullptr ? FindRectWithColor(scene, *color) : nullptr;
 }
 
 inline std::optional<Rect> FindPresentedRectWithColor(
@@ -938,6 +948,15 @@ inline std::optional<Rect> FindPresentedRectWithColor(
     }
   }
   return std::nullopt;
+}
+
+inline std::optional<Rect> FindPresentedRectWithColor(
+    const FlattenedScene& scene,
+    const huxerui::VisualFill& expected,
+    std::optional<Size> expected_size = std::nullopt
+) {
+  const Color* color = SolidFillColor(expected);
+  return color != nullptr ? FindPresentedRectWithColor(scene, *color, expected_size) : std::nullopt;
 }
 
 inline const DrawBorderCommand* FindBorderWithColor(const FlattenedScene& scene, Color expected) {

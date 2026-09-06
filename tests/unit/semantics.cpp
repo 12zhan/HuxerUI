@@ -599,7 +599,8 @@ TEST_CASE("SegmentedButtonPublishesStableRadioButtonItems") {
   REQUIRE(day.bounds.width > 0.0F);
   REQUIRE(week.bounds.width > 0.0F);
   REQUIRE(month.bounds.width > 0.0F);
-  const float border_overlap = SegmentedButtonStyle::Default().border_width;
+  const SegmentedButtonStyle segmented_style = SegmentedButtonStyle::Default();
+  const float border_overlap = std::max(segmented_style.border.width, segmented_style.selected_border.width);
   REQUIRE(day.bounds.x + day.bounds.width <= week.bounds.x + border_overlap);
   REQUIRE(week.bounds.x + week.bounds.width <= month.bounds.x + border_overlap);
   REQUIRE((week.actions & SemanticActionMask(SemanticActionKind::Activate)) != 0);

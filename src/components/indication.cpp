@@ -319,8 +319,8 @@ InterpolateBorder(const std::optional<Border>& from, const std::optional<Border>
   if (!from.has_value() && !to.has_value()) {
     return std::nullopt;
   }
-  Border start = from.value_or(Border{to->color, 0.0F});
-  Border end = to.value_or(Border{from->color, 0.0F});
+  Border start = from.has_value() ? *from : Border{to->color, 0.0F};
+  Border end = to.has_value() ? *to : Border{from->color, 0.0F};
   if (!from.has_value()) {
     start.color.alpha = 0.0F;
   }

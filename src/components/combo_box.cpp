@@ -91,12 +91,16 @@ void ValidateComboBoxStyle(const ComboBoxStyle& style) {
            std::isfinite(insets.bottom) && insets.bottom >= 0.0F && std::isfinite(insets.left) && insets.left >= 0.0F;
   };
   const bool valid_shadow = std::isfinite(style.popup_shadow.offset.x) && std::isfinite(style.popup_shadow.offset.y) &&
-                            std::isfinite(style.popup_shadow.blur_radius) && style.popup_shadow.blur_radius >= 0.0F &&
-                            std::isfinite(style.popup_shadow.spread);
+                             std::isfinite(style.popup_shadow.blur_radius) && style.popup_shadow.blur_radius >= 0.0F &&
+                             std::isfinite(style.popup_shadow.spread);
+  const CornerRadii& radii = style.popup_corner_radii;
+  const bool valid_radii = std::isfinite(radii.top_left) && radii.top_left >= 0.0F &&
+                           std::isfinite(radii.top_right) && radii.top_right >= 0.0F &&
+                           std::isfinite(radii.bottom_right) && radii.bottom_right >= 0.0F &&
+                           std::isfinite(radii.bottom_left) && radii.bottom_left >= 0.0F;
   const bool valid = valid_insets(style.item_padding) && valid_insets(style.popup_padding) && valid_shadow &&
                      std::isfinite(style.minimum_item_height) && style.minimum_item_height >= 0.0F &&
-                     std::isfinite(style.maximum_popup_height) && style.maximum_popup_height > 0.0F &&
-                     std::isfinite(style.popup_corner_radius) && style.popup_corner_radius >= 0.0F;
+                     std::isfinite(style.maximum_popup_height) && style.maximum_popup_height > 0.0F && valid_radii;
   if (!valid) {
     throw std::invalid_argument(
         "HuxerUI ComboBox geometry and shadow must be finite with positive popup height and non-negative extents"
@@ -475,7 +479,7 @@ View ComboBoxPopupContent(detail::ComboBoxSuggestionSource source, ComboBoxStyle
           Padding{style.popup_padding},
           Background{style.popup_background},
           Foreground{style.foreground},
-          CornerRadius{style.popup_corner_radius},
+          CornerRadius{style.popup_corner_radii},
           ClipChildren{},
           style.popup_shadow,
           detail::BuiltInSemantics{std::move(semantics)},

@@ -201,6 +201,21 @@ View StyledTimePickerApp() {
   return Theme{picker_theme, ProvideEnvironment(Locale::FromLanguageTag(picker_locale), TimePickerApp())};
 }
 
+View ResourceFillTimePickerApp() {
+  TimePickerStyle style = TimePickerStyle::Default();
+  const ImageResource fill("test", "images/density");
+  style.dial_background = fill;
+  style.field_background = fill;
+  style.selected_field_background = fill;
+  style.selected_period_background = fill;
+  ThemeDefinition definition;
+  definition.Set(style);
+  return Theme {
+    std::move(definition),
+    ProvideEnvironment(Locale::FromLanguageTag("en-US"), huxerui::TimePicker(Minutes{13 * 60 + 30})),
+  };
+}
+
 View LocalizedPickersApp() {
   localized_picker_locale = UseState(std::string{"en-US"});
   return ProvideEnvironment(
@@ -668,24 +683,32 @@ TEST_CASE("DateAndTimePickerStylesFollowFlatAndMaterialThemes") {
     const DatePickerStyle material_date = ThemeDefinitionValue<DatePickerStyle>(material);
     const TimePickerStyle material_time = ThemeDefinitionValue<TimePickerStyle>(material);
 
-    REQUIRE(flat_date.background == flat_spec.colors.surface);
+    REQUIRE(SolidFillColor(flat_date.background) != nullptr);
+    REQUIRE(*SolidFillColor(flat_date.background) == flat_spec.colors.surface);
     REQUIRE(flat_date.cell_size < material_date.cell_size);
     REQUIRE(flat_date.selection_corner_radius < flat_date.cell_size * 0.5F);
     REQUIRE(flat_time.dial_size < material_time.dial_size);
     REQUIRE(flat_time.header_height < material_time.header_height);
-    REQUIRE(flat_time.border_width > 0.0F);
-    REQUIRE(flat_time.selected_field_background == flat_spec.colors.primary_container);
+    REQUIRE(flat_time.border.has_value());
+    REQUIRE(flat_time.border->width > 0.0F);
+    REQUIRE(SolidFillColor(flat_time.selected_field_background) != nullptr);
+    REQUIRE(*SolidFillColor(flat_time.selected_field_background) == flat_spec.colors.primary_container);
     REQUIRE(flat_time.selected_field_foreground == flat_spec.colors.on_primary_container);
-    REQUIRE(material_date.background == material_spec.colors.surface_container_high);
-    REQUIRE(material_date.border_width == 0.0F);
-    REQUIRE(material_time.background == material_spec.colors.surface_container_high);
-    REQUIRE(material_time.border_width == 0.0F);
-    REQUIRE(material_time.field_background == material_spec.colors.surface_container_highest);
-    REQUIRE(material_time.selected_field_background == material_spec.colors.primary_container);
+    REQUIRE(SolidFillColor(material_date.background) != nullptr);
+    REQUIRE(*SolidFillColor(material_date.background) == material_spec.colors.surface_container_high);
+    REQUIRE_FALSE(material_date.border.has_value());
+    REQUIRE(SolidFillColor(material_time.background) != nullptr);
+    REQUIRE(*SolidFillColor(material_time.background) == material_spec.colors.surface_container_high);
+    REQUIRE_FALSE(material_time.border.has_value());
+    REQUIRE(SolidFillColor(material_time.field_background) != nullptr);
+    REQUIRE(*SolidFillColor(material_time.field_background) == material_spec.colors.surface_container_highest);
+    REQUIRE(SolidFillColor(material_time.selected_field_background) != nullptr);
+    REQUIRE(*SolidFillColor(material_time.selected_field_background) == material_spec.colors.primary_container);
     REQUIRE(material_time.selected_field_foreground == material_spec.colors.on_primary_container);
-    REQUIRE(material_time.selected_period_background == material_spec.colors.tertiary_container);
+    REQUIRE(SolidFillColor(material_time.selected_period_background) != nullptr);
+    REQUIRE(*SolidFillColor(material_time.selected_period_background) == material_spec.colors.tertiary_container);
     REQUIRE(material_time.selected_period_foreground == material_spec.colors.on_tertiary_container);
-    REQUIRE(material_time.period_border == material_spec.colors.outline);
+    REQUIRE(material_time.period_border.color == material_spec.colors.outline);
     REQUIRE(material_time.selected_background == material_spec.colors.primary);
     REQUIRE(material_time.selected_foreground == material_spec.colors.on_primary);
   }
@@ -796,7 +819,7 @@ TEST_CASE("TimePickerPaintsIndependentFieldsAndOnePeriodGroup") {
     REQUIRE(inactive != nullptr);
     REQUIRE(selected->rect == hour->rect);
     REQUIRE(inactive->rect == minute->rect);
-    REQUIRE(selected->corner_radius == style.field_corner_radius);
+    REQUIRE(selected->corner_radius == style.field_corner_radii.top_left);
     REQUIRE(hour->style.foreground == style.selected_field_foreground);
     REQUIRE(minute->style.foreground == style.header_style.foreground);
     REQUIRE(FindText(scene, "PM")->style.foreground == style.selected_period_foreground);
@@ -808,8 +831,8 @@ TEST_CASE("TimePickerPaintsIndependentFieldsAndOnePeriodGroup") {
       }
     }
     REQUIRE(group != nullptr);
-    REQUIRE(group->color == style.period_border);
-    REQUIRE(group->style.width == style.period_border_width);
+    REQUIRE(group->color == style.period_border.color);
+    REQUIRE(group->style.width == style.period_border.width);
     REQUIRE(group->rect.x == minute->rect.x + minute->rect.width + style.period_spacing);
     const auto frame = runtime.LastCommit().semantic_frame;
     const Rect minute_bounds = FindNode(*frame, SemanticRole::Button, "Minute").bounds;
@@ -821,6 +844,18 @@ TEST_CASE("TimePickerPaintsIndependentFieldsAndOnePeriodGroup") {
     ClickAt(runtime, {am.x + am.width * 0.5F, am.y + am.height * 0.5F});
     REQUIRE(selected_time.Get() == Minutes{60 + 30});
   }
+}
+
+TEST_CASE("TimePickerResolvesResourceBackedSelfPaintedFills") {
+  TestPlatform platform;
+  platform.platform_resources = BuiltinTestResources();
+  Runtime runtime{ResourceFillTimePickerApp, platform};
+  runtime.SetWindowMetrics({.viewport = {360.0F, 420.0F}});
+  const FlattenedScene& scene = runtime.BuildFrame();
+  const std::size_t image_fills = std::ranges::count_if(scene.Commands(), [](const PaintCommand& command) {
+    return std::holds_alternative<DrawImageCommand>(command);
+  });
+  REQUIRE(image_fills >= 4);
 }
 
 TEST_CASE("TimePickerMeasuresTheEntireHeaderAndOmitsThePeriodIn24HourLocales") {

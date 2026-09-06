@@ -32,7 +32,7 @@ void ApplyButtonDefaults(detail::ViewSpec& spec, const std::shared_ptr<const Env
   spec.properties.text_layout_options.vertical_align = TextVerticalAlign::Center;
   spec.properties.text_layout_options.wrap = TextWrap::NoWrap;
   spec.properties.disabled_foreground = style.disabled_label;
-  spec.properties.corner_radii = style.corner_radius;
+  spec.properties.corner_radii = style.corner_radii;
   spec.properties.frame.min_width = std::max(0.0F, style.minimum_width);
   spec.properties.frame.min_height = std::max(0.0F, style.minimum_height);
   spec.default_indication = style.indication;
@@ -80,14 +80,9 @@ void ApplyChipDefaults(detail::ViewSpec& spec, const std::shared_ptr<const Envir
   spec.properties.padding = style.padding;
   spec.properties.background = selected ? style.selected_background : style.background;
   spec.properties.disabled_background = selected ? style.disabled_selected_background : style.disabled_background;
-  spec.properties.border = Border{
-      selected ? style.selected_border : style.border,
-      std::max(0.0F, style.border_width),
-  };
-  spec.properties.disabled_border = Border{
-      selected ? style.disabled_selected_border : style.disabled_border,
-      std::max(0.0F, style.border_width),
-  };
+  spec.properties.border = selected ? style.selected_border : std::optional<Border>{style.border};
+  spec.properties.disabled_border =
+      selected ? style.disabled_selected_border : std::optional<Border>{style.disabled_border};
   spec.properties.text_style = style.label_style;
   spec.properties.text_style.foreground = selected ? style.selected_label : style.label_style.foreground;
   spec.properties.text_layout_options.align =
@@ -105,7 +100,7 @@ void ApplyChipDefaults(detail::ViewSpec& spec, const std::shared_ptr<const Envir
         })
     );
   }
-  spec.properties.corner_radii = style.corner_radius;
+  spec.properties.corner_radii = style.corner_radii;
   spec.properties.frame.min_height = std::max(0.0F, style.minimum_height);
   spec.default_indication =
       selected && style.selected_indication.has_value() ? style.selected_indication : style.indication;
