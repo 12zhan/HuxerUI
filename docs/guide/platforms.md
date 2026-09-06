@@ -154,6 +154,18 @@ Build and run require an Android SDK, NDK, Java, Gradle wrapper dependencies, an
 Insets, system-bar appearance, lifecycle, activation, file pickers, HTTP, PlatformView, and ExternalTexture are translated at the Android host boundary.
 Camera and microphone requests use the Activity launcher and require manifest declarations owned by the application.
 
+Generated applications keep the same Activity, `HuxerUIView`, and Runtime across orientation and window-size changes.
+An application that hosts `HuxerUIView` in a custom Activity must declare the same handled changes on that Activity:
+
+```xml
+<activity
+    android:name=".MainActivity"
+    android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout" />
+```
+
+This declaration does not preserve the Runtime across process death or configuration changes that are not listed, such as locale, UI mode, font scale, layout direction, or display density.
+A custom host remains responsible for updating any other Android Views, Fragments, or alternative Android resources that depend on the handled configuration values.
+
 Android libraries include `<huxerui/android/external_texture.h>` and choose the producer that matches their source.
 `BitmapTexture` retains immutable `android.graphics.Bitmap` objects and remains on the Canvas path.
 `GlTexture` synchronously copies `GL_TEXTURE_2D` content from the EGL context current during `PublishCurrent()`; supply a native acquire-fence fd when producer work is asynchronous, or publication waits for current GL work.

@@ -542,6 +542,7 @@ public final class HuxerUIView extends ViewGroup {
             }
             nativeUpdateResourceConfiguration(nativeHandle, resourceLocale(), displayScale);
         }
+        requestApplyInsets();
     }
 
     @Override
