@@ -1074,19 +1074,35 @@ TEST_CASE("TestMaterialTextFieldSupportsOutlinedVariant") {
 
   const detail::MountedNode* field = FindMountedNodeKind(*runtime.RootNode(), detail::NodeKind::TextField);
   REQUIRE(field != nullptr);
-  REQUIRE(field->bounds.height == style.outlined.minimum_height);
   REQUIRE(field->properties.corner_radii == CornerRadii(style.corner_radius));
   REQUIRE(FindRectWithColor(scene, style.filled.background) == nullptr);
   const DrawTextCommand* label = FindText(scene, "Email");
+  const DrawTextCommand* text = FindText(scene, "Value");
   const StrokePathCommand* outline = FindTextFieldOutline(scene, style.outlined.border, style.border_width);
   REQUIRE(label != nullptr);
+  REQUIRE(text != nullptr);
   REQUIRE(outline != nullptr);
+  REQUIRE(field->bounds.height == style.outlined.minimum_height + label->rect.height * 0.5F);
+  REQUIRE(outline->path.Bounds().height + style.border_width == style.outlined.minimum_height);
+  const Rect outline_bounds = outline->path.Bounds();
+  REQUIRE(text->rect.y + text->rect.height * 0.5F == Catch::Approx(outline_bounds.y + outline_bounds.height * 0.5F));
   const auto elements = detail::InternalAccess::Elements(outline->path);
   REQUIRE(elements.size() >= 2);
   REQUIRE(elements.front().verb == detail::PathVerb::MoveTo);
   REQUIRE(elements.back().verb == detail::PathVerb::LineTo);
   REQUIRE(elements.front().points[0].x > label->rect.x + label->rect.width);
   REQUIRE(elements.back().points[0].x < label->rect.x);
+
+  Pointer(runtime, PointerEventType::Down, 40.0F, 32.0F);
+  const FlattenedScene& focused = runtime.BuildFrame();
+  const DrawRectCommand* caret = FindTextFieldCaret(focused, style.caret, style.caret_width);
+  const StrokePathCommand* focused_outline =
+      FindTextFieldOutline(focused, style.outlined.focused_border, style.focused_border_width);
+  REQUIRE(caret != nullptr);
+  REQUIRE(focused_outline != nullptr);
+  const Rect focused_outline_bounds = focused_outline->path.Bounds();
+  REQUIRE(caret->rect.y + caret->rect.height * 0.5F ==
+          Catch::Approx(focused_outline_bounds.y + focused_outline_bounds.height * 0.5F));
 }
 
 TEST_CASE("TestMaterialTextFieldSupportsStandardVariant") {

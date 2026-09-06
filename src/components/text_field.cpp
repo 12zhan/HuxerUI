@@ -645,8 +645,9 @@ public:
         editor_height += floating_label_size.height + std::max(0.0F, style_.label_spacing);
       }
     }
-    const float minimum_editor_height =
-        std::max(0.0F, variant_style_.minimum_height - node.resolved_padding.Vertical());
+    const float intrinsic_editor_height =
+        variant_style_.minimum_height + FloatingLabelTopInset() - node.resolved_padding.Vertical();
+    const float minimum_editor_height = std::max(0.0F, intrinsic_editor_height);
     editor_height = std::max(editor_height, minimum_editor_height);
     return constraints.Constrain({
         content_width,
@@ -1491,7 +1492,7 @@ private:
     const float label_inset = std::min(frame.height, FloatingLabelTopInset());
     frame.y += label_inset;
     frame.height = std::max(0.0F, frame.height - label_inset);
-    const float minimum_height = std::min(frame.height, std::max(0.0F, variant_style_.minimum_height - label_inset));
+    const float minimum_height = std::min(frame.height, std::max(0.0F, variant_style_.minimum_height));
     frame.height = std::clamp(frame.height - ValidationAreaHeight(), minimum_height, frame.height);
     return frame;
   }
@@ -1499,7 +1500,7 @@ private:
   Rect EditorInnerRect(const detail::MountedNode& node) const {
     const Rect frame = EditorFrame(node);
     const EdgeInsets padding = node.resolved_padding;
-    const float top_padding = std::max(0.0F, padding.top - FloatingLabelTopInset());
+    const float top_padding = std::max(0.0F, padding.top);
     const float bottom_padding = HasTextFieldIndicator(variant_) && floating_label_layout_
                                      ? std::max(0.0F, padding.bottom * 0.5F)
                                      : padding.bottom;
