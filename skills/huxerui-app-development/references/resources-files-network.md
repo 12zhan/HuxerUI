@@ -1,4 +1,4 @@
-# Resources, Files, Network, and Async Work
+# Resources, Clipboard, Files, Network, and Async Work
 
 ## Resources
 
@@ -26,17 +26,25 @@ The CLI initially creates empty `images` and `raw` directories and writes `strin
 
 Use generated identifiers such as `app::images::logo`, `app::raw::config_json`, and `app::strings::welcome`. Raw identifiers include the sanitized filename extension, while raster density variants such as `logo.png` and `logo@2x.png` share one image identifier. `default.properties` supplies the fallback strings, while locale files such as `zh.properties` provide matching overrides.
 
+Keep static in-UI icons, illustrations, and logos under `resources/images`. Prefer SVG for scalable vector artwork, preserve an existing supplied SVG instead of converting it to C++ drawing code, and use `currentColor` when an icon should accept the component's tint. Use raster density variants when the source is inherently raster. Platform application and system-tray icons follow their separate packaging contracts.
+
 SVG files compile ahead of time to platform-neutral vector resources. The supported static subset includes paths and basic shapes, groups, file-local `defs`/`use`, one-path `clipPath` geometry in `userSpaceOnUse`, solid or linear/radial gradient fills and strokes, transforms, root `preserveAspectRatio`, `currentColor`, static visibility, absolute CSS lengths, and complete stroke configuration including dash arrays. Gradients support local inheritance, object-bounds or user-space coordinates, `gradientTransform`, stop and paint opacity, and pad extension. Keep references inside the same file and give every referenced element a unique ID. Browser-dependent text, scripts, external styles or references, non-finite or singular gradient transforms, repeat or reflect gradient extension, masks, filters, embedded images, animation, font-relative units, fractional group opacity, and clip unions are rejected rather than approximated. Check the active SDK documentation when consuming an older installed SDK because its compiler may support a smaller subset.
 
 Generated libraries use the same directory categories but register their own target-derived resource namespace and generated header. Read the library's generated `CMakeLists.txt` rather than assuming the application namespace.
 
-Pass resource values directly to components and `VisualFill` when their public overloads accept them. Use `UseString(...)`, `UseImage(...)`, `UseVectorImage(...)`, or `UseRawResource(...)` only when application code needs the resolved value itself. These reads are composition-bound and therefore belong in a composable function.
+Pass resource values directly to components and `VisualFill` when their public overloads accept them. In particular, ordinary `Image` and icon properties should receive the generated `ImageResource` instead of resolving an SVG first. Use `UseString(...)`, `UseImage(...)`, `UseVectorImage(...)`, or `UseRawResource(...)` only when application code needs the resolved value itself. These reads are composition-bound and therefore belong in a composable function.
 
 Keep resource identifiers and namespace consistent with generated CMake. Do not open `resources.bin` directly.
 
 ### Locale and text shaping
 
 Text, built-in labels, TextField, and Canvas text inherit the effective `Locale` when their shaping locale is empty. Use `.Shaping(TextShapingOptions{...})` on Text or TextField for a local direction or locale override; it does not change resource lookup. A `TextMeasurer` does not look up Environment implicitly, so pass the effective locale explicitly when measuring custom text. Picker labels, week starts, and 12/24-hour presentation also follow Locale rather than application-authored locale tables.
+
+## Clipboard
+
+Obtain the current Runtime's plain-text clipboard with `UseService<Clipboard>()` during composition, then capture the shared handle into a UI-thread event handler. `IsAvailable()` reports whether the Runtime currently has synchronous clipboard access. `ReadText()` returns an optional UTF-8 string, and `WriteText(text)` reports whether valid UTF-8 text was accepted.
+
+Clipboard operations are synchronous and may enter native APIs. Do not call them from `RunWorker()` or another application worker thread. A captured handle remains safe after its Runtime is destroyed but reports unavailable results. Web does not expose this application clipboard service; browser-managed TextField copy, cut, and paste continue through trusted editing events.
 
 ## Files and directories
 

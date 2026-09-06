@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 namespace huxerui {
 
 struct Color {
@@ -16,6 +18,26 @@ struct Color {
         static_cast<float>(green) / 255.0F,
         static_cast<float>(blue) / 255.0F,
         alpha,
+    };
+  }
+
+  /// Decodes packed channels in 0xRRGGBBAA byte order.
+  static constexpr Color Rgba32(std::uint32_t rgba) noexcept {
+    return {
+        static_cast<float>((rgba >> 24U) & 0xFFU) / 255.0F,
+        static_cast<float>((rgba >> 16U) & 0xFFU) / 255.0F,
+        static_cast<float>((rgba >> 8U) & 0xFFU) / 255.0F,
+        static_cast<float>(rgba & 0xFFU) / 255.0F,
+    };
+  }
+
+  /// Decodes packed channels in 0xAARRGGBB byte order.
+  static constexpr Color Argb32(std::uint32_t argb) noexcept {
+    return {
+        static_cast<float>((argb >> 16U) & 0xFFU) / 255.0F,
+        static_cast<float>((argb >> 8U) & 0xFFU) / 255.0F,
+        static_cast<float>(argb & 0xFFU) / 255.0F,
+        static_cast<float>((argb >> 24U) & 0xFFU) / 255.0F,
     };
   }
 

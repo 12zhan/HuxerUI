@@ -1,7 +1,8 @@
 # Platform Modules
 
-Use a PlatformModule for a non-visual capability whose implementation depends on the current platform.
-Do not use one for portable C++ services, embedded controls, or frame production that fits `ExternalTexture`.
+Before defining a PlatformModule, check whether the active SDK already exposes the capability through a root service or application, window, or presentation handle. Use those built-ins for clipboard, files, pickers, HTTP, permissions, windows, and presentation rather than registering a parallel platform abstraction.
+
+Use a PlatformModule only for a missing non-visual capability whose implementation genuinely depends on the current platform. Do not use one for portable C++ services, embedded controls, or frame production that fits `ExternalTexture`.
 
 ## Facade and ownership
 

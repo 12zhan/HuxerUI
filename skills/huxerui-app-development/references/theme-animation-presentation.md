@@ -44,11 +44,11 @@ Component styles are typed Environment values. Verify their current fields in th
 
 | Area | Typed styles | Public header |
 | --- | --- | --- |
-| Text and controls | `TextStyle`, `ButtonStyle`, `IconButtonStyle`, `ChipStyle`, `DividerStyle`, `SegmentedButtonStyle`, `TabsStyle`, `SelectStyle`, `TextFieldStyle`, `ComboBoxStyle`, `CheckboxStyle`, `RadioButtonStyle`, `SwitchStyle`, `ProgressCircleStyle`, `ProgressBarStyle`, `SliderStyle` | `text.h`, `theme.h` |
+| Text and controls | `TextStyle`, `ButtonStyle`, `IconButtonStyle`, `ChipStyle`, `DividerStyle`, `SegmentedButtonStyle`, `TabsStyle`, `TreeViewStyle`, `SelectStyle`, `TextFieldStyle`, `ComboBoxStyle`, `CheckboxStyle`, `RadioButtonStyle`, `SwitchStyle`, `ProgressCircleStyle`, `ProgressBarStyle`, `SliderStyle` | `text.h`, `theme.h` |
 | Date and time | `DatePickerStyle`, `TimePickerStyle` | `theme.h` |
 | Scrolling | `ScrollBarStyle` | `modifier.h` |
 | Navigation | `NavigationStyle`, `TopAppBarStyle`, `NavigationBarStyle`, `NavigationPaneStyle`, `DrawerStyle` | `navigation.h` |
-| Presentation | `ToastStyle`, `TooltipStyle`, `DialogStyle`, `BottomSheetStyle`, `MenuStyle` | `presentation.h` |
+| Presentation | `ToastStyle`, `SnackBarStyle`, `TooltipStyle`, `DialogStyle`, `BottomSheetStyle`, `MenuStyle` | `presentation.h` |
 | System bars | `SystemBarsAppearance` | `window.h` |
 
 These values own component-specific geometry, color, typography, indication, disabled state, and motion as appropriate. Prefer them to copying a built-in component or hardcoding a parallel visual implementation.
@@ -56,6 +56,14 @@ These values own component-specific geometry, color, typography, indication, dis
 `TextFieldVariantStyle` is nested configuration inside `TextFieldStyle`; it is not a separate Theme override key.
 
 Flat pickers use compact outlined geometry and rounded-square date selections; Material pickers use larger tonal surfaces and circular date selections. TimePicker distinguishes active-field, AM/PM-period, and dial selection colors. Preserve these separate roles when overriding its style instead of applying one selection background everywhere.
+
+### Surface style value types
+
+Use `VisualFill` for a component or popup background that may be a color, gradient, or image fill. Use `Border` for an ordinary rectangular surface border and `std::optional<Border>` when the absence of a border is meaningful. Use `CornerRadii` for the geometry of a component surface; it is a plain value used directly by styles rather than a View modifier.
+
+Keep `Color` for foreground text and icons, color schemes, indicators, dividers, scrims, tracks, and colors that participate directly in mixing, opacity calculations, or custom animation. Do not introduce a combined surface-appearance wrapper or move an ordinary component background or border into `Indication`.
+
+For View decoration, use the separate `CornerRadius` modifier described in [modifiers.md](modifiers.md#corner-radii).
 
 ## Override component styles
 
@@ -92,7 +100,7 @@ Do not put a bare `ThemeDefinition{}` at the application root merely to choose c
 
 ## Indication
 
-`Indication` can define focus, hover, press, and ripple behavior. Each `IndicationLayer` can carry a `VisualFill`, border, corner radii, placement, and enter/exit animation. Ripple is color-based and can paint behind or above content. `IndicationGeometry` controls optional layer size and clip radii.
+`Indication` defines transient focus, hover, press, and ripple behavior; it does not own a component's normal surface background or border. Each `IndicationLayer` can carry a `VisualFill`, border, corner radii, placement, and enter/exit animation. Ripple is color-based and can paint behind or above content. `IndicationGeometry` controls optional layer size and clip radii.
 
 Use component defaults unless a custom interaction treatment is part of the app design. Keep focus visible, do not rely on hover alone, and preserve disabled behavior.
 

@@ -75,6 +75,14 @@ Web keeps its Canvas renderer and supports styles, wrapping, links, and basic se
 
 ### Images and custom drawing
 
+`Color::Rgb(red, green, blue, alpha)` accepts separate byte channels and a normalized alpha value.
+For packed 32-bit values, use `Color::Rgba32(0xRRGGBBAA)` or `Color::Argb32(0xAARRGGBB)` so the byte order remains explicit at the call site:
+
+```cpp
+const Color rgba_accent = Color::Rgba32(0x6750A4FFU);
+const Color argb_accent = Color::Argb32(0xFF6750A4U);
+```
+
 `ImageVariant` covers `ImageResource`, `ImageAsset`, and `VectorAsset`.
 `Image` also accepts `std::shared_ptr<ExternalTexture>` through a separate overload because a live platform texture is not an application image value.
 Configure fit, alignment, sampling, and tint with typed methods.

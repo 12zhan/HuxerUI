@@ -33,6 +33,16 @@ static_assert(std::equality_comparable<Color>);
 static_assert(std::equality_comparable<Rect>);
 static_assert(std::equality_comparable<PaintCommand>);
 
+TEST_CASE("ColorDecodesPackedRgbaAndArgbChannels") {
+  STATIC_REQUIRE(std::is_aggregate_v<Color>);
+  constexpr Color expected = Color::Rgb(0x12, 0x34, 0x56, static_cast<float>(0x78) / 255.0F);
+  STATIC_REQUIRE(Color::Rgba32(0x12345678U) == expected);
+  STATIC_REQUIRE(Color::Argb32(0x78123456U) == expected);
+  STATIC_REQUIRE(Color::Rgba32(0x00000000U) == Color::Transparent());
+  STATIC_REQUIRE(Color::Argb32(0xFF000000U) == Color::Black());
+  STATIC_REQUIRE(Color::Rgba32(0xFFFFFFFFU) == Color::White());
+}
+
 TEST_CASE("PaintAggregatesPreserveOmittedImageAndStrokeDefaults") {
   STATIC_REQUIRE(std::is_aggregate_v<ImageFill>);
   STATIC_REQUIRE(std::is_aggregate_v<StrokeStyle>);

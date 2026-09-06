@@ -37,6 +37,7 @@ Prefer that SDK's `include/huxerui` and `lib/cmake/HuxerUI` over this Skill's gu
 - Use stable semantic keys for dynamic stateful siblings that insert, remove, or reorder.
 - Preserve complete `TextEditingValue` state for `TextField`.
 - Use only public headers, public CMake targets, generated project conventions, and platform-specific public headers.
+- Prefer generated `ImageResource` values for static artwork displayed by HuxerUI components. Keep scalable in-UI artwork as SVG under `resources/images`; use `VectorAsset::Create` or `Canvas` only for genuinely programmatic or dynamic drawing. Platform application and system-tray icons follow their separate packaging contracts.
 - Compose built-in layouts and their modifiers before deriving `Layout` or `VirtualLayout`. A custom layout is for a genuinely new measurement or placement algorithm, not ordinary alignment, spacing, growth, wrapping, overlay, paging, scrolling, or responsiveness.
 - Start application visuals from `FlatTheme`, `FlatDarkTheme`, `MaterialTheme`, or `MaterialDarkTheme`. Customize their tokens or typed styles instead of recreating a built-in theme with a bare `ThemeDefinition`.
 - Choose the narrowest extension mechanism after exhausting its built-in equivalent. Prefer an ordinary component, existing event or modifier, Environment/Theme value, presentation service, or root service. Use a custom `Layout`, retained modifier with `NodeExtension`, `PlatformModule`, `PlatformView`, or `ExternalTexture` only when its distinct geometry, mounted lifetime, or platform boundary is actually required.
@@ -48,17 +49,17 @@ Read only the references needed for the request:
 
 - Creating, opening, configuring, building, running, or diagnosing a project: [project-workflow.md](references/project-workflow.md)
 - Writing or editing any UI declaration or snippet: [dsl-style.md](references/dsl-style.md)
-- Selecting and configuring built-in controls, date/time pickers, or their controlled values: [components.md](references/components.md)
+- Selecting and configuring built-in controls, TreeView, date/time pickers, or their controlled values: [components.md](references/components.md)
 - Arranging UI, scrolling, virtualization, responsiveness, app shells, mounted coordinate conversion, or any proposed custom layout: [layout-and-ui.md](references/layout-and-ui.md)
 - Composition, state, keyboard routing and shortcuts, events, environment, lifecycle, and tasks: [fundamentals.md](references/fundamentals.md)
 - `.With(...)`, events, keys, and modifier ownership: [modifiers.md](references/modifiers.md)
 - Pointer buttons, hover, pointer cursors, context-menu requests, raw pointer input, pointer interception, repeated tap, long press, drag, multi-pointer transform, typed in-process drag-and-drop, and external file reception: [gestures-and-drag-drop.md](references/gestures-and-drag-drop.md)
 - Custom retained behavior, after confirming that events, gestures, animation, lifecycle, or other built-ins do not fit: [node-extensions.md](references/node-extensions.md)
 - Built-in themes, token or component-style customization, any proposed `ThemeDefinition`, indication, animation, layers, dialogs, menus, and scene transitions: [theme-animation-presentation.md](references/theme-animation-presentation.md)
-- Text input, validation, selection, and accessibility: [text-input-and-semantics.md](references/text-input-and-semantics.md)
-- Resources, localization and shaping, file/directory references, path access, pickers, copying, HTTP, and async work: [resources-files-network.md](references/resources-files-network.md)
+- Text input, validation, selection, virtual semantics, and accessibility: [text-input-and-semantics.md](references/text-input-and-semantics.md)
+- In-UI image and SVG resources, localization and shaping, clipboard access, file/directory references, path access, pickers, copying, HTTP, and async work: [resources-files-network.md](references/resources-files-network.md)
 - Navigation, browser routes, safe areas, window chrome, and system tray behavior: [navigation-and-window.md](references/navigation-and-window.md)
-- Canvas, paint, images, vectors, external textures, and GPU frame publication: [canvas-paint-and-images.md](references/canvas-paint-and-images.md)
+- Canvas, custom drawing, paint geometry, programmatic vectors, external textures, and GPU frame publication: [canvas-paint-and-images.md](references/canvas-paint-and-images.md)
 - Non-visual platform services: [platform-modules.md](references/platform-modules.md)
 - Embedded platform controls: [platform-views.md](references/platform-views.md)
 - Fast public API and header lookup: [api-index.md](references/api-index.md)
