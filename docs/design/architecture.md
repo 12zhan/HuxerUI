@@ -795,10 +795,11 @@ An outbound-only type defines only `Encode`, an inbound-only type defines only `
 Framework concepts diagnose a missing operation when a cross-language bridge requires it.
 Scalar and framework data types have built-in boundary conversion; a library wraps an external structured type in an explicit boundary value rather than defining a detached codec specialization.
 
-`PlatformPayload` remains an immutable equality-comparable tree containing null, boolean, signed 64-bit integer, double, UTF-8 string, `Bytes`, list, string-keyed object, and the closed framework capability `ExternalTexture`.
+`PlatformPayload` remains an immutable equality-comparable tree containing null, boolean, signed 64-bit integer, double, UTF-8 string, `Bytes`, list, string-keyed object, and the closed framework capabilities `ExternalTexture` and `FileReference`.
 It is an in-process boundary value rather than a persistence, network, or general serialization format.
-It never contains callbacks, arbitrary C++ objects, system handles, pointers, platform Views, or executable closures.
+Its value tree never accepts callbacks, arbitrary C++ objects, platform Views, or executable closures, and its binary form never embeds system handles or pointers.
 Large or continuous media frames do not travel through it; an ExternalTexture payload retains the same shared platform-owned texture object used by rendering.
+A FileReference payload retains the same access state and captured metadata used by shared file operations so a platform library can consume an Android `Uri`, Apple `NSURL`, or browser `File` without reducing the original grant to a local path or detached platform value.
 
 #### Platform-language value API
 
@@ -814,6 +815,7 @@ string(value)
 bytes(value)
 list(values)
 object(fields)
+fileReference(value)
 ```
 
 An adapter with an implemented ExternalTexture capability bridge additionally provides `externalTexture(value)`.
@@ -822,7 +824,7 @@ Constructors copy or safely freeze mutable byte and collection inputs.
 Byte reads return a defensive copy or an immutable platform view and never expose mutable backing storage.
 Java maps Int64 to `long` and Bytes to copied `byte[]`.
 The Apple adapters map them to Swift `Int64` and `Data`, while Web maps them to JavaScript `bigint` and copied `Uint8Array`.
-The Web contract never constructs Int64 from Number and currently rejects every ExternalTexture payload; every adapter rejects non-finite Double values, invalid Unicode, and unsupported capability values.
+The Web contract never constructs Int64 from Number and currently rejects every ExternalTexture payload; every adapter rejects non-finite Double values, invalid Unicode, and unsupported or closed capability values.
 
 The same value type provides exact inspection and navigation:
 
@@ -836,6 +838,7 @@ requireInt64()
 requireDouble()
 requireString()
 requireBytes()
+requireFileReference()
 
 requireField(name)
 field(name)
@@ -859,7 +862,7 @@ Missing fields, kind mismatches, invalid values, unknown fields, and range failu
 The corresponding platform type owns its conversion just as the C++ type does.
 Java uses a type-local static `decode(PlatformPayload)` and instance `encode()`, Swift uses `init(platformPayload:)` and `encodePlatformPayload()`, Objective-C uses the corresponding initializer or factory and `encodePlatformPayload`, and JavaScript or TypeScript uses type-local `decode(payload)` and `encode()` operations.
 HuxerUI does not reflect arbitrary objects, require Java serialization or Swift `Codable`, inspect JavaScript object shapes implicitly, or add a generic `decode(Class<T>)` operation.
-The SDK exposes no public JSON conversion, numeric coercion, or raw ExternalTexture slot.
+The SDK exposes no public JSON conversion, numeric coercion, or raw capability slot.
 
 The common cross-language bridge transports one HuxerUI binary representation rather than recursively translating the payload tree through JNI, Objective-C collections, or JavaScript interop calls.
 The C++ bridge encodes its `PlatformPayload` to binary, the platform SDK automatically decodes that binary to its immutable local `PlatformPayload`, and the reverse path performs the corresponding platform encode and C++ decode.
@@ -879,11 +882,12 @@ platform PlatformPayload
 
 The envelope starts with the four ASCII bytes `HUXP`, a little-endian unsigned 16-bit format version, and a little-endian unsigned 16-bit flags field.
 Version 1 requires zero flags and contains exactly one value followed by no trailing bytes.
-The one-byte tags are Null `0`, Boolean `1`, Integer `2`, Double `3`, String `4`, Bytes `5`, List `6`, Object `7`, and ExternalTexture `8`.
+The one-byte tags are Null `0`, Boolean `1`, Integer `2`, Double `3`, String `4`, Bytes `5`, List `6`, Object `7`, ExternalTexture `8`, and FileReference `9`.
 Integer values use signed 64-bit little-endian representation, Double values use their IEEE 754 binary64 bits in little-endian order, and all byte lengths and container counts use unsigned 32-bit little-endian values.
 Strings contain a byte length followed by UTF-8 bytes, lists contain a count followed by values, and objects contain a count followed by length-prefixed UTF-8 keys and values.
 Object keys are serialized in ascending UTF-8 byte order so one payload has one canonical encoding.
 ExternalTexture contains capability kind `1` as one byte followed by an unsigned 32-bit envelope-local slot.
+FileReference uses the same slot representation with capability kind `2`.
 
 The binary format preserves all payload kinds without implicit coercion.
 Decoders require the declared tag and range instead of converting strings to numbers, truncating doubles to integers, or treating bytes as text.
@@ -892,20 +896,28 @@ The maximum nesting depth is 64, matching the in-process payload contract.
 All bridge implementations use the same framework constants for maximum envelope bytes, scalar bytes, and container entries, plus capability slots where supported, and validate them before allocation; a platform must not substitute looser local limits.
 Unknown versions, flags, tags, or capability kinds, duplicate object keys, invalid UTF-8, non-finite doubles, integer or length overflow, truncated input, excessive allocation, and trailing bytes are malformed payloads.
 
-An `ExternalTexture` is an opaque capability and therefore travels beside the binary data in a bridge-private capability table.
-The binary stream contains only an envelope-local slot, while JNI global references, Objective-C objects, JavaScript handles, or C++ shared objects remain in the owning bridge for that crossing.
-Slots are unique only within one envelope and are not public texture identifiers.
-Repeated references to the same slot preserve capability identity within that decode.
+`ExternalTexture` and `FileReference` are opaque capabilities and therefore travel beside the binary data in separate bridge-private, strongly typed companion tables.
+The binary stream contains only an envelope-local typed slot, while JNI references, Objective-C objects, JavaScript handles, or retained C++ objects remain in the owning bridge for that crossing.
+Slots are unique only within one envelope and are not public identifiers.
+Repeated references to the same slot preserve the same capability within that decode.
 A bridge without ExternalTexture capability transport rejects the value before encoding.
-A bridge that supports the capability rejects a missing slot, duplicate capability-table entry, or kind mismatch while decoding.
+A bridge that supports a capability rejects a missing slot, duplicate capability-table entry, unreferenced table entry, or kind mismatch while decoding.
 On successful decode, the resulting shared reference or language wrapper retains the capability before the temporary table is released; on failure, the bridge releases the complete table.
 Library code cannot forge, retain, or reuse a slot, and the closed table cannot carry arbitrary platform objects.
 
+FileReference table equality and deduplication use the retained C++ access state, not its display metadata, projected path, URI text, or wrapper-object address.
+Android and Web wrappers carry a process-local capability key derived from that state address solely for equality and table deduplication; the separate native handle owns a `FileReference` copy, while the key is never dereferenced or persisted and remains distinct from a provider entry key.
+The companion entry carries the complete C++ value, including `CanWrite()` and other captured metadata, without serializing those fields or exposing a second authorization model to platform code.
+Android exposes one `HuxerUIFileReference` class whose bridge-created instances retain the C++ capability and return the underlying document `Uri`; its separate state-owned instances continue to perform provider I/O and never point back to their owning C++ state.
+The Apple adapters retain the C++ value in a lightweight `HUXFileReference` wrapper and expose its path-backed `NSURL`; ARC releases the capability with the wrapper.
+Web exposes a retained `FileReference` wrapper whose asynchronous `getFile()` resolves the current browser handle or captured `File`, and whose `close()` releases its C++ share.
+These projections do not start a new security scope, duplicate `CanWrite()`, attenuate the original grant, or make the capability persistent.
+
 | Platform boundary | Binary data | Capability table |
 | --- | --- | --- |
-| Android | `byte[]` | Bridge-owned Java references |
-| Apple Objective-C/Swift adapters | `NSData` | Bridge-owned Objective-C objects |
-| Web common adapter | `Uint8Array` | ExternalTexture is not supported by this bridge |
+| Android | `byte[]` | Separate `HuxerUIExternalTexture` and `HuxerUIFileReference` lists |
+| Apple Objective-C/Swift adapters | `NSData` | Separate `HUXExternalTexture` and `HUXFileReference` arrays |
+| Web common adapter | `Uint8Array` | `FileReference` list; ExternalTexture remains unsupported |
 
 Application callback objects never enter the envelope, and Objective-C, Java, JavaScript, or C++ exceptions are contained by the bridge that owns them.
 `PlatformError` has a stable UTF-8 `code`, an English `message`, and optional structured `details` carried by the same payload envelope.

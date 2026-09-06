@@ -2,9 +2,12 @@
   const maxEnvelopeBytes = 64 * 1024 * 1024;
   const maxScalarBytes = 16 * 1024 * 1024;
   const maxContainerEntries = 1024 * 1024;
+  const maxCapabilitySlots = 1024 * 1024;
   const maxNestingDepth = 64;
   const internalConstruction = Symbol("HuxerUI PlatformPayload construction");
   const payloadData = new WeakMap();
+  // Private state makes public wrappers unforgeable while allowing garbage collection to release native capabilities.
+  const fileReferenceData = new WeakMap();
   const textEncoder = new TextEncoder();
   const textDecoder = new TextDecoder("utf-8", { fatal: true });
 
@@ -18,6 +21,7 @@
     list: 6,
     object: 7,
     externalTexture: 8,
+    fileReference: 9,
   });
   const kinds = Object.freeze(Object.keys(tags));
 
@@ -53,9 +57,11 @@
   }
 
   class EnvelopeWriter {
-    constructor() {
+    constructor(fileReferences = null) {
       this.buffer = new Uint8Array(256);
       this.length = 0;
+      this.fileReferences = fileReferences;
+      this.fileReferenceSlots = new Map();
     }
 
     ensure(additional) {
@@ -157,6 +163,25 @@
           return;
         case tags.externalTexture:
           throw new TypeError("HuxerUI Web PlatformPayload does not support ExternalTexture capabilities");
+        case tags.fileReference: {
+          if (this.fileReferences === null) {
+            throw new TypeError("HuxerUI PlatformPayload capabilities require the platform bridge envelope");
+          }
+          this.byte(2);
+          const reference = stored.value;
+          const capabilityKey = requireFileReference(reference).capabilityKey;
+          let slot = this.fileReferenceSlots.get(capabilityKey);
+          if (slot === undefined) {
+            if (this.fileReferences.length >= maxCapabilitySlots) {
+              throw new RangeError("HuxerUI PlatformPayload contains too many retained capabilities");
+            }
+            slot = this.fileReferences.length;
+            this.fileReferenceSlots.set(capabilityKey, slot);
+            this.fileReferences.push(reference);
+          }
+          this.uint32(slot);
+          return;
+        }
         default:
           throw new TypeError("HuxerUI PlatformPayload contains an unknown kind");
       }
@@ -168,16 +193,49 @@
   }
 
   class EnvelopeReader {
-    constructor(bytes) {
+    constructor(bytes, fileReferences = []) {
       if (!(bytes instanceof Uint8Array)) {
         throw new TypeError("HuxerUI PlatformPayload envelope must be a Uint8Array");
       }
       if (bytes.byteLength > maxEnvelopeBytes) {
         throw new RangeError("HuxerUI PlatformPayload envelope is too large");
       }
+      if (!Array.isArray(fileReferences) || fileReferences.length > maxCapabilitySlots) {
+        throw new TypeError("HuxerUI PlatformPayload file reference table is invalid");
+      }
+      const capabilityKeys = new Set();
+      for (const reference of fileReferences) {
+        const capabilityKey = requireFileReference(reference).capabilityKey;
+        if (capabilityKeys.has(capabilityKey)) {
+          throw new TypeError("HuxerUI PlatformPayload file reference table is invalid");
+        }
+        capabilityKeys.add(capabilityKey);
+      }
       this.bytes = bytes.slice();
       this.view = new DataView(this.bytes.buffer, this.bytes.byteOffset, this.bytes.byteLength);
       this.offset = 0;
+      this.fileReferences = fileReferences;
+      this.usedFileReferences = new Array(fileReferences.length).fill(false);
+    }
+
+    read() {
+      if (this.byte() !== 0x48 || this.byte() !== 0x55 || this.byte() !== 0x58 || this.byte() !== 0x50) {
+        throw this.malformed("invalid header");
+      }
+      if (this.uint16() !== 1) {
+        throw this.malformed("unsupported version");
+      }
+      if (this.uint16() !== 0) {
+        throw this.malformed("unsupported flags");
+      }
+      const payload = this.value(0, "$");
+      if (this.offset !== this.bytes.length) {
+        throw this.malformed("trailing bytes");
+      }
+      if (this.usedFileReferences.includes(false)) {
+        throw this.malformed("unreferenced capability");
+      }
+      return payload;
     }
 
     require(length) {
@@ -291,6 +349,17 @@
         }
         case tags.externalTexture:
           throw new TypeError("HuxerUI Web PlatformPayload does not support ExternalTexture capabilities");
+        case tags.fileReference: {
+          if (this.byte() !== 2) {
+            throw this.malformed("unknown capability kind");
+          }
+          const slot = this.uint32();
+          if (slot >= this.fileReferences.length) {
+            throw this.malformed("missing file reference");
+          }
+          this.usedFileReferences[slot] = true;
+          return new PlatformPayload(internalConstruction, tag, this.fileReferences[slot], path);
+        }
         default:
           throw this.malformed("unknown value tag");
       }
@@ -299,6 +368,77 @@
     malformed(reason) {
       return new TypeError(`HuxerUI PlatformPayload envelope has ${reason}`);
     }
+  }
+
+  const fileReferenceFinalizer =
+    typeof FinalizationRegistry === "function"
+      ? new FinalizationRegistry((handle) => Module.huxeruiWebFileReferenceRelease(handle))
+      : null;
+
+  class FileReference {
+    constructor(token, nativeHandle, capabilityKey, source, isFile) {
+      const invalidHandle = !Number.isSafeInteger(nativeHandle) || nativeHandle <= 0;
+      const invalidCapabilityKey = !Number.isSafeInteger(capabilityKey) || capabilityKey <= 0;
+      const invalidSource = source === null || typeof source !== "object";
+      if (token !== internalConstruction || invalidHandle || invalidCapabilityKey ||
+          invalidSource || typeof isFile !== "boolean") {
+        throw new TypeError("HuxerUI FileReference must be created by the platform bridge");
+      }
+      fileReferenceData.set(this, { nativeHandle, capabilityKey, source, isFile });
+      fileReferenceFinalizer?.register(this, nativeHandle, this);
+      Object.freeze(this);
+    }
+
+    async getFile() {
+      const state = requireFileReference(this);
+      if (!state.isFile) {
+        throw new TypeError("HuxerUI FileReference does not identify a file");
+      }
+      if (state.source.handle !== null && state.source.handle !== undefined) {
+        if (typeof state.source.handle.getFile !== "function") {
+          throw new TypeError("HuxerUI FileReference provider cannot resolve a File");
+        }
+        return await state.source.handle.getFile();
+      }
+      if (state.source.file !== null && state.source.file !== undefined) {
+        return state.source.file;
+      }
+      throw new TypeError("HuxerUI FileReference provider cannot resolve a File");
+    }
+
+    close() {
+      const state = fileReferenceData.get(this);
+      if (state?.nativeHandle) {
+        Module.huxeruiWebFileReferenceRelease(state.nativeHandle);
+        state.nativeHandle = 0;
+        state.source = null;
+        fileReferenceFinalizer?.unregister(this);
+      }
+    }
+  }
+
+  function requireFileReference(reference) {
+    if (!(reference instanceof FileReference) || !fileReferenceData.has(reference)) {
+      throw new TypeError("HuxerUI platform boundary requires a FileReference value");
+    }
+    const state = fileReferenceData.get(reference);
+    if (state.nativeHandle === 0) {
+      throw new TypeError("HuxerUI FileReference is closed");
+    }
+    return state;
+  }
+
+  function createFileReference(nativeHandle, capabilityKey, source, isFile) {
+    return new FileReference(internalConstruction, nativeHandle, capabilityKey, source, isFile);
+  }
+
+  function retainFileReference(reference) {
+    const state = requireFileReference(reference);
+    const handle = Module.huxeruiWebFileReferenceRetain(state.nativeHandle);
+    if (!Number.isSafeInteger(handle) || handle <= 0) {
+      throw new TypeError("HuxerUI FileReference could not be retained");
+    }
+    return handle;
   }
 
   class PlatformPayload {
@@ -403,22 +543,13 @@
       return new PlatformPayload(internalConstruction, tags.object, result, "$");
     }
 
+    static fileReference(value) {
+      requireFileReference(value);
+      return new PlatformPayload(internalConstruction, tags.fileReference, value, "$");
+    }
+
     static decode(bytes) {
-      const reader = new EnvelopeReader(bytes);
-      if (reader.byte() !== 0x48 || reader.byte() !== 0x55 || reader.byte() !== 0x58 || reader.byte() !== 0x50) {
-        throw reader.malformed("invalid header");
-      }
-      if (reader.uint16() !== 1) {
-        throw reader.malformed("unsupported version");
-      }
-      if (reader.uint16() !== 0) {
-        throw reader.malformed("unsupported flags");
-      }
-      const payload = reader.value(0, "$");
-      if (reader.offset !== reader.bytes.length) {
-        throw reader.malformed("trailing bytes");
-      }
-      return payload;
+      return new EnvelopeReader(bytes).read();
     }
 
     get kind() {
@@ -456,6 +587,11 @@
     requireBytes() {
       this._requireKind(tags.bytes);
       return payloadData.get(this).value.slice();
+    }
+
+    requireFileReference() {
+      this._requireKind(tags.fileReference);
+      return payloadData.get(this).value;
     }
 
     requireField(name) {
@@ -550,7 +686,10 @@
     LIST: kinds[tags.list],
     OBJECT: kinds[tags.object],
     EXTERNAL_TEXTURE: kinds[tags.externalTexture],
+    FILE_REFERENCE: kinds[tags.fileReference],
   });
+  Object.freeze(FileReference.prototype);
+  Object.freeze(FileReference);
   Object.freeze(PlatformPayload.prototype);
   Object.freeze(PlatformPayload);
 
@@ -559,6 +698,24 @@
       throw new TypeError("HuxerUI platform boundary requires a PlatformPayload value");
     }
     return value;
+  }
+
+  function encodeEnvelope(payload) {
+    requirePayload(payload);
+    const fileReferences = [];
+    const writer = new EnvelopeWriter(fileReferences);
+    writer.byte(0x48);
+    writer.byte(0x55);
+    writer.byte(0x58);
+    writer.byte(0x50);
+    writer.uint16(1);
+    writer.uint16(0);
+    writer.value(payload, 0);
+    return { bytes: writer.finish(), fileReferences };
+  }
+
+  function decodeEnvelope(bytes, fileReferences) {
+    return new EnvelopeReader(bytes, fileReferences).read();
   }
 
   function createEvents(bridgeHandle) {
@@ -625,6 +782,14 @@
   }
 
   Module.HuxerUI ??= {};
+  Module.HuxerUI.FileReference = FileReference;
   Module.HuxerUI.PlatformPayload = PlatformPayload;
-  Module.huxerUIWebPlatformBridge = Object.freeze({ createEvents, createResult });
+  Module.huxerUIWebPlatformBridge = Object.freeze({
+    createEvents,
+    createFileReference,
+    createResult,
+    decodeEnvelope,
+    encodeEnvelope,
+    retainFileReference,
+  });
 })();

@@ -95,7 +95,7 @@ class DirectoryHandle {
 }
 
 async function operation(handle, request, writable = true, canceled = false) {
-  const state = create({ handle, writable, identity: "test-root" });
+  const state = create({ handle, writable, entryKey: "test-root" });
   if (canceled) { cancel(state); }
   const result = new Promise((resolve) => { complete = resolve; });
   start(state, request, 1, helpers);
@@ -131,9 +131,9 @@ async function operation(handle, request, writable = true, canceled = false) {
   result = await operation(root, { kind: "list" }, false);
   assert.equal(result.value.length, 2);
   assert(result.value.every((entry) => !entry.canWrite));
-  const firstIdentity = result.value.find((entry) => entry.name === ".Binary").source.identity;
+  const firstEntryKey = result.value.find((entry) => entry.name === ".Binary").source.entryKey;
   result = await operation(root, { kind: "find", name: ".binary" });
-  assert.equal(result.value.source.identity, firstIdentity);
+  assert.equal(result.value.source.entryKey, firstEntryKey);
   const nested = await root.getDirectoryHandle("空目录");
   assert.equal((await operation(root, { kind: "check", target: { handle: nested } })).value, false);
   assert.equal((await operation(nested, { kind: "check", target: { handle: root } })).value, false);

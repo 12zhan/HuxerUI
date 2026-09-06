@@ -1083,8 +1083,8 @@ public:
   LocalFileReferenceState(File file, bool writable, FileReferenceCoordination coordination = {});
   ~LocalFileReferenceState() override;
   [[nodiscard]] FileReference Reference(std::optional<std::string> content_type = {});
-  [[nodiscard]] FileReferenceMetadata Metadata(std::string* identity = nullptr, int parent_descriptor = -1) const;
-  [[nodiscard]] std::string Identity() const override;
+  [[nodiscard]] FileReferenceMetadata Metadata(std::string* entry_key = nullptr, int parent_descriptor = -1) const;
+  [[nodiscard]] std::string EntryKey() const override;
   [[nodiscard]] std::optional<File> AsFile() const override;
   std::function<void()> ReadBytes(FileReferenceBytesCompletion completion) override;
   std::function<void()> ImportTo(File destination, bool overwrite,
@@ -1113,7 +1113,7 @@ private:
   bool writable_;
   std::shared_ptr<Anchor> anchor_;
   std::string relative_;
-  std::string identity_;
+  std::string entry_key_;
   FileReferenceMetadata metadata_;
 #if defined(_WIN32)
   [[nodiscard]] ReferenceHandle OpenNative(ACCESS_MASK access = FILE_READ_ATTRIBUTES) const;
@@ -1162,19 +1162,19 @@ LocalFileReferenceState::LocalFileReferenceState(File file, bool writable, FileR
   }
   relative_ = directory ? std::string{} : file_.Name();
 #endif
-  metadata_ = Metadata(&identity_);
+  metadata_ = Metadata(&entry_key_);
 }
 
 LocalFileReferenceState::LocalFileReferenceState(const LocalFileReferenceState& parent, std::string name,
                                                  int parent_descriptor)
     : file_(parent.file_.Child(name)), coordination_(parent.coordination_), writable_(parent.writable_),
       anchor_(parent.anchor_), relative_(parent.relative_.empty() ? name : parent.relative_ + "/" + name) {
-  metadata_ = Metadata(&identity_, parent_descriptor);
+  metadata_ = Metadata(&entry_key_, parent_descriptor);
 }
 
 LocalFileReferenceState::~LocalFileReferenceState() = default;
-std::string LocalFileReferenceState::Identity() const {
-  return identity_;
+std::string LocalFileReferenceState::EntryKey() const {
+  return entry_key_;
 }
 std::optional<File> LocalFileReferenceState::AsFile() const {
   return file_;
@@ -1247,7 +1247,7 @@ int LocalFileReferenceState::OpenFile(bool writing) const {
 #endif
 }
 
-FileReferenceMetadata LocalFileReferenceState::Metadata(std::string* identity, int parent_descriptor) const {
+FileReferenceMetadata LocalFileReferenceState::Metadata(std::string* entry_key, int parent_descriptor) const {
   FileReferenceMetadata result{.name = file_.Name()};
   if (result.name.empty()) {
     result.name = "/";
@@ -1277,9 +1277,9 @@ FileReferenceMetadata LocalFileReferenceState::Metadata(std::string* identity, i
   if (result.type == FileType::File) {
     result.size = (static_cast<std::uint64_t>(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
   }
-  if (identity) {
-    *identity = "local:" + std::to_string(info.dwVolumeSerialNumber) + ":" + std::to_string(info.nFileIndexHigh) + ":" +
-                std::to_string(info.nFileIndexLow);
+  if (entry_key) {
+    *entry_key = "local:" + std::to_string(info.dwVolumeSerialNumber) + ":" +
+                 std::to_string(info.nFileIndexHigh) + ":" + std::to_string(info.nFileIndexLow);
   }
 #else
   ReferenceDescriptor parent(anchor_ ? dup(parent_descriptor >= 0 ? parent_descriptor : anchor_->descriptor.Get())
@@ -1298,8 +1298,8 @@ FileReferenceMetadata LocalFileReferenceState::Metadata(std::string* identity, i
   const int descriptor = anchor_ ? parent.Get() : AT_FDCWD;
   struct stat info {};
   CheckLocalIo(fstatat(descriptor, name.c_str(), &info, AT_SYMLINK_NOFOLLOW) == 0);
-  if (identity) {
-    *identity = "local:" + std::to_string(info.st_dev) + ":" + std::to_string(info.st_ino);
+  if (entry_key) {
+    *entry_key = "local:" + std::to_string(info.st_dev) + ":" + std::to_string(info.st_ino);
   }
   result.type = S_ISDIR(info.st_mode) ? FileType::Directory : S_ISREG(info.st_mode) ? FileType::File : FileType::Other;
   result.can_write =
@@ -1557,7 +1557,7 @@ FileReferenceWriteResult LocalFileReferenceState::CopyFromLocal(LocalFileReferen
     CheckReference(overwrite && metadata.type == FileType::File, FileErrorCode::AlreadyExists);
     CheckReference(metadata.name == name, FileErrorCode::Unsupported);
     CheckReference(metadata.can_write, FileErrorCode::PermissionDenied);
-    CheckReference(existing->Identity() != source.Identity(), FileErrorCode::Unsupported);
+    CheckReference(existing->EntryKey() != source.EntryKey(), FileErrorCode::Unsupported);
   }
   const auto transfer = [&] {
     CheckReference(!canceled.load(), FileErrorCode::Io);
@@ -1768,7 +1768,7 @@ std::function<void()> LocalFileReferenceState::ReplaceWith(File source, FileRefe
         CheckReference(self->writable_, FileErrorCode::PermissionDenied);
         CheckReference(self->Metadata().type == FileType::File, FileErrorCode::IsDirectory);
         auto input = std::make_shared<LocalFileReferenceState>(source, false);
-        CheckReference(input->Identity() != self->Identity(), FileErrorCode::Unsupported);
+        CheckReference(input->EntryKey() != self->EntryKey(), FileErrorCode::Unsupported);
         const auto transfer = [&] {
           CheckReference(!canceled.load(), FileErrorCode::Io);
           ReferenceDescriptor reader(input->OpenFile());

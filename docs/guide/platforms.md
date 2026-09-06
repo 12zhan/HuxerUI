@@ -60,7 +60,8 @@ Custom chrome extends application content into the title bar while preserving Ap
 External file references preserve security-scoped access when required.
 System tray presentation uses an AppKit status item and platform menu.
 Camera and microphone permissions use AVFoundation and require the corresponding bundle usage descriptions.
-The installed SDK exposes AppKit PlatformModule, PlatformView, PlatformPayload, and ExternalTexture protocols to Objective-C and Swift through `HuxerUIPlatform`.
+The installed SDK exposes AppKit PlatformModule, PlatformView, PlatformPayload, FileReference, and ExternalTexture contracts to Objective-C and Swift through `HuxerUIPlatform`.
+FileReference payloads retain the shared grant and expose its path-backed `NSURL` as `fileURL` for native libraries.
 
 Native libraries include `<huxerui/macos/external_texture.h>` for `macos::PixelBufferTexture` and `macos::MetalTexture`.
 `PixelBufferTexture` retains an immutable `CVPixelBufferRef`; publish a different buffer before mutating later content.
@@ -140,6 +141,10 @@ Raw `WebGLTexture` and `GPUTexture` objects are not accepted: render their conte
 The framework does not require application-side pixel readback, but browser snapshotting, import, and color conversion may copy, so this path does not promise end-to-end zero-copy.
 The `example_external_texture` Web build demonstrates Canvas2D and WebGL2 producers using the same texture API, overlay, clipping, and pause controls; it retains the Canvas2D example when WebGL2 is unavailable and reports missing `VideoFrame` support.
 
+JavaScript platform libraries receive a retained `HuxerUI.FileReference` from `PlatformPayload.requireFileReference()`.
+Call `await reference.getFile()` when a browser media or document API requires a `File`, and call `close()` when the library no longer needs its retained C++ capability share.
+The public `PlatformPayload.encode()` remains a capability-free byte API; the framework's private bridge envelope carries FileReference companion entries and Web continues to reject ExternalTexture payloads.
+
 Typed routed navigation can bind the authoritative `NavigationPath` to browser URL and history state.
 Browser restrictions still govern clipboard, file pickers, autoplay, cross-origin requests, and storage persistence.
 Camera and microphone permission state is queried through the Permissions API when supported; requesting access remains coupled to browser media acquisition and is not emulated by the shared permission API.
@@ -151,7 +156,7 @@ The Android backend requires API 23 or later and uses an Android View host, Canv
 The generated Gradle project links the SDK-provided Android shared library and application C++ library for each configured ABI.
 
 Build and run require an Android SDK, NDK, Java, Gradle wrapper dependencies, and a compatible emulator or device.
-Insets, system-bar appearance, lifecycle, activation, file pickers, HTTP, PlatformView, and ExternalTexture are translated at the Android host boundary.
+Insets, system-bar appearance, lifecycle, activation, file pickers, HTTP, PlatformView, FileReference payloads, and ExternalTexture are translated at the Android host boundary.
 Camera and microphone requests use the Activity launcher and require manifest declarations owned by the application.
 
 Generated applications keep the same Activity, `HuxerUIView`, and Runtime across orientation and window-size changes.
@@ -196,6 +201,9 @@ camera->SetPreviewSurface(producer_surface.Get());
 Applications pass all three concrete types to `Image` as `std::shared_ptr<ExternalTexture>`.
 GPU-backed textures require a hardware-accelerated host window; HuxerUI does not silently read them back to CPU memory.
 
+Java and Kotlin platform libraries receive a retained `HuxerUIFileReference` from `PlatformPayload.requireFileReference()` and call `uri()` for APIs that accept Android document resources.
+Closing the wrapper releases only that Java share of the C++ capability; the payload bridge does not add broad storage permission or expose a parallel writability flag.
+
 An Android arm64-v8a host SDK provides the `huxerui` CLI, `hcg`, and `hrc` as native Bionic executables for Termux.
 Termux Android builds target the local `arm64-v8a` ABI, use the Termux `aapt2` executable, and still require an Android SDK platform and NDK layout compatible with Gradle `externalNativeBuild` on Termux.
 The SDK installer does not install Java, Gradle dependencies, `aapt2`, the Android SDK, or the Android NDK; use `huxerui doctor android` to inspect those application-build prerequisites.
@@ -216,7 +224,8 @@ huxerui run ios --device <id>
 Physical-device builds use Xcode signing settings owned by the generated project and local developer configuration.
 External files preserve security-scoped access when required.
 Camera and microphone permissions use AVFoundation, require native usage descriptions, and can open the application settings page through UIKit.
-The iOS XCFramework exposes UIKit PlatformModule, PlatformView, PlatformPayload, and ExternalTexture protocols to Objective-C and Swift through `HuxerUIPlatform`.
+The iOS XCFramework exposes UIKit PlatformModule, PlatformView, PlatformPayload, FileReference, and ExternalTexture contracts to Objective-C and Swift through `HuxerUIPlatform`.
+FileReference payloads retain the shared grant and expose its path-backed `NSURL` as `fileURL` for native libraries.
 
 Native libraries include `<huxerui/ios/external_texture.h>` for the iOS forms of `PixelBufferTexture` and `MetalTexture`.
 They have the same ownership, format, origin, alpha, synchronization, and Image rendering contract as their macOS counterparts; the C++ types remain in `huxerui::ios` rather than a shared Apple namespace.

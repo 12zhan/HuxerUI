@@ -180,9 +180,9 @@ private:
 
 class ProviderReferenceState final : public detail::FileReferenceState {
 public:
-  explicit ProviderReferenceState(std::string identity) : identity_(std::move(identity)) {}
+  explicit ProviderReferenceState(std::string entry_key) : entry_key_(std::move(entry_key)) {}
 
-  std::string Identity() const override { return identity_; }
+  std::string EntryKey() const override { return entry_key_; }
 
   std::function<void()> ReadBytes(detail::FileReferenceBytesCompletion completion) override {
     completion(FileResult<Bytes>(FileError{FileErrorCode::Unsupported, "HuxerUI test source requires streaming"}));
@@ -245,7 +245,7 @@ public:
       CHECK(existing->Name() == name);
       completion(FileResult<detail::FileReferenceWriteResult>({*existing, 1, false}));
     } else {
-      auto state = std::make_shared<ProviderReferenceState>(identity_ + "/" + name);
+      auto state = std::make_shared<ProviderReferenceState>(entry_key_ + "/" + name);
       children.push_back(detail::MakeFileReference({.name = name, .can_write = true}, std::move(state)));
       completion(FileResult<detail::FileReferenceWriteResult>({children.back(), 1, true}));
     }
@@ -270,7 +270,7 @@ public:
   std::optional<FileErrorCode> write_error;
 
 private:
-  std::string identity_;
+  std::string entry_key_;
 };
 
 std::shared_ptr<FileSystem> file_system;

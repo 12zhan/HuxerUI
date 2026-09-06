@@ -1,13 +1,12 @@
 #import <huxerui/macos/external_texture.h>
 #import <huxerui/macos/platform_registry.h>
 
-#import <objc/runtime.h>
-
 #include <cstddef>
 #include <cstring>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -18,6 +17,7 @@
 
 using huxerui::Bytes;
 using huxerui::ExternalTexture;
+using huxerui::FileReference;
 using huxerui::PlatformError;
 using huxerui::PlatformEventEmitter;
 using huxerui::PlatformPayload;
@@ -54,56 +54,57 @@ static NSString* ToNSString(std::string_view value) {
   return result;
 }
 
-@interface HUXMacPayloadStorage : NSObject {
-@public
-  Bytes bytes;
-  __strong NSArray<HUXExternalTexture*>* textures;
+// Keep the FileReference beside its NSURL: the URL identifies the resource, while the C++ state owns any coordinated
+// access that must survive asynchronous native media work.
+@interface HUXFileReference () {
+@private
+  std::optional<FileReference> reference_;
+  __strong NSURL* file_url_;
 }
+- (instancetype)initForHuxerUIWithReference:(FileReference)reference fileURL:(NSURL*)file_url;
+- (FileReference)referenceForHuxerUI;
 @end
 
-@implementation HUXMacPayloadStorage
+static HUXFileReference* WrapFileReference(FileReference reference) {
+  const std::optional<huxerui::File> file = reference.AsFile();
+  if (!file) {
+    throw std::invalid_argument("HuxerUI macOS FileReference has no native file URL");
+  }
+  NSURL* url = [NSURL fileURLWithPath:ToNSString(file->Path())
+                          isDirectory:reference.Type() == huxerui::FileType::Directory];
+  if (url == nil) {
+    throw std::runtime_error("HuxerUI macOS file URL could not be created");
+  }
+  return [[HUXFileReference alloc] initForHuxerUIWithReference:std::move(reference) fileURL:url];
+}
+
+static FileReference UnwrapFileReference(HUXFileReference* reference) {
+  if (reference == nil) {
+    throw std::invalid_argument("HuxerUI macOS platform boundary requires a FileReference value");
+  }
+  return [reference referenceForHuxerUI];
+}
+
+// HUXP capability slots index these retained wrapper arrays, so bytes and wrappers must share one object lifetime.
+@interface HUXPlatformPayload () {
+@private
+  Bytes bytes_;
+  __strong NSArray<HUXExternalTexture*>* textures_;
+  __strong NSArray<HUXFileReference*>* file_references_;
+}
+- (instancetype)initForHuxerUIWithEnvelope:(PlatformPayload::Envelope)envelope;
+- (PlatformPayload)platformPayloadForHuxerUI;
 @end
 
-@interface HUXPlatformPayload ()
-- (instancetype)initForHuxerUI;
-@end
-
-static char payload_storage_key;
-
-static HUXMacPayloadStorage* PayloadStorage(HUXPlatformPayload* payload) {
+static PlatformPayload DecodePayload(HUXPlatformPayload* payload) {
   if (payload == nil) {
     throw std::invalid_argument("HuxerUI macOS platform boundary requires a PlatformPayload value");
   }
-  HUXMacPayloadStorage* storage = objc_getAssociatedObject(payload, &payload_storage_key);
-  if (storage == nil) {
-    throw std::invalid_argument("HuxerUI macOS platform boundary received an invalid PlatformPayload value");
-  }
-  return storage;
-}
-
-static PlatformPayload DecodePayload(HUXPlatformPayload* payload) {
-  HUXMacPayloadStorage* storage = PayloadStorage(payload);
-  std::vector<std::shared_ptr<ExternalTexture>> textures;
-  textures.reserve(storage->textures.count);
-  for (HUXExternalTexture* texture in storage->textures) {
-    textures.push_back(huxerui::macos::detail::UnwrapExternalTexture(texture));
-  }
-  return PlatformPayload::Decode(storage->bytes, textures);
+  return [payload platformPayloadForHuxerUI];
 }
 
 static HUXPlatformPayload* EncodePayload(PlatformPayload payload) {
-  std::vector<std::shared_ptr<ExternalTexture>> textures;
-  Bytes bytes = payload.Encode(textures);
-  NSMutableArray<HUXExternalTexture*>* wrappers = [NSMutableArray arrayWithCapacity:textures.size()];
-  for (std::shared_ptr<ExternalTexture>& texture : textures) {
-    [wrappers addObject:huxerui::macos::detail::WrapExternalTexture(std::move(texture))];
-  }
-  HUXPlatformPayload* result = [[HUXPlatformPayload alloc] initForHuxerUI];
-  HUXMacPayloadStorage* storage = [HUXMacPayloadStorage new];
-  storage->bytes = std::move(bytes);
-  storage->textures = [wrappers copy];
-  objc_setAssociatedObject(result, &payload_storage_key, storage, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-  return result;
+  return [[HUXPlatformPayload alloc] initForHuxerUIWithEnvelope:payload.Encode()];
 }
 
 static HUXPlatformPayloadKind ToObjectiveCKind(PlatformPayloadKind kind) {
@@ -126,21 +127,17 @@ static HUXPlatformPayloadKind ToObjectiveCKind(PlatformPayloadKind kind) {
     return HUXPlatformPayloadKindObject;
   case PlatformPayloadKind::ExternalTexture:
     return HUXPlatformPayloadKindExternalTexture;
+  case PlatformPayloadKind::FileReference:
+    return HUXPlatformPayloadKindFileReference;
   }
   throw std::logic_error("HuxerUI PlatformPayload contained an unknown kind");
 }
 
-struct MacEventState {
-  explicit MacEventState(PlatformEventEmitter value) : events(std::move(value)) {}
-
-  std::mutex mutex;
-  PlatformEventEmitter events;
-  bool active = true;
-};
-
 @interface HUXMacPlatformEventEmitter : NSObject <HUXPlatformEventEmitter> {
-@public
-  std::shared_ptr<MacEventState> state;
+@private
+  std::mutex mutex_;
+  PlatformEventEmitter events_;
+  bool active_;
 }
 - (instancetype)initWithEvents:(PlatformEventEmitter)events;
 - (void)close;
@@ -151,7 +148,8 @@ struct MacEventState {
 - (instancetype)initWithEvents:(PlatformEventEmitter)events {
   self = [super init];
   if (self != nil) {
-    state = std::make_shared<MacEventState>(std::move(events));
+    events_ = std::move(events);
+    active_ = true;
   }
   return self;
 }
@@ -162,12 +160,13 @@ struct MacEventState {
     PlatformPayload value = DecodePayload(payload);
     PlatformEventEmitter emitter;
     {
-      std::lock_guard lock(state->mutex);
-      if (!state->active) {
+      std::lock_guard lock(mutex_);
+      if (!active_) {
         return nil;
       }
-      emitter = state->events;
+      emitter = events_;
     }
+    // Native handlers may synchronously close or reenter this bridge, so invoke a retained copy outside the lock.
     std::optional<PlatformPayload> result = emitter.Emit(name, std::move(value));
     return result.has_value() ? EncodePayload(std::move(*result)) : nil;
   } catch (...) {
@@ -176,35 +175,20 @@ struct MacEventState {
 }
 
 - (void)close {
-  if (!state) {
-    return;
-  }
-  std::lock_guard lock(state->mutex);
-  state->active = false;
-  state->events = {};
+  std::lock_guard lock(mutex_);
+  active_ = false;
+  events_ = {};
 }
 
 @end
 
-struct MacResultState {
-  explicit MacResultState(std::function<void(PlatformResult<PlatformPayload>)> value)
-      : completion(std::move(value)) {}
-
-  std::mutex mutex;
-  std::function<void(PlatformResult<PlatformPayload>)> completion;
-};
-
-static std::function<void(PlatformResult<PlatformPayload>)>
-TakeCompletion(const std::shared_ptr<MacResultState>& state) {
-  std::lock_guard lock(state->mutex);
-  return std::exchange(state->completion, {});
-}
-
 @interface HUXMacPlatformResult : NSObject <HUXPlatformResult> {
-@public
-  std::shared_ptr<MacResultState> state;
+@private
+  std::mutex mutex_;
+  std::function<void(PlatformResult<PlatformPayload>)> completion_;
 }
 - (instancetype)initWithCompletion:(std::function<void(PlatformResult<PlatformPayload>)>)completion;
+- (std::function<void(PlatformResult<PlatformPayload>)>)takeCompletion;
 - (void)close;
 @end
 
@@ -213,9 +197,14 @@ TakeCompletion(const std::shared_ptr<MacResultState>& state) {
 - (instancetype)initWithCompletion:(std::function<void(PlatformResult<PlatformPayload>)>)completion {
   self = [super init];
   if (self != nil) {
-    state = std::make_shared<MacResultState>(std::move(completion));
+    completion_ = std::move(completion);
   }
   return self;
+}
+
+- (std::function<void(PlatformResult<PlatformPayload>)>)takeCompletion {
+  std::lock_guard lock(mutex_);
+  return std::exchange(completion_, {});
 }
 
 - (void)complete:(HUXPlatformPayload*)value {
@@ -223,16 +212,13 @@ TakeCompletion(const std::shared_ptr<MacResultState>& state) {
   try {
     payload = DecodePayload(value);
   } catch (...) {
-    if (auto completion = TakeCompletion(state)) {
-      completion(PlatformError{
-          "huxerui/invalid-result",
-          "HuxerUI macOS platform call returned an invalid result payload",
-          {},
-      });
+    if (auto completion = [self takeCompletion]) {
+      completion(PlatformError{"huxerui/invalid-result",
+                               "HuxerUI macOS platform call returned an invalid result payload", {}});
     }
     return;
   }
-  std::function<void(PlatformResult<PlatformPayload>)> completion = TakeCompletion(state);
+  std::function<void(PlatformResult<PlatformPayload>)> completion = [self takeCompletion];
   if (completion) {
     completion(std::move(payload));
   }
@@ -243,33 +229,23 @@ TakeCompletion(const std::shared_ptr<MacResultState>& state) {
              details:(HUXPlatformPayload*)details {
   PlatformError error;
   try {
-    error = {
-        ToCppString(code, "platform error code"),
-        ToCppString(message, "platform error message"),
-        DecodePayload(details),
-    };
+    error = {ToCppString(code, "platform error code"), ToCppString(message, "platform error message"),
+             DecodePayload(details)};
   } catch (...) {
-    if (auto completion = TakeCompletion(state)) {
-      completion(PlatformError{
-          "huxerui/invalid-error",
-          "HuxerUI macOS platform call returned an invalid error",
-          {},
-      });
+    if (auto completion = [self takeCompletion]) {
+      completion(PlatformError{"huxerui/invalid-error", "HuxerUI macOS platform call returned an invalid error", {}});
     }
     return;
   }
-  std::function<void(PlatformResult<PlatformPayload>)> completion = TakeCompletion(state);
+  std::function<void(PlatformResult<PlatformPayload>)> completion = [self takeCompletion];
   if (completion) {
     completion(std::move(error));
   }
 }
 
 - (void)close {
-  if (!state) {
-    return;
-  }
-  std::lock_guard lock(state->mutex);
-  state->completion = {};
+  std::lock_guard lock(mutex_);
+  completion_ = {};
 }
 
 @end
@@ -358,10 +334,74 @@ static void ConnectInstance(const huxerui::detail::PlatformChannelEndpoint& endp
   });
 }
 
+@implementation HUXFileReference
+
+- (instancetype)initForHuxerUIWithReference:(FileReference)reference fileURL:(NSURL*)file_url {
+  self = [super init];
+  if (self != nil) {
+    reference_.emplace(std::move(reference));
+    file_url_ = file_url;
+  }
+  return self;
+}
+
+- (FileReference)referenceForHuxerUI {
+  if (!reference_.has_value() || file_url_ == nil) {
+    throw std::invalid_argument("HuxerUI macOS platform boundary received an invalid FileReference value");
+  }
+  return *reference_;
+}
+
+- (NSURL*)fileURL {
+  try {
+    if (!reference_.has_value() || file_url_ == nil) {
+      throw std::invalid_argument("HuxerUI macOS platform boundary received an invalid FileReference value");
+    }
+    return file_url_;
+  } catch (const std::exception& exception) {
+    RaiseCppException(exception);
+  }
+}
+
+@end
+
 @implementation HUXPlatformPayload
 
-- (instancetype)initForHuxerUI {
-  return [super init];
+- (instancetype)initForHuxerUIWithEnvelope:(PlatformPayload::Envelope)envelope {
+  self = [super init];
+  if (self != nil) {
+    bytes_ = std::move(envelope.bytes);
+    NSMutableArray<HUXExternalTexture*>* textures =
+        [NSMutableArray arrayWithCapacity:envelope.external_textures.size()];
+    for (std::shared_ptr<ExternalTexture>& texture : envelope.external_textures) {
+      [textures addObject:huxerui::macos::detail::WrapExternalTexture(std::move(texture))];
+    }
+    textures_ = [textures copy];
+    NSMutableArray<HUXFileReference*>* file_references =
+        [NSMutableArray arrayWithCapacity:envelope.file_references.size()];
+    for (FileReference& reference : envelope.file_references) {
+      [file_references addObject:WrapFileReference(std::move(reference))];
+    }
+    file_references_ = [file_references copy];
+  }
+  return self;
+}
+
+- (PlatformPayload)platformPayloadForHuxerUI {
+  if (textures_ == nil || file_references_ == nil) {
+    throw std::invalid_argument("HuxerUI macOS platform boundary received an invalid PlatformPayload value");
+  }
+  PlatformPayload::Envelope envelope;
+  envelope.bytes = bytes_;
+  envelope.external_textures.reserve(textures_.count);
+  for (HUXExternalTexture* texture in textures_) {
+    envelope.external_textures.push_back(huxerui::macos::detail::UnwrapExternalTexture(texture));
+  }
+  envelope.file_references.reserve(file_references_.count);
+  for (HUXFileReference* reference in file_references_) {
+    envelope.file_references.push_back(UnwrapFileReference(reference));
+  }
+  return PlatformPayload::Decode(envelope);
 }
 
 + (instancetype)nullValue {
@@ -446,6 +486,14 @@ static void ConnectInstance(const huxerui::detail::PlatformChannelEndpoint& endp
   }
 }
 
++ (instancetype)fileReferenceValue:(HUXFileReference*)reference {
+  try {
+    return EncodePayload(PlatformPayload(UnwrapFileReference(reference)));
+  } catch (const std::exception& exception) {
+    RaiseCppException(exception);
+  }
+}
+
 - (HUXPlatformPayloadKind)kind {
   try {
     return ToObjectiveCKind(DecodePayload(self).Kind());
@@ -499,6 +547,14 @@ static void ConnectInstance(const huxerui::detail::PlatformChannelEndpoint& endp
 - (HUXExternalTexture*)externalTextureValue {
   try {
     return huxerui::macos::detail::WrapExternalTexture(DecodePayload(self).AsExternalTexture());
+  } catch (const std::exception& exception) {
+    RaiseCppException(exception);
+  }
+}
+
+- (HUXFileReference*)fileReferenceValue {
+  try {
+    return WrapFileReference(DecodePayload(self).AsFileReference());
   } catch (const std::exception& exception) {
     RaiseCppException(exception);
   }

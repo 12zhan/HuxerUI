@@ -52,9 +52,9 @@ public:
   [[nodiscard]] static std::shared_ptr<FileReferenceState> Of(const FileReference& reference);
   // Optional path projection only; the returned File never takes ownership of this state's grant.
   [[nodiscard]] virtual std::optional<File> AsFile() const;
-  // Used for ancestor-cycle and destination-alias checks, never as a public path or a persistent token.
-  // An empty identity means traversal cannot establish the required relationship safely.
-  [[nodiscard]] virtual std::string Identity() const;
+  // Provider-local entry key used for ancestor-cycle and destination-alias checks, never as a public path or a
+  // persistent token. An empty key means traversal cannot establish the required relationship safely.
+  [[nodiscard]] virtual std::string EntryKey() const;
   // True only when FindChild is an exact display-name scan of ListChildren, including ambiguity
   // detection. A directory-copy frame can index that listing once. Native name resolution (such as
   // case-insensitive filesystem lookup) keeps FindChild and must not opt into this optimization.
@@ -63,7 +63,7 @@ public:
   virtual std::function<void()> FindChild(std::string name,
                                           FileReferenceCompletion<std::optional<FileReference>> completion);
   // The preceding lookup is operation-local; writes still validate the current type and authorization.
-  // Providers may reuse its native child identity instead of scanning again. It does not reserve the
+  // Providers may reuse its native child key instead of scanning again. It does not reserve the
   // name, and a missing child can be created concurrently before the write reaches the platform.
   virtual std::function<void()> CreateDirectory(std::string name, std::optional<FileReference> existing,
                                                 FileReferenceCompletion<FileReferenceWriteResult> completion);

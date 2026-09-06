@@ -341,7 +341,7 @@ Task<FileResult<FileReference>> WriteReference(FileReference directory, std::str
     co_return FileResult<FileReference>(*error);
   }
   auto state = FileReferenceState::Of(directory);
-  // Carry the child lookup into the write so providers can reuse its identity. Native and Web writes
+  // Carry the child lookup into the write so providers can reuse its entry key. Native and Web writes
   // may still perform their own lookup; this result is neither a reservation nor a permission grant.
   auto existing = co_await RunReferenceOperation<std::optional<FileReference>>(
       [state, name](auto completion) { return state->FindChild(name, std::move(completion)); });
@@ -430,8 +430,8 @@ Task<FileResult<DirectoryCopySummary>> CopyDirectoryContents(
   while (!stack.empty()) {
     DirectoryFrame& frame = stack.back();
     if (!frame.listed) {
-      const std::string identity = FileReferenceState::Of(frame.source)->Identity();
-      if (identity.empty() || !ancestors.insert(identity).second) {
+      const std::string entry_key = FileReferenceState::Of(frame.source)->EntryKey();
+      if (entry_key.empty() || !ancestors.insert(entry_key).second) {
         co_return FileResult<DirectoryCopySummary>(
             DirectoryCopyError(FileErrorCode::Unsupported, "source ancestry", frame.path));
       }
@@ -472,7 +472,7 @@ Task<FileResult<DirectoryCopySummary>> CopyDirectoryContents(
       }
     }
     if (frame.next == frame.children.size()) {
-      ancestors.erase(FileReferenceState::Of(frame.source)->Identity());
+      ancestors.erase(FileReferenceState::Of(frame.source)->EntryKey());
       stack.pop_back();
       continue;
     }
@@ -503,12 +503,12 @@ Task<FileResult<DirectoryCopySummary>> CopyDirectoryContents(
     }
     if (existing) {
       const FileReference& target = *existing;
-      const std::string identity = FileReferenceState::Of(target)->Identity();
-      if (identity.empty()) {
+      const std::string entry_key = FileReferenceState::Of(target)->EntryKey();
+      if (entry_key.empty()) {
         co_return FileResult<DirectoryCopySummary>(
-            DirectoryCopyError(FileErrorCode::Unsupported, "destination identity", path));
+            DirectoryCopyError(FileErrorCode::Unsupported, "destination entry key", path));
       }
-      if (frame.outputs.contains(identity) || target.Type() != child.Type() ||
+      if (frame.outputs.contains(entry_key) || target.Type() != child.Type() ||
           (child.Type() == FileType::File && !overwrite)) {
         co_return FileResult<DirectoryCopySummary>(
             DirectoryCopyError(FileErrorCode::AlreadyExists, "destination collision", path));
@@ -527,10 +527,10 @@ Task<FileResult<DirectoryCopySummary>> CopyDirectoryContents(
       co_return FileResult<DirectoryCopySummary>(DirectoryCopyError(output.Error().code, "entry transfer", path));
     }
     FileReferenceWriteResult written = std::move(output.Value());
-    const std::string identity = FileReferenceState::Of(written.reference)->Identity();
-    if (identity.empty() || !frame.outputs.insert(identity).second) {
+    const std::string entry_key = FileReferenceState::Of(written.reference)->EntryKey();
+    if (entry_key.empty() || !frame.outputs.insert(entry_key).second) {
       co_return FileResult<DirectoryCopySummary>(
-          DirectoryCopyError(FileErrorCode::Unsupported, "destination identity", path));
+          DirectoryCopyError(FileErrorCode::Unsupported, "destination entry key", path));
     }
     if (frame.destination_children) {
       frame.destination_children->erase(name);
@@ -921,7 +921,7 @@ std::shared_ptr<FileReferenceState> FileReferenceState::Of(const FileReference& 
 std::optional<File> FileReferenceState::AsFile() const {
   return std::nullopt;
 }
-std::string FileReferenceState::Identity() const {
+std::string FileReferenceState::EntryKey() const {
   return {};
 }
 

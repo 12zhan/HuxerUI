@@ -347,7 +347,7 @@ public:
         reference_class_, "prepareDirectory",
         "(JILjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Z)"
         "Lorg/huxerui/HuxerUIFileReference$Operation;");
-    identity_ = environment->GetMethodID(reference_class_, "identity", "()Ljava/lang/String;");
+    entry_key_ = environment->GetMethodID(reference_class_, "entryKey", "()Ljava/lang/String;");
     prepare_read_ =
         environment->GetMethodID(reference_class_, "prepareRead", "(J)Lorg/huxerui/HuxerUIFileReference$Operation;");
     prepare_import_ = environment->GetMethodID(
@@ -371,8 +371,9 @@ public:
     uri_string_ = environment->GetMethodID(uri_class.Get(), "toString", "()Ljava/lang/String;");
     if (!metadata_uri_ || !metadata_name_ || !metadata_size_ || !metadata_content_type_ || !metadata_writable_ ||
         !metadata_write_allowed_ ||
-        !uri_string_ || identity_ == nullptr || prepare_directory_ == nullptr || constructor_ == nullptr ||
-        prepare_read_ == nullptr || prepare_import_ == nullptr || prepare_replace_ == nullptr || start_ == nullptr || cancel_ == nullptr ||
+        !uri_string_ || entry_key_ == nullptr || prepare_directory_ == nullptr || constructor_ == nullptr ||
+        prepare_read_ == nullptr || prepare_import_ == nullptr || prepare_replace_ == nullptr || start_ == nullptr ||
+        cancel_ == nullptr ||
         environment->ExceptionCheck()) {
       ClearJavaException(environment);
       Release(environment);
@@ -415,8 +416,8 @@ public:
   [[nodiscard]] jmethodID PrepareDirectory() const noexcept {
     return prepare_directory_;
   }
-  [[nodiscard]] jmethodID Identity() const noexcept {
-    return identity_;
+  [[nodiscard]] jmethodID EntryKey() const noexcept {
+    return entry_key_;
   }
 
   [[nodiscard]] jmethodID PrepareRead() const noexcept {
@@ -476,7 +477,7 @@ private:
   jclass reference_class_ = nullptr;
   jclass operation_class_ = nullptr;
   jmethodID constructor_ = nullptr;
-  jmethodID identity_ = nullptr;
+  jmethodID entry_key_ = nullptr;
   jmethodID prepare_directory_ = nullptr;
   jmethodID prepare_read_ = nullptr;
   jmethodID prepare_import_ = nullptr;
@@ -490,14 +491,14 @@ public:
   AndroidFileReferenceState(std::shared_ptr<AndroidFileReferenceBridge> bridge, JNIEnv* environment,
                             std::string_view uri, bool write_allowed)
       : bridge_(std::move(bridge)), uri_(uri), reference_(bridge_->CreateReference(environment, uri, write_allowed)) {
-    android::LocalRef<jstring> identity(
-        environment, static_cast<jstring>(environment->CallObjectMethod(reference_, bridge_->Identity())));
-    if (!identity || environment->ExceptionCheck()) {
+    android::LocalRef<jstring> entry_key(
+        environment, static_cast<jstring>(environment->CallObjectMethod(reference_, bridge_->EntryKey())));
+    if (!entry_key || environment->ExceptionCheck()) {
       environment->DeleteGlobalRef(reference_);
       ClearJavaException(environment);
-      throw std::runtime_error("HuxerUI Android document identity is unavailable");
+      throw std::runtime_error("HuxerUI Android document entry key is unavailable");
     }
-    identity_ = android::JavaStringToUtf8(environment, identity.Get());
+    entry_key_ = android::JavaStringToUtf8(environment, entry_key.Get());
   }
 
   ~AndroidFileReferenceState() override {
@@ -520,8 +521,12 @@ public:
     return Start(bridge_->PrepareReplace(), &source, false, std::move(completion));
   }
 
-  std::string Identity() const override {
-    return identity_;
+  std::string EntryKey() const override {
+    return entry_key_;
+  }
+
+  [[nodiscard]] const std::string& Uri() const noexcept {
+    return uri_;
   }
 
   bool NeedsChildListingForLookup() const noexcept override { return true; }
@@ -703,7 +708,7 @@ private:
 
   std::shared_ptr<AndroidFileReferenceBridge> bridge_;
   std::string uri_;
-  std::string identity_;
+  std::string entry_key_;
   jobject reference_ = nullptr;
 };
 
@@ -1319,6 +1324,15 @@ FileReference CreateAndroidFileReference(
   auto bridge = std::make_shared<AndroidFileReferenceBridge>(virtual_machine, environment, context);
   auto state = std::make_shared<AndroidFileReferenceState>(bridge, environment, uri, metadata.can_write);
   return MakeFileReference(std::move(metadata), std::move(state));
+}
+
+AndroidFileReferenceProjection ProjectAndroidFileReference(const FileReference& reference) {
+  std::shared_ptr<FileReferenceState> state = FileReferenceState::Of(reference);
+  auto android_state = std::dynamic_pointer_cast<AndroidFileReferenceState>(state);
+  if (!android_state) {
+    throw std::invalid_argument("HuxerUI FileReference does not contain an Android document URI");
+  }
+  return {android_state->Uri(), reinterpret_cast<std::uintptr_t>(state.get())};
 }
 
 FileDropPreparation CaptureAndroidFileDrop(JNIEnv* environment, jobject operation) {

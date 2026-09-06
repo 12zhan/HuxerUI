@@ -141,6 +141,9 @@ Install custom root behavior through the existing RootHook boundary rather than 
 The application-facing service owns typed requests, results, and events; the platform implementation owns operating-system objects and UI-thread delivery.
 `PlatformPayload` uses the top-level `Bytes` type for owned binary payloads, while `AsBytes()` returns a borrowed `std::span<const std::byte>`.
 Keep strings for valid UTF-8 text and bytes for encoding-independent data; `PlatformPayload` does not convert between them.
+When a cross-language module must give a native media, document, or provider API an external file, carry the existing `FileReference` as a payload capability instead of importing it, serializing its bytes, or reconstructing a path.
+Android receives a retained `HuxerUIFileReference` with `uri()`, Apple receives a retained `FileReference` with `fileURL`, and Web receives a retained `HuxerUI.FileReference` with asynchronous `getFile()`.
+The platform wrappers preserve the C++ access lifetime but do not expose a second `CanWrite()` contract; shared code continues to own capability metadata and file operations.
 
 iOS and macOS libraries may implement the platform side in Objective-C or Swift through the `HuxerUIPlatform` Clang module.
 Their Objective-C++ RootHook passes the actual factory object to `ios::ObjectiveCPlatformModuleFactory` or `macos::ObjectiveCPlatformModuleFactory`, then wraps the resulting `PlatformChannel` in the library's typed service.

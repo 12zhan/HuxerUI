@@ -31,7 +31,13 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-final class HuxerUIFileReference {
+/**
+ * A retained Android document capability received through {@link PlatformPayload}.
+ *
+ * <p>{@link #uri()} exposes the provider URI for APIs that accept Android document resources. The C++
+ * {@code FileReference} remains retained until this object is closed; repeated calls to {@link #close()} are safe.</p>
+ */
+public final class HuxerUIFileReference implements AutoCloseable {
     private static final int RESULT_BYTES = 0;
     private static final int RESULT_TRUE = 1;
     private static final int RESULT_FALSE = 2;
@@ -63,15 +69,78 @@ final class HuxerUIFileReference {
     private final boolean writeAllowed;
     private final ContentResolver resolver;
     private final Uri uri;
+    private final long capabilityKey;
+    private long nativeHandle;
 
+    // Provider-backed instances service C++ file operations; payload wrappers instead retain a native capability.
     HuxerUIFileReference(Context context, String uri, boolean writeAllowed) {
         this.context = context.getApplicationContext();
         this.writeAllowed = writeAllowed;
         resolver = this.context.getContentResolver();
         this.uri = Uri.parse(uri);
+        capabilityKey = 0L;
+        nativeHandle = 0L;
     }
 
-    String identity() {
+    HuxerUIFileReference(long nativeHandle, long capabilityKey, String uri) {
+        if (nativeHandle == 0L || capabilityKey == 0L) {
+            throw new IllegalArgumentException("HuxerUI file reference handles must not be zero");
+        }
+        context = null;
+        writeAllowed = false;
+        resolver = null;
+        this.uri = Uri.parse(uri);
+        this.capabilityKey = capabilityKey;
+        this.nativeHandle = nativeHandle;
+    }
+
+    /** Returns the Android document URI while retaining the underlying access capability. */
+    public synchronized Uri uri() {
+        requireOpen();
+        return uri;
+    }
+
+    synchronized long capabilityKey() {
+        if (capabilityKey == 0L) {
+            throw new IllegalStateException("HuxerUI file reference is not a platform payload capability");
+        }
+        return capabilityKey;
+    }
+
+    synchronized long retainHandle() {
+        requireOpen();
+        return retain(nativeHandle);
+    }
+
+    /** Releases this Java reference to the shared file capability. */
+    @Override
+    public synchronized void close() {
+        if (nativeHandle != 0L) {
+            release(nativeHandle);
+            nativeHandle = 0L;
+        }
+    }
+
+    @Override
+    protected void finalize() throws Throwable {
+        try {
+            close();
+        } finally {
+            super.finalize();
+        }
+    }
+
+    synchronized void requireOpen() {
+        if (nativeHandle == 0L) {
+            throw new IllegalStateException("HuxerUI file reference is closed or is not a platform payload capability");
+        }
+    }
+
+    private static native void release(long handle);
+
+    private static native long retain(long handle);
+
+    String entryKey() {
         try { return uri.getAuthority() + ":" + DocumentsContract.getDocumentId(uri); }
         catch (IllegalArgumentException exception) { return uri.toString(); }
     }

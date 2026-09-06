@@ -12,6 +12,7 @@
 #include <huxerui/android/platform_registry.h>
 
 #include "application/platform_registry_internal.h"
+#include "android_file_internal.h"
 
 namespace huxerui::android {
 
@@ -179,30 +180,35 @@ Bytes JavaByteArrayToBytes(JNIEnv* environment, jbyteArray value) {
 
 LocalRef<jobject> PlatformPayloadToJava(JNIEnv* environment, const PlatformPayload& payload) {
   RequireEnvironment(environment);
-  std::vector<std::shared_ptr<ExternalTexture>> external_textures;
-  const Bytes encoded = payload.Encode(external_textures);
-  LocalRef<jbyteArray> bytes = BytesToJavaByteArray(environment, encoded);
+  PlatformPayload::Envelope envelope = payload.Encode();
+  LocalRef<jbyteArray> bytes = BytesToJavaByteArray(environment, envelope.bytes);
   LocalRef<jclass> payload_class(environment, environment->FindClass("org/huxerui/PlatformPayload"));
   LocalRef<jclass> texture_class(environment, environment->FindClass("org/huxerui/HuxerUIExternalTexture"));
+  LocalRef<jclass> reference_class(environment, environment->FindClass("org/huxerui/HuxerUIFileReference"));
   LocalRef<jclass> list_class(environment, environment->FindClass("java/util/ArrayList"));
-  if (!bytes || !payload_class || !texture_class || !list_class || environment->ExceptionCheck()) {
+  if (!bytes || !payload_class || !texture_class || !reference_class || !list_class || environment->ExceptionCheck()) {
     throw std::runtime_error("HuxerUI could not resolve the Android PlatformPayload bridge");
   }
   const jmethodID texture_constructor = environment->GetMethodID(texture_class.Get(), "<init>", "(J)V");
+  const jmethodID reference_constructor =
+      environment->GetMethodID(reference_class.Get(), "<init>", "(JJLjava/lang/String;)V");
   const jmethodID list_constructor = environment->GetMethodID(list_class.Get(), "<init>", "(I)V");
   const jmethodID list_add = environment->GetMethodID(list_class.Get(), "add", "(Ljava/lang/Object;)Z");
-  const jmethodID decode = environment->GetStaticMethodID(payload_class.Get(), "decodeEnvelope",
-                                                          "([BLjava/util/List;)Lorg/huxerui/PlatformPayload;");
-  if (texture_constructor == nullptr || list_constructor == nullptr || list_add == nullptr || decode == nullptr ||
-      environment->ExceptionCheck()) {
+  const jmethodID decode = environment->GetStaticMethodID(
+      payload_class.Get(), "decodeEnvelope",
+      "([BLjava/util/List;Ljava/util/List;)Lorg/huxerui/PlatformPayload;");
+  if (texture_constructor == nullptr || reference_constructor == nullptr || list_constructor == nullptr ||
+      list_add == nullptr || decode == nullptr || environment->ExceptionCheck()) {
     throw std::runtime_error("HuxerUI Android PlatformPayload bridge methods do not match the SDK");
   }
   LocalRef<jobject> textures(environment, environment->NewObject(list_class.Get(), list_constructor,
-                                                                 static_cast<jint>(external_textures.size())));
-  if (!textures || environment->ExceptionCheck()) {
+                                                                 static_cast<jint>(envelope.external_textures.size())));
+  LocalRef<jobject> references(environment, environment->NewObject(list_class.Get(), list_constructor,
+                                                                   static_cast<jint>(envelope.file_references.size())));
+  if (!textures || !references || environment->ExceptionCheck()) {
     throw std::runtime_error("HuxerUI could not allocate the Android PlatformPayload capability table");
   }
-  for (const std::shared_ptr<ExternalTexture>& texture : external_textures) {
+  for (const std::shared_ptr<ExternalTexture>& texture : envelope.external_textures) {
     auto handle = std::make_unique<std::shared_ptr<ExternalTexture>>(texture);
     LocalRef<jobject> java_texture(
         environment, environment->NewObject(texture_class.Get(), texture_constructor,
@@ -216,7 +222,27 @@ LocalRef<jobject> PlatformPayloadToJava(JNIEnv* environment, const PlatformPaylo
       throw std::runtime_error("HuxerUI could not populate the Android PlatformPayload capability table");
     }
   }
-  jobject result = environment->CallStaticObjectMethod(payload_class.Get(), decode, bytes.Get(), textures.Get());
+  for (const FileReference& reference : envelope.file_references) {
+    const huxerui::detail::AndroidFileReferenceProjection projection =
+        huxerui::detail::ProjectAndroidFileReference(reference);
+    auto handle = std::make_unique<FileReference>(reference);
+    LocalRef<jstring> uri = Utf8ToJavaString(environment, projection.uri);
+    const jlong native_handle = static_cast<jlong>(reinterpret_cast<std::uintptr_t>(handle.get()));
+    LocalRef<jobject> java_reference(environment, environment->NewObject(reference_class.Get(), reference_constructor,
+                                                                         native_handle,
+                                                                         static_cast<jlong>(projection.capability_key),
+                                                                         uri.Get()));
+    if (!java_reference || environment->ExceptionCheck()) {
+      throw std::runtime_error("HuxerUI could not create an Android file reference capability");
+    }
+    handle.release();
+    environment->CallBooleanMethod(references.Get(), list_add, java_reference.Get());
+    if (environment->ExceptionCheck()) {
+      throw std::runtime_error("HuxerUI could not populate the Android PlatformPayload capability table");
+    }
+  }
+  jobject result =
+      environment->CallStaticObjectMethod(payload_class.Get(), decode, bytes.Get(), textures.Get(), references.Get());
   if (result == nullptr || environment->ExceptionCheck()) {
     throw std::runtime_error("HuxerUI could not decode PlatformPayload for Android");
   }
@@ -231,19 +257,24 @@ PlatformPayload JavaPlatformPayloadToCpp(JNIEnv* environment, jobject payload) {
   LocalRef<jclass> payload_class(environment, environment->GetObjectClass(payload));
   LocalRef<jclass> envelope_class(environment, environment->FindClass("org/huxerui/PlatformPayload$Envelope"));
   LocalRef<jclass> texture_class(environment, environment->FindClass("org/huxerui/HuxerUIExternalTexture"));
+  LocalRef<jclass> reference_class(environment, environment->FindClass("org/huxerui/HuxerUIFileReference"));
   LocalRef<jclass> list_class(environment, environment->FindClass("java/util/List"));
-  if (!payload_class || !envelope_class || !texture_class || !list_class || environment->ExceptionCheck()) {
+  if (!payload_class || !envelope_class || !texture_class || !reference_class || !list_class ||
+      environment->ExceptionCheck()) {
     throw std::runtime_error("HuxerUI could not resolve the Android PlatformPayload bridge");
   }
   const jmethodID encode = environment->GetStaticMethodID(
       payload_class.Get(), "encodeEnvelope", "(Lorg/huxerui/PlatformPayload;)Lorg/huxerui/PlatformPayload$Envelope;");
   const jfieldID bytes_field = environment->GetFieldID(envelope_class.Get(), "bytes", "[B");
   const jfieldID textures_field = environment->GetFieldID(envelope_class.Get(), "externalTextures", "Ljava/util/List;");
+  const jfieldID references_field = environment->GetFieldID(envelope_class.Get(), "fileReferences", "Ljava/util/List;");
   const jmethodID list_size = environment->GetMethodID(list_class.Get(), "size", "()I");
   const jmethodID list_get = environment->GetMethodID(list_class.Get(), "get", "(I)Ljava/lang/Object;");
   const jmethodID retain_texture = environment->GetMethodID(texture_class.Get(), "retainHandle", "()J");
-  if (encode == nullptr || bytes_field == nullptr || textures_field == nullptr || list_size == nullptr ||
-      list_get == nullptr || retain_texture == nullptr || environment->ExceptionCheck()) {
+  const jmethodID retain_reference = environment->GetMethodID(reference_class.Get(), "retainHandle", "()J");
+  if (encode == nullptr || bytes_field == nullptr || textures_field == nullptr || references_field == nullptr ||
+      list_size == nullptr || list_get == nullptr || retain_texture == nullptr || retain_reference == nullptr ||
+      environment->ExceptionCheck()) {
     throw std::runtime_error("HuxerUI Android PlatformPayload bridge methods do not match the SDK");
   }
   LocalRef<jobject> envelope(environment, environment->CallStaticObjectMethod(payload_class.Get(), encode, payload));
@@ -253,7 +284,8 @@ PlatformPayload JavaPlatformPayloadToCpp(JNIEnv* environment, jobject payload) {
   LocalRef<jbyteArray> bytes(environment,
                              static_cast<jbyteArray>(environment->GetObjectField(envelope.Get(), bytes_field)));
   LocalRef<jobject> textures(environment, environment->GetObjectField(envelope.Get(), textures_field));
-  if (!bytes || !textures || environment->ExceptionCheck()) {
+  LocalRef<jobject> references(environment, environment->GetObjectField(envelope.Get(), references_field));
+  if (!bytes || !textures || !references || environment->ExceptionCheck()) {
     throw std::runtime_error("HuxerUI Android PlatformPayload envelope is invalid");
   }
   const jint texture_count = environment->CallIntMethod(textures.Get(), list_size);
@@ -275,7 +307,30 @@ PlatformPayload JavaPlatformPayloadToCpp(JNIEnv* environment, jobject payload) {
         reinterpret_cast<std::shared_ptr<ExternalTexture>*>(static_cast<std::uintptr_t>(handle)));
     external_textures.push_back(*value);
   }
-  return PlatformPayload::Decode(JavaByteArrayToBytes(environment, bytes.Get()), external_textures);
+  const jint reference_count = environment->CallIntMethod(references.Get(), list_size);
+  if (reference_count < 0 || environment->ExceptionCheck()) {
+    throw std::runtime_error("HuxerUI Android PlatformPayload capability table is invalid");
+  }
+  std::vector<FileReference> file_references;
+  file_references.reserve(static_cast<std::size_t>(reference_count));
+  for (jint index = 0; index < reference_count; ++index) {
+    LocalRef<jobject> reference(environment, environment->CallObjectMethod(references.Get(), list_get, index));
+    if (!reference || !environment->IsInstanceOf(reference.Get(), reference_class.Get()) ||
+        environment->ExceptionCheck()) {
+      throw std::runtime_error("HuxerUI Android PlatformPayload capability is not a file reference");
+    }
+    const jlong handle = environment->CallLongMethod(reference.Get(), retain_reference);
+    if (handle == 0 || environment->ExceptionCheck()) {
+      throw std::runtime_error("HuxerUI Android PlatformPayload file reference is closed");
+    }
+    const std::unique_ptr<FileReference> value(reinterpret_cast<FileReference*>(static_cast<std::uintptr_t>(handle)));
+    file_references.push_back(*value);
+  }
+  PlatformPayload::Envelope decoded;
+  decoded.bytes = JavaByteArrayToBytes(environment, bytes.Get());
+  decoded.external_textures = std::move(external_textures);
+  decoded.file_references = std::move(file_references);
+  return PlatformPayload::Decode(decoded);
 }
 
 } // namespace huxerui::android
@@ -292,6 +347,18 @@ extern "C" JNIEXPORT jlong JNICALL Java_org_huxerui_HuxerUIExternalTexture_retai
       reinterpret_cast<const std::shared_ptr<huxerui::ExternalTexture>*>(static_cast<std::uintptr_t>(handle));
   return static_cast<jlong>(
       reinterpret_cast<std::uintptr_t>(new std::shared_ptr<huxerui::ExternalTexture>(*texture)));
+}
+
+extern "C" JNIEXPORT void JNICALL Java_org_huxerui_HuxerUIFileReference_release(JNIEnv*, jclass, jlong handle) {
+  delete reinterpret_cast<huxerui::FileReference*>(static_cast<std::uintptr_t>(handle));
+}
+
+extern "C" JNIEXPORT jlong JNICALL Java_org_huxerui_HuxerUIFileReference_retain(JNIEnv*, jclass, jlong handle) {
+  if (handle == 0) {
+    return 0;
+  }
+  const auto* reference = reinterpret_cast<const huxerui::FileReference*>(static_cast<std::uintptr_t>(handle));
+  return static_cast<jlong>(reinterpret_cast<std::uintptr_t>(new huxerui::FileReference(*reference)));
 }
 
 namespace huxerui::android::detail {
@@ -401,16 +468,7 @@ jobject ConstructFactory(JNIEnv* environment, jclass implementation_class, const
   return factory.Release();
 }
 
-struct PlatformEventState {
-  explicit PlatformEventState(PlatformEventEmitter value) : events(std::move(value)) {}
-  PlatformEventEmitter events;
-};
-
-struct PlatformResultState {
-  explicit PlatformResultState(std::function<void(PlatformResult<PlatformPayload>)> value)
-      : completion(std::move(value)) {}
-  std::function<void(PlatformResult<PlatformPayload>)> completion;
-};
+using PlatformResultCompletion = std::function<void(PlatformResult<PlatformPayload>)>;
 
 class JavaBridgeSupport {
 public:
@@ -471,29 +529,27 @@ public:
   }
 
   [[nodiscard]] jobject NewEmitter(JNIEnv* environment, PlatformEventEmitter events) const {
-    auto state =
-        std::make_unique<std::shared_ptr<PlatformEventState>>(std::make_shared<PlatformEventState>(std::move(events)));
-    jobject emitter = environment->NewObject(emitter_class_, emitter_constructor_,
-                                             static_cast<jlong>(reinterpret_cast<std::uintptr_t>(state.get())));
+    auto retained_events = std::make_unique<PlatformEventEmitter>(std::move(events));
+    const jlong handle = static_cast<jlong>(reinterpret_cast<std::uintptr_t>(retained_events.get()));
+    jobject emitter = environment->NewObject(emitter_class_, emitter_constructor_, handle);
     if (emitter == nullptr || environment->ExceptionCheck()) {
       ClearException(environment);
       throw std::runtime_error("HuxerUI could not create an Android platform event emitter");
     }
-    state.release();
+    retained_events.release();
     return emitter;
   }
 
   [[nodiscard]] jobject NewResult(JNIEnv* environment,
                                   std::function<void(PlatformResult<PlatformPayload>)> completion) const {
-    auto state = std::make_unique<std::shared_ptr<PlatformResultState>>(
-        std::make_shared<PlatformResultState>(std::move(completion)));
-    jobject result = environment->NewObject(result_class_, result_constructor_,
-                                            static_cast<jlong>(reinterpret_cast<std::uintptr_t>(state.get())));
+    auto retained_completion = std::make_unique<PlatformResultCompletion>(std::move(completion));
+    const jlong handle = static_cast<jlong>(reinterpret_cast<std::uintptr_t>(retained_completion.get()));
+    jobject result = environment->NewObject(result_class_, result_constructor_, handle);
     if (result == nullptr || environment->ExceptionCheck()) {
       ClearException(environment);
       throw std::runtime_error("HuxerUI could not create an Android platform result endpoint");
     }
-    state.release();
+    retained_completion.release();
     return result;
   }
 
@@ -895,12 +951,13 @@ extern "C" JNIEXPORT jobject JNICALL Java_org_huxerui_HuxerUIPlatformChannel_nat
   if (handle == 0 || event == nullptr || payload == nullptr) {
     return nullptr;
   }
-  auto* retained = reinterpret_cast<std::shared_ptr<huxerui::android::detail::PlatformEventState>*>(
-      static_cast<std::uintptr_t>(handle));
+  auto* retained = reinterpret_cast<huxerui::PlatformEventEmitter*>(static_cast<std::uintptr_t>(handle));
   try {
+    // Emit may synchronously reenter Java and close the bridge, so retain a callable copy before invoking user code.
+    const huxerui::PlatformEventEmitter emitter = *retained;
     std::optional<huxerui::PlatformPayload> result =
-        (*retained)->events.Emit(huxerui::android::JavaStringToUtf8(environment, event),
-                                 huxerui::android::JavaPlatformPayloadToCpp(environment, payload));
+        emitter.Emit(huxerui::android::JavaStringToUtf8(environment, event),
+                     huxerui::android::JavaPlatformPayloadToCpp(environment, payload));
     if (result.has_value()) {
       return huxerui::android::PlatformPayloadToJava(environment, *result).Release();
     }
@@ -912,58 +969,48 @@ extern "C" JNIEXPORT jobject JNICALL Java_org_huxerui_HuxerUIPlatformChannel_nat
 
 extern "C" JNIEXPORT void JNICALL Java_org_huxerui_HuxerUIPlatformChannel_nativeReleaseEvent(JNIEnv*, jclass,
                                                                                              jlong handle) {
-  delete reinterpret_cast<std::shared_ptr<huxerui::android::detail::PlatformEventState>*>(
-      static_cast<std::uintptr_t>(handle));
+  delete reinterpret_cast<huxerui::PlatformEventEmitter*>(static_cast<std::uintptr_t>(handle));
 }
 
 extern "C" JNIEXPORT void JNICALL Java_org_huxerui_HuxerUIPlatformChannel_nativeComplete(JNIEnv* environment, jclass,
                                                                                          jlong handle,
                                                                                          jobject payload) {
-  std::unique_ptr<std::shared_ptr<huxerui::android::detail::PlatformResultState>> retained(
-      reinterpret_cast<std::shared_ptr<huxerui::android::detail::PlatformResultState>*>(
-          static_cast<std::uintptr_t>(handle)));
-  if (!retained || !*retained || payload == nullptr) {
+  std::unique_ptr<huxerui::android::detail::PlatformResultCompletion> completion(
+      reinterpret_cast<huxerui::android::detail::PlatformResultCompletion*>(static_cast<std::uintptr_t>(handle)));
+  if (!completion || payload == nullptr) {
     return;
   }
   try {
-    (*retained)->completion(huxerui::android::JavaPlatformPayloadToCpp(environment, payload));
+    (*completion)(huxerui::android::JavaPlatformPayloadToCpp(environment, payload));
   } catch (...) {
     huxerui::android::detail::ClearException(environment);
-    (*retained)->completion(huxerui::PlatformError{
-        "huxerui/invalid-result",
-        "HuxerUI Android platform call returned an invalid result payload",
-        {},
-    });
+    (*completion)(huxerui::PlatformError{"huxerui/invalid-result",
+                                         "HuxerUI Android platform call returned an invalid result payload", {}});
   }
 }
 
 extern "C" JNIEXPORT void JNICALL Java_org_huxerui_HuxerUIPlatformChannel_nativeFail(JNIEnv* environment, jclass,
                                                                                      jlong handle, jstring code,
                                                                                      jstring message, jobject details) {
-  std::unique_ptr<std::shared_ptr<huxerui::android::detail::PlatformResultState>> retained(
-      reinterpret_cast<std::shared_ptr<huxerui::android::detail::PlatformResultState>*>(
-          static_cast<std::uintptr_t>(handle)));
-  if (!retained || !*retained || code == nullptr || message == nullptr || details == nullptr) {
+  std::unique_ptr<huxerui::android::detail::PlatformResultCompletion> completion(
+      reinterpret_cast<huxerui::android::detail::PlatformResultCompletion*>(static_cast<std::uintptr_t>(handle)));
+  if (!completion || code == nullptr || message == nullptr || details == nullptr) {
     return;
   }
   try {
-    (*retained)->completion(huxerui::PlatformError{
-        huxerui::android::JavaStringToUtf8(environment, code),
-        huxerui::android::JavaStringToUtf8(environment, message),
-        huxerui::android::JavaPlatformPayloadToCpp(environment, details),
-    });
+    std::string error_code = huxerui::android::JavaStringToUtf8(environment, code);
+    std::string error_message = huxerui::android::JavaStringToUtf8(environment, message);
+    huxerui::PlatformPayload error_details = huxerui::android::JavaPlatformPayloadToCpp(environment, details);
+    (*completion)(huxerui::PlatformError{std::move(error_code), std::move(error_message), std::move(error_details)});
   } catch (...) {
     huxerui::android::detail::ClearException(environment);
-    (*retained)->completion(huxerui::PlatformError{
-        "huxerui/invalid-error",
-        "HuxerUI Android platform call returned an invalid error payload",
-        {},
-    });
+    (*completion)(huxerui::PlatformError{"huxerui/invalid-error",
+                                         "HuxerUI Android platform call returned an invalid error payload", {}});
   }
 }
 
 extern "C" JNIEXPORT void JNICALL Java_org_huxerui_HuxerUIPlatformChannel_nativeReleaseResult(JNIEnv*, jclass,
                                                                                               jlong handle) {
-  delete reinterpret_cast<std::shared_ptr<huxerui::android::detail::PlatformResultState>*>(
+  delete reinterpret_cast<huxerui::android::detail::PlatformResultCompletion*>(
       static_cast<std::uintptr_t>(handle));
 }

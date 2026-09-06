@@ -41,5 +41,10 @@ let payload: PlatformPayload = .object([
 ])
 payload.validate(fields: ["enabled", "count"])
 
+func useFileReference(_ reference: FileReference) {
+  _ = reference.fileURL
+  _ = PlatformPayload.fileReference(reference).fileReference()
+}
+
 let texture = PixelBufferTexture(intrinsicSize: CGSize(width: 16, height: 9))
 texture.finish()

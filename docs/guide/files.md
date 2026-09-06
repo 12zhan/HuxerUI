@@ -89,6 +89,29 @@ External renaming or replacement can invalidate later operations; a retained dir
 Directory `ReadBytesAsync()` and `ReadStringAsync()` fail with `IsDirectory`.
 Existing `ImportToAsync()` and `ReplaceWithAsync()` remain single-file operations and return `false` for directories.
 
+### Passing a reference to a platform library
+
+`PlatformPayload` can carry a `FileReference` through the common Android, Apple, or Web platform-language bridge without converting it to bytes or a local path.
+Use this when a media player, document viewer, or similar platform API needs a native resource such as an Android `Uri` or browser `File`, or when retaining an Apple path or `NSURL` alone would lose the `FileReference` access lifetime.
+
+```cpp
+PlatformPayload OpenMediaRequest(FileReference source) {
+  return PlatformPayload::Object{{"source", std::move(source)}};
+}
+```
+
+The platform implementation obtains the value with its typed payload accessor:
+
+- Android: `payload.requireFileReference()` returns `HuxerUIFileReference`; call `uri()` and keep the wrapper open while the native API uses the `Uri`.
+- iOS and macOS: `payload.fileReference()` returns `FileReference`; its `fileURL` is an `NSURL`, and ARC retains the underlying C++ access capability.
+- Web: `payload.requireFileReference()` returns `HuxerUI.FileReference`; `await reference.getFile()` resolves the browser `File`, and `close()` releases the wrapper's retained C++ share.
+
+Android and Web wrappers have idempotent `close()` methods and reject access after closing.
+The Apple wrapper releases through ARC.
+The projection preserves the original C++ capability and its access lifetime; it does not create persistent permission, start another Apple security scope, narrow read/write access, or add a platform `canWrite` property.
+Shared C++ code continues to inspect the captured `CanWrite()` metadata and perform writes through the existing `FileReference` operations.
+Do not serialize the HUXP bytes, cache a native URI or URL past the wrapper lifetime, or treat a browser `File` as permission to reopen the same external item later.
+
 ### Direct local-path access
 
 `AsFile()` returns `std::optional<File>` for both files and directories without I/O, copying, or importing their contents.

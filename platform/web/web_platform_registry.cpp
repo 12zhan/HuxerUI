@@ -14,27 +14,14 @@
 #include <emscripten/val.h>
 
 #include "application/platform_registry_internal.h"
+#include "web_file_internal.h"
 
 namespace huxerui::web::detail {
 
 namespace {
 
 using emscripten::val;
-
-struct WebEventState {
-  explicit WebEventState(PlatformEventEmitter value) : events(std::move(value)) {}
-
-  PlatformEventEmitter events;
-};
-
-struct WebResultState {
-  explicit WebResultState(std::function<void(PlatformResult<PlatformPayload>)> value) : completion(std::move(value)) {}
-
-  std::function<void(PlatformResult<PlatformPayload>)> completion;
-};
-
-template <class State> using RetainedState = std::shared_ptr<State>;
-template <class State> using RetainedStateHandle = RetainedState<State>*;
+using PlatformResultCompletion = std::function<void(PlatformResult<PlatformPayload>)>;
 
 val PlatformPayloadClass() {
   const val huxerui = val::module_property("HuxerUI");
@@ -67,74 +54,69 @@ void RequireFactory(const val& factory, std::string_view kind) {
 }
 
 val PlatformPayloadToJavaScript(const PlatformPayload& payload) {
-  std::vector<std::shared_ptr<ExternalTexture>> external_textures;
-  const Bytes encoded = payload.Encode(external_textures);
-  if (!external_textures.empty()) {
+  PlatformPayload::Envelope envelope = payload.Encode();
+  if (!envelope.external_textures.empty()) {
     throw std::invalid_argument("HuxerUI Web JavaScript bridge does not support ExternalTexture payloads");
   }
-  val bytes = val::global("Uint8Array").new_(encoded.size());
-  if (!encoded.empty()) {
-    bytes.call<void>(
-        "set",
-        val(emscripten::typed_memory_view(encoded.size(), reinterpret_cast<const unsigned char*>(encoded.data()))));
+  val bytes = val::global("Uint8Array").new_(envelope.bytes.size());
+  if (!envelope.bytes.empty()) {
+    const auto* data = reinterpret_cast<const unsigned char*>(envelope.bytes.data());
+    bytes.call<void>("set", val(emscripten::typed_memory_view(envelope.bytes.size(), data)));
   }
-  return PlatformPayloadClass().call<val>("decode", bytes);
+  const val bridge = PlatformBridge();
+  val references = val::array();
+  for (const FileReference& reference : envelope.file_references) {
+    const huxerui::detail::WebFileReferenceProjection projection = huxerui::detail::ProjectWebFileReference(reference);
+    auto handle = std::make_unique<FileReference>(reference);
+    val wrapper = bridge.call<val>("createFileReference", reinterpret_cast<std::uintptr_t>(handle.get()),
+                                   projection.capability_key, projection.source, projection.is_file);
+    handle.release();
+    references.call<void>("push", wrapper);
+  }
+  return bridge.call<val>("decodeEnvelope", bytes, references);
 }
 
 PlatformPayload JavaScriptPlatformPayloadToCpp(const val& payload) {
   if (payload.isUndefined() || payload.isNull() || !payload.instanceof(PlatformPayloadClass())) {
     throw std::invalid_argument("HuxerUI Web platform boundary requires a PlatformPayload value");
   }
-  const val source = payload.call<val>("encode");
+  const val envelope = PlatformBridge().call<val>("encodeEnvelope", payload);
+  const val source = envelope["bytes"];
   const std::size_t size = source["byteLength"].as<std::size_t>();
-  Bytes encoded(size);
-  if (!encoded.empty()) {
-    val(emscripten::typed_memory_view(size, reinterpret_cast<unsigned char*>(encoded.data())))
+  PlatformPayload::Envelope decoded;
+  decoded.bytes.resize(size);
+  if (!decoded.bytes.empty()) {
+    val(emscripten::typed_memory_view(size, reinterpret_cast<unsigned char*>(decoded.bytes.data())))
         .call<void>("set", source);
   }
-  return PlatformPayload::Decode(encoded);
-}
-
-template <class State> std::uintptr_t RetainForJavaScript(std::shared_ptr<State> state) {
-  auto retained = std::make_unique<RetainedState<State>>(std::move(state));
-  const std::uintptr_t handle = reinterpret_cast<std::uintptr_t>(retained.get());
-  retained.release();
-  return handle;
-}
-
-template <class State> std::shared_ptr<State> GetRetainedState(std::uintptr_t handle) {
-  if (handle == 0) {
-    return {};
+  const val references = envelope["fileReferences"];
+  const std::size_t reference_count = references["length"].as<std::size_t>();
+  decoded.file_references.reserve(reference_count);
+  for (std::size_t index = 0; index < reference_count; ++index) {
+    const std::uintptr_t handle = PlatformBridge().call<std::uintptr_t>("retainFileReference", references[index]);
+    const std::unique_ptr<FileReference> reference(reinterpret_cast<FileReference*>(handle));
+    if (!reference) {
+      throw std::invalid_argument("HuxerUI Web FileReference could not be retained");
+    }
+    decoded.file_references.push_back(*reference);
   }
-  return *reinterpret_cast<RetainedStateHandle<State>>(handle);
-}
-
-template <class State> std::shared_ptr<State> ReleaseRetainedState(std::uintptr_t handle) {
-  if (handle == 0) {
-    return {};
-  }
-  std::unique_ptr<RetainedState<State>> retained(reinterpret_cast<RetainedStateHandle<State>>(handle));
-  return std::move(*retained);
+  return PlatformPayload::Decode(decoded);
 }
 
 val NewEventEndpoint(PlatformEventEmitter events) {
-  const std::uintptr_t handle = RetainForJavaScript(std::make_shared<WebEventState>(std::move(events)));
-  try {
-    return PlatformBridge().call<val>("createEvents", handle);
-  } catch (...) {
-    static_cast<void>(ReleaseRetainedState<WebEventState>(handle));
-    throw;
-  }
+  auto retained = std::make_unique<PlatformEventEmitter>(std::move(events));
+  const std::uintptr_t handle = reinterpret_cast<std::uintptr_t>(retained.get());
+  val endpoint = PlatformBridge().call<val>("createEvents", handle);
+  retained.release();
+  return endpoint;
 }
 
-val NewResultEndpoint(std::function<void(PlatformResult<PlatformPayload>)> completion) {
-  const std::uintptr_t handle = RetainForJavaScript(std::make_shared<WebResultState>(std::move(completion)));
-  try {
-    return PlatformBridge().call<val>("createResult", handle);
-  } catch (...) {
-    static_cast<void>(ReleaseRetainedState<WebResultState>(handle));
-    throw;
-  }
+val NewResultEndpoint(PlatformResultCompletion completion) {
+  auto retained = std::make_unique<PlatformResultCompletion>(std::move(completion));
+  const std::uintptr_t handle = reinterpret_cast<std::uintptr_t>(retained.get());
+  val endpoint = PlatformBridge().call<val>("createResult", handle);
+  retained.release();
+  return endpoint;
 }
 
 void CloseEndpoint(val& endpoint) noexcept {
@@ -150,19 +132,21 @@ void CloseEndpoint(val& endpoint) noexcept {
 
 val WebPlatformEmit(std::uintptr_t handle, std::string event, const val& payload) noexcept {
   try {
-    if (const std::shared_ptr state = GetRetainedState<WebEventState>(handle)) {
-      std::optional<PlatformPayload> result =
-          state->events.Emit(std::move(event), JavaScriptPlatformPayloadToCpp(payload));
-      return result.has_value() ? PlatformPayloadToJavaScript(*result) : val::undefined();
+    if (handle == 0) {
+      return val::undefined();
     }
-    return val::undefined();
+    // Emit can synchronously reenter JavaScript and close the endpoint, so retain a callable copy first.
+    PlatformEventEmitter events = *reinterpret_cast<PlatformEventEmitter*>(handle);
+    std::optional<PlatformPayload> result =
+        events.Emit(std::move(event), JavaScriptPlatformPayloadToCpp(payload));
+    return result.has_value() ? PlatformPayloadToJavaScript(*result) : val::undefined();
   } catch (...) {
     return val::null();
   }
 }
 
 void WebPlatformReleaseEvent(std::uintptr_t handle) noexcept {
-  static_cast<void>(ReleaseRetainedState<WebEventState>(handle));
+  delete reinterpret_cast<PlatformEventEmitter*>(handle);
 }
 
 bool WebPlatformComplete(std::uintptr_t handle, const val& payload) noexcept {
@@ -172,9 +156,10 @@ bool WebPlatformComplete(std::uintptr_t handle, const val& payload) noexcept {
   } catch (...) {
     return false;
   }
-  if (const std::shared_ptr state = ReleaseRetainedState<WebResultState>(handle); state && state->completion) {
+  std::unique_ptr<PlatformResultCompletion> completion(reinterpret_cast<PlatformResultCompletion*>(handle));
+  if (completion && *completion) {
     try {
-      state->completion(std::move(value));
+      (*completion)(std::move(value));
     } catch (...) {
     }
   }
@@ -188,9 +173,10 @@ bool WebPlatformFail(std::uintptr_t handle, std::string code, std::string messag
   } catch (...) {
     return false;
   }
-  if (const std::shared_ptr state = ReleaseRetainedState<WebResultState>(handle); state && state->completion) {
+  std::unique_ptr<PlatformResultCompletion> completion(reinterpret_cast<PlatformResultCompletion*>(handle));
+  if (completion && *completion) {
     try {
-      state->completion(PlatformError{std::move(code), std::move(message), std::move(value)});
+      (*completion)(PlatformError{std::move(code), std::move(message), std::move(value)});
     } catch (...) {
     }
   }
@@ -198,7 +184,18 @@ bool WebPlatformFail(std::uintptr_t handle, std::string code, std::string messag
 }
 
 void WebPlatformReleaseResult(std::uintptr_t handle) noexcept {
-  static_cast<void>(ReleaseRetainedState<WebResultState>(handle));
+  delete reinterpret_cast<PlatformResultCompletion*>(handle);
+}
+
+void WebFileReferenceRelease(std::uintptr_t handle) noexcept {
+  delete reinterpret_cast<FileReference*>(handle);
+}
+
+std::uintptr_t WebFileReferenceRetain(std::uintptr_t handle) {
+  if (handle == 0) {
+    return 0;
+  }
+  return reinterpret_cast<std::uintptr_t>(new FileReference(*reinterpret_cast<const FileReference*>(handle)));
 }
 
 class JavaScriptInvocation final {
@@ -407,4 +404,6 @@ EMSCRIPTEN_BINDINGS(huxerui_web_platform_registry) {
   emscripten::function("huxeruiWebPlatformComplete", &huxerui::web::detail::WebPlatformComplete);
   emscripten::function("huxeruiWebPlatformFail", &huxerui::web::detail::WebPlatformFail);
   emscripten::function("huxeruiWebPlatformReleaseResult", &huxerui::web::detail::WebPlatformReleaseResult);
+  emscripten::function("huxeruiWebFileReferenceRelease", &huxerui::web::detail::WebFileReferenceRelease);
+  emscripten::function("huxeruiWebFileReferenceRetain", &huxerui::web::detail::WebFileReferenceRetain);
 }

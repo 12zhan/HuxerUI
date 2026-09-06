@@ -34,11 +34,19 @@ global.Module = {
   huxeruiWebPlatformReleaseResult(handle) {
     calls.push({ operation: "releaseResult", handle });
   },
+  huxeruiWebFileReferenceRelease(handle) {
+    calls.push({ operation: "releaseFileReference", handle });
+  },
+  huxeruiWebFileReferenceRetain(handle) {
+    calls.push({ operation: "retainFileReference", handle });
+    return handle + 1000;
+  },
 };
 
 require(path.resolve(runtimePath));
 
 const Payload = Module.HuxerUI.PlatformPayload;
+const FileReference = Module.HuxerUI.FileReference;
 
 const payload = Payload.object({
   boolean: Payload.booleanValue(true),
@@ -103,4 +111,37 @@ abandoned.close();
 abandoned.close();
 assert.deepEqual(calls.find((call) => call.operation === "releaseResult"), { operation: "releaseResult", handle: 44 });
 
-console.log("HuxerUI Web PlatformRegistry tests passed");
+async function testFileReferencePayload() {
+  const bridge = Module.huxerUIWebPlatformBridge;
+  const nativeFile = { name: "clip.mp4" };
+  const source = { file: nativeFile, handle: null };
+  const reference = bridge.createFileReference(51, 61, source, true);
+  assert(reference instanceof FileReference);
+  assert.equal(await reference.getFile(), nativeFile);
+
+  const referencePayload = Payload.fileReference(reference);
+  assert.equal(referencePayload.kind, Payload.Kind.FILE_REFERENCE);
+  assert.equal(referencePayload.requireFileReference(), reference);
+  assert.throws(() => referencePayload.encode(), /platform bridge envelope/);
+
+  const envelope = bridge.encodeEnvelope(Payload.list([referencePayload, referencePayload]));
+  assert.equal(envelope.fileReferences.length, 1);
+  const roundTrip = bridge.decodeEnvelope(envelope.bytes, envelope.fileReferences);
+  assert.equal(roundTrip.element(0).requireFileReference(), reference);
+  assert.throws(() => bridge.decodeEnvelope(envelope.bytes, [reference, reference]), /table is invalid/);
+
+  reference.close();
+  reference.close();
+  assert.deepEqual(calls.find((call) => call.operation === "releaseFileReference"), {
+    operation: "releaseFileReference",
+    handle: 51,
+  });
+  await assert.rejects(referencePayload.requireFileReference().getFile(), /closed/);
+}
+
+testFileReferencePayload()
+  .then(() => console.log("HuxerUI Web PlatformRegistry tests passed"))
+  .catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });

@@ -16,6 +16,8 @@
 #include <utility>
 #include <variant>
 
+#include "io/file_internal.h"
+
 namespace huxerui {
 
 namespace detail {
@@ -67,8 +69,8 @@ bool IsValidUtf8(std::string_view text) noexcept {
 } // namespace detail
 
 struct PlatformPayload::Data {
-  using Value =
-      std::variant<bool, std::int64_t, double, std::string, Bytes, List, Object, std::shared_ptr<ExternalTexture>>;
+  using Value = std::variant<bool, std::int64_t, double, std::string, Bytes, List, Object,
+                             std::shared_ptr<ExternalTexture>, FileReference>;
 
   explicit Data(Value value) : value(std::move(value)) {}
 
@@ -91,6 +93,7 @@ constexpr std::size_t max_container_entries = 1U * 1024U * 1024U;
 constexpr std::size_t max_capability_slots = 1U * 1024U * 1024U;
 constexpr std::size_t max_nesting_depth = 64;
 constexpr std::uint8_t external_texture_capability = 1;
+constexpr std::uint8_t file_reference_capability = 2;
 
 void ValidatePayload(const PlatformPayload& payload, std::size_t depth) {
   if (depth > max_nesting_depth) {
@@ -105,6 +108,7 @@ void ValidatePayload(const PlatformPayload& payload, std::size_t depth) {
   case PlatformPayloadKind::String:
   case PlatformPayloadKind::Bytes:
   case PlatformPayloadKind::ExternalTexture:
+  case PlatformPayloadKind::FileReference:
     break;
   case PlatformPayloadKind::List:
     for (const PlatformPayload& child : payload.AsList()) {
@@ -136,19 +140,19 @@ enum class PayloadTag : std::uint8_t {
   List = 6,
   Object = 7,
   ExternalTexture = 8,
+  FileReference = 9,
 };
 
 class EnvelopeWriter final {
 public:
-  Bytes Write(
-      const PlatformPayload& payload, std::vector<std::shared_ptr<ExternalTexture>>& external_textures
-  ) {
+  PlatformPayload::Envelope Write(const PlatformPayload& payload) {
     bytes_.assign(envelope_magic.begin(), envelope_magic.end());
     WriteUnsigned(envelope_version);
     WriteUnsigned(envelope_flags);
     WriteValue(payload, 0);
-    external_textures = std::move(external_textures_);
-    return std::move(bytes_);
+    return {.bytes = std::move(bytes_),
+            .external_textures = std::move(external_textures_),
+            .file_references = std::move(file_references_)};
   }
 
 private:
@@ -238,10 +242,31 @@ private:
                                    ? external_textures_.size()
                                    : static_cast<std::size_t>(found - external_textures_.begin());
       if (found == external_textures_.end()) {
-        if (slot >= max_capability_slots || slot > std::numeric_limits<std::uint32_t>::max()) {
-          throw std::invalid_argument("HuxerUI PlatformPayload contains too many external textures");
+        if (file_references_.size() + slot >= max_capability_slots ||
+            slot > std::numeric_limits<std::uint32_t>::max()) {
+          throw std::invalid_argument("HuxerUI PlatformPayload contains too many retained capabilities");
         }
         external_textures_.push_back(texture);
+      }
+      WriteUnsigned(static_cast<std::uint32_t>(slot));
+      return;
+    }
+    case PlatformPayloadKind::FileReference: {
+      WriteTag(PayloadTag::FileReference);
+      WriteUnsigned(file_reference_capability);
+      const FileReference& reference = payload.AsFileReference();
+      const std::shared_ptr<detail::FileReferenceState> state = detail::FileReferenceState::Of(reference);
+      const auto found = std::ranges::find(file_reference_states_, state);
+      const std::size_t slot = found == file_reference_states_.end()
+                                   ? file_reference_states_.size()
+                                   : static_cast<std::size_t>(found - file_reference_states_.begin());
+      if (found == file_reference_states_.end()) {
+        if (external_textures_.size() + slot >= max_capability_slots ||
+            slot > std::numeric_limits<std::uint32_t>::max()) {
+          throw std::invalid_argument("HuxerUI PlatformPayload contains too many retained capabilities");
+        }
+        file_reference_states_.push_back(state);
+        file_references_.push_back(reference);
       }
       WriteUnsigned(static_cast<std::uint32_t>(slot));
       return;
@@ -258,18 +283,21 @@ private:
 
   Bytes bytes_;
   std::vector<std::shared_ptr<ExternalTexture>> external_textures_;
+  std::vector<FileReference> file_references_;
+  std::vector<std::shared_ptr<detail::FileReferenceState>> file_reference_states_;
 };
 
 class EnvelopeReader final {
 public:
-  EnvelopeReader(
-      std::span<const std::byte> bytes, std::span<const std::shared_ptr<ExternalTexture>> external_textures
-  )
-      : bytes_(bytes), external_textures_(external_textures) {}
+  explicit EnvelopeReader(const PlatformPayload::Envelope& envelope)
+      : bytes_(envelope.bytes), external_textures_(envelope.external_textures),
+        file_references_(envelope.file_references), used_external_textures_(external_textures_.size()),
+        used_file_references_(file_references_.size()) {}
 
   PlatformPayload Read() {
-    if (external_textures_.size() > max_capability_slots) {
-      throw std::invalid_argument("HuxerUI PlatformPayload envelope contains too many external textures");
+    if (external_textures_.size() > max_capability_slots ||
+        file_references_.size() > max_capability_slots - external_textures_.size()) {
+      throw std::invalid_argument("HuxerUI PlatformPayload envelope contains too many retained capabilities");
     }
     std::unordered_set<const ExternalTexture*> textures;
     textures.reserve(external_textures_.size());
@@ -279,6 +307,17 @@ public:
       }
       if (!textures.insert(texture.get()).second) {
         throw std::invalid_argument("HuxerUI PlatformPayload envelope contains a duplicate external texture");
+      }
+    }
+    std::unordered_set<const detail::FileReferenceState*> references;
+    references.reserve(file_references_.size());
+    for (const FileReference& reference : file_references_) {
+      const std::shared_ptr<detail::FileReferenceState> state = detail::FileReferenceState::Of(reference);
+      if (!state) {
+        throw std::invalid_argument("HuxerUI PlatformPayload envelope contains an empty file reference");
+      }
+      if (!references.insert(state.get()).second) {
+        throw std::invalid_argument("HuxerUI PlatformPayload envelope contains a duplicate file reference");
       }
     }
     if (bytes_.size() > max_envelope_bytes || !std::ranges::equal(ReadBytes(envelope_magic.size()), envelope_magic)) {
@@ -293,6 +332,11 @@ public:
     PlatformPayload result = ReadValue(0);
     if (offset_ != bytes_.size()) {
       throw std::invalid_argument("HuxerUI PlatformPayload envelope contains trailing bytes");
+    }
+    // Requiring every supplied capability to be referenced keeps the envelope canonical and prevents hidden handles.
+    if (std::ranges::find(used_external_textures_, false) != used_external_textures_.end() ||
+        std::ranges::find(used_file_references_, false) != used_file_references_.end()) {
+      throw std::invalid_argument("HuxerUI PlatformPayload envelope contains an unreferenced capability");
     }
     return result;
   }
@@ -385,7 +429,19 @@ private:
       if (slot >= external_textures_.size()) {
         throw std::invalid_argument("HuxerUI PlatformPayload envelope references a missing external texture");
       }
+      used_external_textures_[slot] = true;
       return PlatformPayload(external_textures_[slot]);
+    }
+    case PayloadTag::FileReference: {
+      if (ReadUnsigned<std::uint8_t>() != file_reference_capability) {
+        throw std::invalid_argument("HuxerUI PlatformPayload envelope contains an unknown capability kind");
+      }
+      const std::uint32_t slot = ReadUnsigned<std::uint32_t>();
+      if (slot >= file_references_.size()) {
+        throw std::invalid_argument("HuxerUI PlatformPayload envelope references a missing file reference");
+      }
+      used_file_references_[slot] = true;
+      return PlatformPayload(file_references_[slot]);
     }
     }
     throw std::invalid_argument("HuxerUI PlatformPayload envelope contains an unknown value tag");
@@ -399,6 +455,9 @@ private:
 
   std::span<const std::byte> bytes_;
   std::span<const std::shared_ptr<ExternalTexture>> external_textures_;
+  std::span<const FileReference> file_references_;
+  std::vector<bool> used_external_textures_;
+  std::vector<bool> used_file_references_;
   std::size_t offset_ = 0;
 };
 
@@ -448,6 +507,13 @@ PlatformPayload::PlatformPayload(std::shared_ptr<ExternalTexture> value) {
   data_ = std::make_shared<Data>(std::move(value));
 }
 
+PlatformPayload::PlatformPayload(FileReference value) {
+  if (!detail::FileReferenceState::Of(value)) {
+    throw std::invalid_argument("HuxerUI PlatformPayload file reference must not be empty");
+  }
+  data_ = std::make_shared<Data>(std::move(value));
+}
+
 PlatformPayloadKind PlatformPayload::Kind() const noexcept {
   if (!data_) {
     return PlatformPayloadKind::Null;
@@ -487,6 +553,10 @@ const std::shared_ptr<ExternalTexture>& PlatformPayload::AsExternalTexture() con
   return std::get<std::shared_ptr<ExternalTexture>>(RequireData().value);
 }
 
+const FileReference& PlatformPayload::AsFileReference() const {
+  return std::get<FileReference>(RequireData().value);
+}
+
 const PlatformPayload::Data& PlatformPayload::RequireData() const {
   if (!data_) {
     throw std::bad_variant_access();
@@ -498,17 +568,29 @@ bool PlatformPayload::operator==(const PlatformPayload& other) const {
   if (data_ == other.data_) {
     return true;
   }
-  return data_ && other.data_ && data_->value == other.data_->value;
+  if (!data_ || !other.data_ || data_->value.index() != other.data_->value.index()) {
+    return false;
+  }
+  return std::visit(
+      [&other](const auto& value) {
+        using Value = std::remove_cvref_t<decltype(value)>;
+        if constexpr (std::is_same_v<Value, FileReference>) {
+          // Metadata is a snapshot and can differ between wrappers for the same retained capability.
+          return detail::FileReferenceState::Of(value) ==
+                 detail::FileReferenceState::Of(std::get<FileReference>(other.data_->value));
+        } else {
+          return value == std::get<Value>(other.data_->value);
+        }
+      },
+      data_->value);
 }
 
-Bytes PlatformPayload::Encode(std::vector<std::shared_ptr<ExternalTexture>>& external_textures) const {
-  external_textures.clear();
-  return EnvelopeWriter().Write(*this, external_textures);
+PlatformPayload::Envelope PlatformPayload::Encode() const {
+  return EnvelopeWriter().Write(*this);
 }
 
-PlatformPayload PlatformPayload::Decode(std::span<const std::byte> bytes,
-                                        std::span<const std::shared_ptr<ExternalTexture>> external_textures) {
-  return EnvelopeReader(bytes, external_textures).Read();
+PlatformPayload PlatformPayload::Decode(const Envelope& envelope) {
+  return EnvelopeReader(envelope).Read();
 }
 
 } // namespace huxerui

@@ -15,6 +15,7 @@
 #include <emscripten/val.h>
 
 #include "io/file_internal.h"
+#include "web_file_internal.h"
 
 namespace huxerui::detail {
 
@@ -57,7 +58,7 @@ EM_JS(bool, WebCanOpenDirectories, (bool writable), {
 EM_JS(emscripten::EM_VAL, CreateWebFileHelpers, (), {
   // Share functions, not mutable operation state. Picker export and reference I/O each supply their
   // own cancellation flag and writable stream, so canceling one transfer cannot abort another.
-  const describe = async (handle, file, writable, parentIdentity = "") => {
+  const describe = async (handle, file, writable, parentEntryKey = "") => {
     // A retained handle can obtain current file contents; input uploads only retain a File snapshot.
     // Keep that distinction in private state and never advertise write-back for an upload-only File.
     const directory = handle && handle.kind === "directory";
@@ -65,7 +66,7 @@ EM_JS(emscripten::EM_VAL, CreateWebFileHelpers, (), {
     const name = handle ? handle.name : file.name;
     return {
       source: {handle, file: handle ? null : file, writable,
-        identity: parentIdentity ? parentIdentity + "/" + encodeURIComponent(name) : ""},
+        entryKey: parentEntryKey ? parentEntryKey + "/" + encodeURIComponent(name) : ""},
       name, type: directory ? 1 : 0, size: directory ? null : file.size,
       contentType: directory ? null : file.type || null,
       canWrite: writable && !!handle
@@ -180,7 +181,7 @@ EM_JS(void, StartWebReferenceOperation,
       return await source.handle.getDirectoryHandle(name);
     }
   };
-  const describe = (handle) => helper.describe(handle, null, source.writable, source.identity);
+  const describe = (handle) => helper.describe(handle, null, source.writable, source.entryKey);
   Promise.resolve().then(async () => {
     if (operation.canceled) { fail(3); }
     if (request.kind === "read") {
@@ -199,7 +200,7 @@ EM_JS(void, StartWebReferenceOperation,
     if (!source.handle || source.handle.kind !== "directory") { fail(4); }
     if (request.kind === "check") {
       // Local File paths live in the separate virtual filesystem. Two external grants instead need
-      // handle-based identity and bidirectional containment checks, never names or synthetic IDs.
+      // handle equality and bidirectional containment checks, never names or synthetic IDs.
       if (request.target.path) { return true; }
       const target = request.target.handle;
       if (!target || target.kind !== "directory") { fail(4); }
@@ -635,8 +636,12 @@ class WebFileReferenceState final : public FileReferenceState {
 public:
   explicit WebFileReferenceState(val source) : source_(std::move(source)) {}
 
-  std::string Identity() const override {
-    return source_["identity"].as<std::string>();
+  std::string EntryKey() const override {
+    return source_["entryKey"].as<std::string>();
+  }
+
+  [[nodiscard]] const val& SourceValue() const noexcept {
+    return source_;
   }
 
   std::function<void()> ReadBytes(FileReferenceBytesCompletion completion) override {
@@ -778,10 +783,10 @@ FileReference MakeWebFileReference(const val& reference) {
       metadata.content_type = content_type.as<std::string>();
     }
   }
-  static std::uint64_t next_identity = 0;
+  static std::uint64_t next_entry_key = 0;
   val source = reference["source"];
-  if (source["identity"].as<std::string>().empty()) {
-    source.set("identity", "web:" + std::to_string(++next_identity));
+  if (source["entryKey"].as<std::string>().empty()) {
+    source.set("entryKey", "web:" + std::to_string(++next_entry_key));
   }
   return MakeFileReference(std::move(metadata), std::make_shared<WebFileReferenceState>(std::move(source)));
 }
@@ -791,7 +796,7 @@ FileReference MakeWebFileReferenceFromFile(const val& file) {
   source.set("handle", val::null());
   source.set("file", file);
   source.set("writable", false);
-  source.set("identity", std::string{});
+  source.set("entryKey", std::string{});
   val reference = val::object();
   reference.set("source", source);
   reference.set("name", file["name"]);
@@ -932,6 +937,15 @@ public:
 };
 
 } // namespace
+
+WebFileReferenceProjection ProjectWebFileReference(const FileReference& reference) {
+  std::shared_ptr<FileReferenceState> state = FileReferenceState::Of(reference);
+  auto web_state = std::dynamic_pointer_cast<WebFileReferenceState>(state);
+  if (!web_state) {
+    throw std::invalid_argument("HuxerUI FileReference does not contain a Web file source");
+  }
+  return {web_state->SourceValue(), reinterpret_cast<std::uintptr_t>(state.get()), reference.Type() == FileType::File};
+}
 
 extern "C" EMSCRIPTEN_KEEPALIVE void
 huxerui_web_file_reference_complete(std::uintptr_t native_handle, emscripten::EM_VAL result_handle) {

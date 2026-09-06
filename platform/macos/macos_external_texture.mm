@@ -2,7 +2,6 @@
 
 #import <CoreImage/CoreImage.h>
 #import <MetalPerformanceShaders/MetalPerformanceShaders.h>
-#import <objc/runtime.h>
 
 #include <memory>
 #include <stdexcept>
@@ -11,30 +10,14 @@
 
 #include "macos_external_texture_internal.h"
 
-@interface HUXMacExternalTextureStorage : NSObject {
-@public
-  std::shared_ptr<huxerui::ExternalTexture> texture;
+// The base wrapper owns the shared C++ texture so concrete subclasses and payload-created wrappers have one lifetime.
+@interface HUXExternalTexture () {
+@private
+  std::shared_ptr<huxerui::ExternalTexture> texture_;
 }
+- (instancetype)initForHuxerUIWithTexture:(std::shared_ptr<huxerui::ExternalTexture>)texture;
+- (std::shared_ptr<huxerui::ExternalTexture>)textureForHuxerUI;
 @end
-
-@implementation HUXMacExternalTextureStorage
-@end
-
-@interface HUXExternalTexture ()
-- (instancetype)initForHuxerUI;
-@end
-
-static char external_texture_storage_key;
-
-static HUXMacExternalTextureStorage* TextureStorage(HUXExternalTexture* texture) {
-  HUXMacExternalTextureStorage* storage = objc_getAssociatedObject(texture, &external_texture_storage_key);
-  if (storage == nil || !storage->texture) {
-    @throw [NSException exceptionWithName:NSInternalInconsistencyException
-                                   reason:@"HuxerUI macOS ExternalTexture is unavailable"
-                                 userInfo:nil];
-  }
-  return storage;
-}
 
 namespace huxerui::macos {
 
@@ -244,8 +227,21 @@ id<MTLTexture> MetalTexture::AcquireFrame(Origin& origin) const noexcept {
 
 @implementation HUXExternalTexture
 
-- (instancetype)initForHuxerUI {
-  return [super init];
+- (instancetype)initForHuxerUIWithTexture:(std::shared_ptr<huxerui::ExternalTexture>)texture {
+  self = [super init];
+  if (self != nil) {
+    texture_ = std::move(texture);
+  }
+  return self;
+}
+
+- (std::shared_ptr<huxerui::ExternalTexture>)textureForHuxerUI {
+  if (!texture_) {
+    @throw [NSException exceptionWithName:NSInternalInconsistencyException
+                                   reason:@"HuxerUI macOS ExternalTexture is unavailable"
+                                 userInfo:nil];
+  }
+  return texture_;
 }
 
 @end
@@ -256,18 +252,14 @@ HUXExternalTexture* WrapExternalTexture(std::shared_ptr<ExternalTexture> texture
   if (!texture) {
     throw std::invalid_argument("HuxerUI macOS ExternalTexture must be valid");
   }
-  HUXExternalTexture* result = [[HUXExternalTexture alloc] initForHuxerUI];
-  HUXMacExternalTextureStorage* storage = [HUXMacExternalTextureStorage new];
-  storage->texture = std::move(texture);
-  objc_setAssociatedObject(result, &external_texture_storage_key, storage, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-  return result;
+  return [[HUXExternalTexture alloc] initForHuxerUIWithTexture:std::move(texture)];
 }
 
 std::shared_ptr<ExternalTexture> UnwrapExternalTexture(HUXExternalTexture* texture) {
   if (texture == nil) {
     throw std::invalid_argument("HuxerUI macOS ExternalTexture must not be nil");
   }
-  return TextureStorage(texture)->texture;
+  return [texture textureForHuxerUI];
 }
 
 } // namespace huxerui::macos::detail
@@ -275,16 +267,10 @@ std::shared_ptr<ExternalTexture> UnwrapExternalTexture(HUXExternalTexture* textu
 @implementation HUXPixelBufferTexture
 
 - (instancetype)initWithIntrinsicSize:(CGSize)size {
-  self = [super initForHuxerUI];
-  if (self == nil) {
-    return nil;
-  }
   try {
-    auto storage = [HUXMacExternalTextureStorage new];
-    storage->texture = std::make_shared<huxerui::macos::PixelBufferTexture>(
+    auto texture = std::make_shared<huxerui::macos::PixelBufferTexture>(
         huxerui::Size{static_cast<float>(size.width), static_cast<float>(size.height)});
-    objc_setAssociatedObject(self, &external_texture_storage_key, storage, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    return self;
+    return [super initForHuxerUIWithTexture:std::move(texture)];
   } catch (const std::exception& exception) {
     NSString* reason = [NSString stringWithUTF8String:exception.what()];
     @throw [NSException exceptionWithName:NSInvalidArgumentException reason:reason userInfo:nil];
@@ -293,7 +279,7 @@ std::shared_ptr<ExternalTexture> UnwrapExternalTexture(HUXExternalTexture* textu
 
 - (void)publishPixelBuffer:(CVPixelBufferRef)pixelBuffer {
   try {
-    std::static_pointer_cast<huxerui::macos::PixelBufferTexture>(TextureStorage(self)->texture)->Publish(pixelBuffer);
+    std::static_pointer_cast<huxerui::macos::PixelBufferTexture>([self textureForHuxerUI])->Publish(pixelBuffer);
   } catch (const std::exception& exception) {
     NSString* reason = [NSString stringWithUTF8String:exception.what()];
     @throw [NSException exceptionWithName:NSInvalidArgumentException reason:reason userInfo:nil];
@@ -301,7 +287,7 @@ std::shared_ptr<ExternalTexture> UnwrapExternalTexture(HUXExternalTexture* textu
 }
 
 - (void)finish {
-  std::static_pointer_cast<huxerui::macos::PixelBufferTexture>(TextureStorage(self)->texture)->Finish();
+  std::static_pointer_cast<huxerui::macos::PixelBufferTexture>([self textureForHuxerUI])->Finish();
 }
 
 @end
@@ -309,16 +295,10 @@ std::shared_ptr<ExternalTexture> UnwrapExternalTexture(HUXExternalTexture* textu
 @implementation HUXMetalTexture
 
 - (instancetype)initWithIntrinsicSize:(CGSize)size {
-  self = [super initForHuxerUI];
-  if (self == nil) {
-    return nil;
-  }
   try {
-    auto storage = [HUXMacExternalTextureStorage new];
-    storage->texture = std::make_shared<huxerui::macos::MetalTexture>(
+    auto texture = std::make_shared<huxerui::macos::MetalTexture>(
         huxerui::Size{static_cast<float>(size.width), static_cast<float>(size.height)});
-    objc_setAssociatedObject(self, &external_texture_storage_key, storage, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    return self;
+    return [super initForHuxerUIWithTexture:std::move(texture)];
   } catch (const std::exception& exception) {
     NSString* reason = [NSString stringWithUTF8String:exception.what()];
     @throw [NSException exceptionWithName:NSInvalidArgumentException reason:reason userInfo:nil];
@@ -327,7 +307,7 @@ std::shared_ptr<ExternalTexture> UnwrapExternalTexture(HUXExternalTexture* textu
 
 - (void)publishTexture:(id<MTLTexture>)texture origin:(HUXMetalTextureOrigin)origin alpha:(HUXMetalTextureAlpha)alpha {
   try {
-    auto metal_texture = std::static_pointer_cast<huxerui::macos::MetalTexture>(TextureStorage(self)->texture);
+    auto metal_texture = std::static_pointer_cast<huxerui::macos::MetalTexture>([self textureForHuxerUI]);
     metal_texture->Publish({texture, static_cast<huxerui::macos::MetalTexture::Origin>(origin),
                             static_cast<huxerui::macos::MetalTexture::Alpha>(alpha)});
   } catch (const std::exception& exception) {
@@ -337,7 +317,7 @@ std::shared_ptr<ExternalTexture> UnwrapExternalTexture(HUXExternalTexture* textu
 }
 
 - (void)finish {
-  std::static_pointer_cast<huxerui::macos::MetalTexture>(TextureStorage(self)->texture)->Finish();
+  std::static_pointer_cast<huxerui::macos::MetalTexture>([self textureForHuxerUI])->Finish();
 }
 
 @end

@@ -8,6 +8,17 @@ NS_ASSUME_NONNULL_BEGIN
 
 @class HUXExternalTexture;
 
+/// Retains a C++ FileReference while exposing its native file URL to AppKit libraries.
+NS_SWIFT_NAME(FileReference)
+@interface HUXFileReference : NSObject
+
+@property(nonatomic, readonly) NSURL* fileURL;
+
+- (instancetype)init NS_UNAVAILABLE;
++ (instancetype)new NS_UNAVAILABLE;
+
+@end
+
 typedef NS_ENUM(NSInteger, HUXPlatformPayloadKind) {
   HUXPlatformPayloadKindNull,
   HUXPlatformPayloadKindBoolean,
@@ -18,6 +29,7 @@ typedef NS_ENUM(NSInteger, HUXPlatformPayloadKind) {
   HUXPlatformPayloadKindList,
   HUXPlatformPayloadKindObject,
   HUXPlatformPayloadKindExternalTexture,
+  HUXPlatformPayloadKindFileReference,
 } NS_SWIFT_NAME(PlatformPayload.Kind);
 
 NS_SWIFT_NAME(PlatformPayload)
@@ -37,6 +49,7 @@ NS_SWIFT_NAME(PlatformPayload)
 + (instancetype)listValue:(NSArray<HUXPlatformPayload*>*)value NS_SWIFT_NAME(list(_:));
 + (instancetype)objectValue:(NSDictionary<NSString*, HUXPlatformPayload*>*)value NS_SWIFT_NAME(object(_:));
 + (instancetype)externalTextureValue:(HUXExternalTexture*)texture NS_SWIFT_NAME(externalTexture(_:));
++ (instancetype)fileReferenceValue:(HUXFileReference*)reference NS_SWIFT_NAME(fileReference(_:));
 
 - (BOOL)booleanValue NS_SWIFT_NAME(boolean());
 - (int64_t)integerValue NS_SWIFT_NAME(integer());
@@ -44,6 +57,7 @@ NS_SWIFT_NAME(PlatformPayload)
 - (NSString*)stringValue NS_SWIFT_NAME(string());
 - (NSData*)bytesValue NS_SWIFT_NAME(bytes());
 - (HUXExternalTexture*)externalTextureValue NS_SWIFT_NAME(externalTexture());
+- (HUXFileReference*)fileReferenceValue NS_SWIFT_NAME(fileReference());
 - (HUXPlatformPayload*)field:(NSString*)name NS_SWIFT_NAME(field(_:));
 - (HUXPlatformPayload*)elementAtIndex:(NSUInteger)index NS_SWIFT_NAME(element(at:));
 - (void)validateFields:(NSSet<NSString*>*)fields NS_SWIFT_NAME(validate(fields:));

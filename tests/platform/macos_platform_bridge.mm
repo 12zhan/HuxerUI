@@ -15,6 +15,7 @@
 #include <huxerui/macos/platform_registry.h>
 
 #include "macos_external_texture_internal.h"
+#include "io/file_internal.h"
 #include "runtime_test_support.h"
 
 @interface HuxerUITestMacCancellation : NSObject <HUXPlatformCancellation>
@@ -193,6 +194,45 @@ TEST_CASE("MacObjectiveCPlatformPayloadRejectsInvalidValuesAndTextures") {
       forged_texture_rejected = true;
     }
     REQUIRE(forged_texture_rejected);
+  }
+}
+
+TEST_CASE("MacObjectiveCPlatformPayloadRetainsFileReferenceAndExposesFileURL") {
+  @autoreleasepool {
+    TestPlatform platform;
+    NSWindow* window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0.0, 0.0, 320.0, 200.0)
+                                                   styleMask:NSWindowStyleMaskBorderless
+                                                     backing:NSBackingStoreBuffered
+                                                       defer:NO];
+    HuxerUITestMacPlatformViewFactory* factory = [HuxerUITestMacPlatformViewFactory new];
+    const FileReference reference =
+        detail::MakeLocalFileReference(File(std::string(NSTemporaryDirectory().UTF8String)), true);
+    const std::shared_ptr<detail::FileReferenceState> state = detail::FileReferenceState::Of(reference);
+    PlatformEventEmitter emitter = detail::MakePlatformEventEmitter({}, [](std::string, PlatformPayload) {
+      return std::optional<PlatformPayload>{};
+    });
+    const std::shared_ptr<macos::detail::ObjectiveCPlatformViewInstance> instance =
+        macos::detail::CreateObjectiveCPlatformView(platform, window, factory, PlatformPayload(reference),
+                                                    std::move(emitter), true, true);
+
+    HUXFileReference* native_reference = factory.instance.properties.fileReferenceValue;
+    REQUIRE(factory.instance.properties.kind == HUXPlatformPayloadKindFileReference);
+    const std::optional<File> local_file = reference.AsFile();
+    REQUIRE(local_file.has_value());
+    const std::string local_path = local_file->Path();
+    REQUIRE([native_reference.fileURL.path isEqualToString:[NSString stringWithUTF8String:local_path.c_str()]]);
+
+    PlatformChannel channel = macos::detail::GetObjectiveCPlatformViewChannel(instance);
+    std::shared_ptr<detail::FileReferenceState> returned_state;
+    static_cast<void>(channel.Invoke("echo", PlatformPayload(reference), [&](PlatformResult<PlatformPayload> result) {
+      returned_state =
+          detail::FileReferenceState::Of(std::get<PlatformPayload>(std::move(result)).AsFileReference());
+    }));
+    platform.RunPlatformModuleTasks();
+    REQUIRE(returned_state == state);
+
+    macos::detail::DisposeObjectiveCPlatformView(instance);
+    platform.RunPlatformModuleTasks();
   }
 }
 

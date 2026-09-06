@@ -20,6 +20,7 @@
 #include <huxerui/data.h>
 #include <huxerui/event.h>
 #include <huxerui/external_texture.h>
+#include <huxerui/file.h>
 
 namespace huxerui {
 
@@ -30,7 +31,7 @@ class PlatformEventEmitter;
 /// Identifies the exact value kind stored by a PlatformPayload.
 ///
 /// Kinds are preserved by the HUXP binary representation. In particular, Integer and Double remain distinct, Bytes
-/// are not interpreted as text, and ExternalTexture remains an opaque framework capability.
+/// are not interpreted as text, and retained resources remain opaque framework capabilities.
 enum class PlatformPayloadKind {
   Null,
   Boolean,
@@ -41,13 +42,14 @@ enum class PlatformPayloadKind {
   List,
   Object,
   ExternalTexture,
+  FileReference,
 };
 
 /// An immutable dynamic value used only when data crosses a platform-language boundary.
 ///
 /// Direct C++ PlatformModule and PlatformView implementations receive their concrete C++ types and do not need this
 /// class. Java, Swift, Objective-C, JavaScript, and similar bridges use PlatformPayload to exchange null, scalar,
-/// collection, byte, and ExternalTexture values without JSON coercion.
+/// collection, byte, ExternalTexture, and FileReference values without JSON coercion.
 ///
 /// Objects require UTF-8 string keys. Integer construction rejects values outside the signed 64-bit range, and the
 /// typed accessors throw std::invalid_argument when the stored kind does not match the requested kind.
@@ -87,6 +89,7 @@ public:
   PlatformPayload(List value);
   PlatformPayload(Object value);
   PlatformPayload(std::shared_ptr<ExternalTexture> value);
+  PlatformPayload(FileReference value);
 
   /// Returns the exact stored kind.
   [[nodiscard]] PlatformPayloadKind Kind() const noexcept;
@@ -104,18 +107,25 @@ public:
   [[nodiscard]] const List& AsList() const;
   [[nodiscard]] const Object& AsObject() const;
   [[nodiscard]] const std::shared_ptr<ExternalTexture>& AsExternalTexture() const;
+  [[nodiscard]] const FileReference& AsFileReference() const;
 
-  /// Compares values by kind and contents. Object insertion order does not affect equality.
+  /// Compares values by kind and contents. Object insertion order does not affect equality, and capabilities compare
+  /// as the same retained capability only when they share their backing state.
   bool operator==(const PlatformPayload& other) const;
 
-  /// Encodes this value to the HUXP binary representation.
+  /// Holds one encoded HUXP value and its strongly typed retained capability tables.
   ///
-  /// external_textures is replaced with the ExternalTexture capability table referenced by validated slots in the
-  /// byte stream. The returned bytes and companion texture list must be delivered together to Decode.
-  [[nodiscard]] Bytes Encode(std::vector<std::shared_ptr<ExternalTexture>>& external_textures) const;
-  /// Decodes one complete HUXP value and validates the representation and referenced ExternalTexture slots.
-  [[nodiscard]] static PlatformPayload Decode(std::span<const std::byte> bytes,
-                                              std::span<const std::shared_ptr<ExternalTexture>> external_textures = {});
+  /// Capability indices in bytes address these tables, so all members must cross a platform boundary together.
+  struct Envelope {
+    Bytes bytes;
+    std::vector<std::shared_ptr<ExternalTexture>> external_textures;
+    std::vector<FileReference> file_references;
+  };
+
+  /// Encodes this value and its retained capabilities to one transport envelope.
+  [[nodiscard]] Envelope Encode() const;
+  /// Decodes one complete HUXP envelope and validates its representation and capability slots.
+  [[nodiscard]] static PlatformPayload Decode(const Envelope& envelope);
 
 private:
   template <class Integer> static std::int64_t CheckedInteger(Integer value) {
@@ -261,6 +271,8 @@ template <class Value> Value DecodePlatformPayload(const PlatformPayload& payloa
     return Bytes(bytes.begin(), bytes.end());
   } else if constexpr (std::same_as<Value, std::shared_ptr<ExternalTexture>>) {
     return payload.AsExternalTexture();
+  } else if constexpr (std::same_as<Value, FileReference>) {
+    return payload.AsFileReference();
   } else {
     return Value::Decode(payload);
   }
@@ -274,7 +286,8 @@ template <class Value> PlatformPayload EncodePlatformValue(const Value& value) {
     return value;
   } else if constexpr (std::same_as<Value, bool> || std::integral<Value> || std::floating_point<Value> ||
                        std::same_as<Value, std::string> || std::same_as<Value, Bytes> ||
-                       std::same_as<Value, std::shared_ptr<ExternalTexture>>) {
+                       std::same_as<Value, std::shared_ptr<ExternalTexture>> ||
+                       std::same_as<Value, FileReference>) {
     return PlatformPayload(value);
   } else {
     return Value::Encode(value);
@@ -286,7 +299,7 @@ concept PlatformPayloadEncodable =
     std::same_as<Value, std::monostate> || std::same_as<Value, PlatformPayload> || std::same_as<Value, bool> ||
     std::integral<Value> || std::floating_point<Value> || std::same_as<Value, std::string> ||
     std::same_as<Value, Bytes> || std::same_as<Value, std::shared_ptr<ExternalTexture>> ||
-    requires(const Value& value) {
+    std::same_as<Value, FileReference> || requires(const Value& value) {
       { Value::Encode(value) } -> std::same_as<PlatformPayload>;
     };
 
@@ -294,7 +307,8 @@ template <class Value>
 concept PlatformPayloadDecodable =
     std::same_as<Value, std::monostate> || std::same_as<Value, bool> || std::integral<Value> ||
     std::floating_point<Value> || std::same_as<Value, std::string> || std::same_as<Value, Bytes> ||
-    std::same_as<Value, std::shared_ptr<ExternalTexture>> || requires(const PlatformPayload& payload) {
+    std::same_as<Value, std::shared_ptr<ExternalTexture>> || std::same_as<Value, FileReference> ||
+    requires(const PlatformPayload& payload) {
       { Value::Decode(payload) } -> std::convertible_to<Value>;
     };
 

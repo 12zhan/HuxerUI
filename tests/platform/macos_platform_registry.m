@@ -77,3 +77,10 @@ static void HuxerUITestMetalTextureDeclarations(void) {
   (void)alpha;
   [texture finish];
 }
+
+static void HuxerUITestFileReferenceDeclarations(HUXFileReference* reference) {
+  NSURL* url = reference.fileURL;
+  HUXFileReference* round_trip = [HUXPlatformPayload fileReferenceValue:reference].fileReferenceValue;
+  (void)url;
+  (void)round_trip;
+}

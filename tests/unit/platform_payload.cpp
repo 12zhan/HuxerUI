@@ -3,8 +3,10 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <initializer_list>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -14,6 +16,7 @@
 #include <huxerui/platform_registry.h>
 
 #include "external_texture_test_support.h"
+#include "io/file_internal.h"
 
 namespace huxerui::test {
 namespace {
@@ -25,6 +28,30 @@ Bytes WireBytes(std::initializer_list<std::uint8_t> values) {
     bytes.push_back(static_cast<std::byte>(value));
   }
   return bytes;
+}
+
+class PayloadFileReferenceState final : public detail::FileReferenceState {
+public:
+  std::function<void()> ReadBytes(detail::FileReferenceBytesCompletion completion) override {
+    completion(FileResult<Bytes>(Bytes{}));
+    return {};
+  }
+
+  std::function<void()> ImportTo(File, bool, detail::FileReferenceCompletion<std::uint64_t> completion) override {
+    completion(FileResult<std::uint64_t>(0));
+    return {};
+  }
+
+  std::function<void()> ReplaceWith(File, detail::FileReferenceBoolCompletion completion) override {
+    completion(false);
+    return {};
+  }
+};
+
+FileReference MakePayloadFileReference(const std::shared_ptr<PayloadFileReferenceState>& state,
+                                       std::string name = "sample.mp4") {
+  return detail::MakeFileReference(
+      {.name = std::move(name), .size = 42, .content_type = "video/mp4", .can_write = true}, state);
 }
 
 TEST_CASE("PlatformPayloadPreservesSupportedKinds") {
@@ -72,6 +99,28 @@ TEST_CASE("PlatformPayloadRetainsExternalTextureIdentity") {
   REQUIRE_THROWS_AS(PlatformPayload(std::shared_ptr<ExternalTexture>{}), std::invalid_argument);
 }
 
+TEST_CASE("PlatformPayloadRetainsFileReferenceCapabilityAndMetadata") {
+  auto state = std::make_shared<PayloadFileReferenceState>();
+  const FileReference reference = MakePayloadFileReference(state);
+  const FileReference alias = MakePayloadFileReference(state, "alias.mp4");
+  const FileReference other = MakePayloadFileReference(std::make_shared<PayloadFileReferenceState>());
+  const PlatformPayload payload(reference);
+
+  REQUIRE(payload.Kind() == PlatformPayloadKind::FileReference);
+  REQUIRE(payload.AsFileReference().Name() == "sample.mp4");
+  REQUIRE(payload.AsFileReference().Size() == 42);
+  REQUIRE(payload.AsFileReference().ContentType() == "video/mp4");
+  REQUIRE(payload.AsFileReference().CanWrite());
+  REQUIRE(PlatformPayload(reference) == PlatformPayload(alias));
+  REQUIRE(PlatformPayload(reference) != PlatformPayload(other));
+  REQUIRE(detail::FileReferenceState::Of(detail::DecodePlatformPayload<FileReference>(payload)) == state);
+  REQUIRE(detail::FileReferenceState::Of(detail::EncodePlatformValue(reference).AsFileReference()) == state);
+
+  FileReference moved = reference;
+  static_cast<void>(FileReference(std::move(moved)));
+  REQUIRE_THROWS_AS(PlatformPayload(std::move(moved)), std::invalid_argument);
+}
+
 TEST_CASE("PlatformPayloadRejectsInvalidScalars") {
   const std::string invalid_utf8{"\xF0\x28\x8C\x28", 4};
 
@@ -96,30 +145,36 @@ TEST_CASE("PlatformPayloadAccessorsRequireTheDeclaredKind") {
 
   REQUIRE_THROWS_AS(payload.AsInteger(), std::bad_variant_access);
   REQUIRE_THROWS_AS(payload.AsExternalTexture(), std::bad_variant_access);
+  REQUIRE_THROWS_AS(payload.AsFileReference(), std::bad_variant_access);
   REQUIRE_THROWS_AS(PlatformPayload{}.AsString(), std::bad_variant_access);
 }
 
 TEST_CASE("PlatformPayloadEnvelopeRoundTripsEveryValueKind") {
   const std::shared_ptr<ExternalTexture> texture = MakeTestExternalTexture({320.0F, 180.0F});
+  const FileReference reference = MakePayloadFileReference(std::make_shared<PayloadFileReferenceState>());
   const PlatformPayload payload = PlatformPayload::Object{
       {"boolean", true},
       {"integer", std::numeric_limits<std::int64_t>::min()},
       {"double", -12.5},
       {"string", "value"},
       {"bytes", Bytes{std::byte{1}, std::byte{2}}},
-      {"list", PlatformPayload::List{nullptr, texture}},
+      {"list", PlatformPayload::List{nullptr, texture, reference}},
       {"texture", texture},
+      {"file", reference},
   };
 
-  std::vector<std::shared_ptr<ExternalTexture>> external_textures;
-  const Bytes encoded = payload.Encode(external_textures);
+  const PlatformPayload::Envelope envelope = payload.Encode();
 
-  REQUIRE(external_textures == std::vector<std::shared_ptr<ExternalTexture>>{texture});
-  REQUIRE(PlatformPayload::Decode(encoded, external_textures) == payload);
+  REQUIRE(envelope.external_textures == std::vector<std::shared_ptr<ExternalTexture>>{texture});
+  REQUIRE(envelope.file_references.size() == 1);
+  REQUIRE(detail::FileReferenceState::Of(envelope.file_references.front()) ==
+          detail::FileReferenceState::Of(reference));
+  REQUIRE(PlatformPayload::Decode(envelope) == payload);
 }
 
 TEST_CASE("PlatformPayloadEnvelopeHasStableWireValues") {
   const std::shared_ptr<ExternalTexture> texture = MakeTestExternalTexture({320.0F, 180.0F});
+  const FileReference reference = MakePayloadFileReference(std::make_shared<PayloadFileReferenceState>());
   const PlatformPayload payload = PlatformPayload::List{
       nullptr,
       true,
@@ -130,39 +185,32 @@ TEST_CASE("PlatformPayloadEnvelopeHasStableWireValues") {
       PlatformPayload::List{},
       PlatformPayload::Object{},
       texture,
+      reference,
   };
   const Bytes expected = WireBytes({
-      0x48, 0x55, 0x58, 0x50, 0x01, 0x00, 0x00, 0x00,
-      0x06, 0x09, 0x00, 0x00, 0x00,
-      0x00,
-      0x01, 0x01,
-      0x02, 0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-      0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF8, 0x3F,
-      0x04, 0x01, 0x00, 0x00, 0x00, 0x78,
-      0x05, 0x01, 0x00, 0x00, 0x00, 0xAA,
-      0x06, 0x00, 0x00, 0x00, 0x00,
-      0x07, 0x00, 0x00, 0x00, 0x00,
-      0x08, 0x01, 0x00, 0x00, 0x00, 0x00,
+      0x48, 0x55, 0x58, 0x50, 0x01, 0x00, 0x00, 0x00, 0x06, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x02,
+      0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF8, 0x3F,
+      0x04, 0x01, 0x00, 0x00, 0x00, 0x78, 0x05, 0x01, 0x00, 0x00, 0x00, 0xAA, 0x06, 0x00, 0x00, 0x00, 0x00,
+      0x07, 0x00, 0x00, 0x00, 0x00, 0x08, 0x01, 0x00, 0x00, 0x00, 0x00, 0x09, 0x02, 0x00, 0x00, 0x00, 0x00,
   });
-  std::vector<std::shared_ptr<ExternalTexture>> external_textures;
+  const PlatformPayload::Envelope envelope = payload.Encode();
 
-  REQUIRE(payload.Encode(external_textures) == expected);
-  REQUIRE(external_textures == std::vector<std::shared_ptr<ExternalTexture>>{texture});
-  REQUIRE(PlatformPayload::Decode(expected, external_textures) == payload);
+  REQUIRE(envelope.bytes == expected);
+  REQUIRE(envelope.external_textures == std::vector<std::shared_ptr<ExternalTexture>>{texture});
+  REQUIRE(envelope.file_references.size() == 1);
+  REQUIRE(PlatformPayload::Decode(envelope) == payload);
 }
 
 TEST_CASE("PlatformPayloadEnvelopeIsCanonical") {
   const PlatformPayload payload = PlatformPayload::Object{{"second", 2}, {"first", 1}};
-  std::vector<std::shared_ptr<ExternalTexture>> external_textures;
-  const Bytes first = payload.Encode(external_textures);
-  const Bytes second = PlatformPayload(PlatformPayload::Object{{"first", 1}, {"second", 2}}).Encode(external_textures);
+  const Bytes first = payload.Encode().bytes;
+  const Bytes second = PlatformPayload(PlatformPayload::Object{{"first", 1}, {"second", 2}}).Encode().bytes;
 
   REQUIRE(first == second);
 }
 
 TEST_CASE("PlatformPayloadEnvelopeRejectsMalformedInput") {
-  std::vector<std::shared_ptr<ExternalTexture>> external_textures;
-  const Bytes valid = PlatformPayload("value").Encode(external_textures);
+  const Bytes valid = PlatformPayload("value").Encode().bytes;
   Bytes truncated = valid;
   truncated.pop_back();
   Bytes trailing = valid;
@@ -174,22 +222,36 @@ TEST_CASE("PlatformPayloadEnvelopeRejectsMalformedInput") {
   Bytes unsupported_flags = valid;
   unsupported_flags[6] = std::byte{1};
 
-  REQUIRE_THROWS_AS(PlatformPayload::Decode({}), std::invalid_argument);
-  REQUIRE_THROWS_AS(PlatformPayload::Decode(truncated), std::invalid_argument);
-  REQUIRE_THROWS_AS(PlatformPayload::Decode(trailing), std::invalid_argument);
-  REQUIRE_THROWS_AS(PlatformPayload::Decode(invalid_header), std::invalid_argument);
-  REQUIRE_THROWS_AS(PlatformPayload::Decode(unsupported_version), std::invalid_argument);
-  REQUIRE_THROWS_AS(PlatformPayload::Decode(unsupported_flags), std::invalid_argument);
+  REQUIRE_THROWS_AS(PlatformPayload::Decode(PlatformPayload::Envelope{}), std::invalid_argument);
+  REQUIRE_THROWS_AS(PlatformPayload::Decode({.bytes = truncated}), std::invalid_argument);
+  REQUIRE_THROWS_AS(PlatformPayload::Decode({.bytes = trailing}), std::invalid_argument);
+  REQUIRE_THROWS_AS(PlatformPayload::Decode({.bytes = invalid_header}), std::invalid_argument);
+  REQUIRE_THROWS_AS(PlatformPayload::Decode({.bytes = unsupported_version}), std::invalid_argument);
+  REQUIRE_THROWS_AS(PlatformPayload::Decode({.bytes = unsupported_flags}), std::invalid_argument);
 }
 
-TEST_CASE("PlatformPayloadEnvelopeRequiresExternalTextureCapabilities") {
+TEST_CASE("PlatformPayloadEnvelopeRequiresExactCapabilityTables") {
   const std::shared_ptr<ExternalTexture> texture = MakeTestExternalTexture({320.0F, 180.0F});
-  std::vector<std::shared_ptr<ExternalTexture>> external_textures;
-  const Bytes encoded = PlatformPayload(texture).Encode(external_textures);
-  const std::vector<std::shared_ptr<ExternalTexture>> duplicate_textures{texture, texture};
+  const FileReference reference = MakePayloadFileReference(std::make_shared<PayloadFileReferenceState>());
+  const PlatformPayload::Envelope texture_envelope = PlatformPayload(texture).Encode();
+  const PlatformPayload::Envelope reference_envelope = PlatformPayload(reference).Encode();
+  const PlatformPayload::Envelope empty_envelope = PlatformPayload(nullptr).Encode();
 
-  REQUIRE_THROWS_AS(PlatformPayload::Decode(encoded), std::invalid_argument);
-  REQUIRE_THROWS_AS(PlatformPayload::Decode(encoded, duplicate_textures), std::invalid_argument);
+  PlatformPayload::Envelope duplicate_textures = texture_envelope;
+  duplicate_textures.external_textures.push_back(texture);
+  PlatformPayload::Envelope duplicate_references = reference_envelope;
+  duplicate_references.file_references.push_back(reference);
+  PlatformPayload::Envelope unreferenced_texture = empty_envelope;
+  unreferenced_texture.external_textures.push_back(texture);
+  PlatformPayload::Envelope unreferenced_reference = empty_envelope;
+  unreferenced_reference.file_references.push_back(reference);
+
+  REQUIRE_THROWS_AS(PlatformPayload::Decode({.bytes = texture_envelope.bytes}), std::invalid_argument);
+  REQUIRE_THROWS_AS(PlatformPayload::Decode(duplicate_textures), std::invalid_argument);
+  REQUIRE_THROWS_AS(PlatformPayload::Decode({.bytes = reference_envelope.bytes}), std::invalid_argument);
+  REQUIRE_THROWS_AS(PlatformPayload::Decode(duplicate_references), std::invalid_argument);
+  REQUIRE_THROWS_AS(PlatformPayload::Decode(unreferenced_texture), std::invalid_argument);
+  REQUIRE_THROWS_AS(PlatformPayload::Decode(unreferenced_reference), std::invalid_argument);
 }
 
 } // namespace

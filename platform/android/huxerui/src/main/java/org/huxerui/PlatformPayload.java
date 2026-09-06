@@ -20,8 +20,8 @@ import java.util.TreeMap;
  * An immutable kind-preserving value exchanged with C++ at a Java platform boundary.
  *
  * <p>PlatformPayload is not JSON: signed 64-bit integers, doubles, UTF-8 strings, bytes, collections, and external
- * textures remain distinct. Factory methods defensively copy mutable input, collection accessors return immutable
- * views, and byte accessors return copies.</p>
+ * textures, and file references remain distinct. Factory methods defensively copy mutable input, collection accessors
+ * return immutable views, and byte accessors return copies.</p>
  *
  * <p>Structured decoders should use {@link #requireField(String)}, the {@code requireXxx} accessors, and
  * {@link #rejectUnknownFields(Set)}. Validation errors include a path such as {@code $.session.timeout}.</p>
@@ -46,6 +46,7 @@ public final class PlatformPayload {
         LIST,
         OBJECT,
         EXTERNAL_TEXTURE,
+        FILE_REFERENCE,
     }
 
     private static final int MAX_ENVELOPE_BYTES = 64 * 1024 * 1024;
@@ -54,6 +55,7 @@ public final class PlatformPayload {
     private static final int MAX_CAPABILITY_SLOTS = 1024 * 1024;
     private static final int MAX_NESTING_DEPTH = 64;
     private static final byte EXTERNAL_TEXTURE_CAPABILITY = 1;
+    private static final byte FILE_REFERENCE_CAPABILITY = 2;
     private static final PlatformPayload NULL = new PlatformPayload(Kind.NULL, null, "$");
 
     private final Kind kind;
@@ -141,6 +143,14 @@ public final class PlatformPayload {
         return new PlatformPayload(Kind.EXTERNAL_TEXTURE, Objects.requireNonNull(value, "value"), "$");
     }
 
+    /** Creates a retained FileReference capability payload. */
+    public static PlatformPayload fileReference(HuxerUIFileReference value) {
+        HuxerUIFileReference reference = Objects.requireNonNull(value, "value");
+        reference.requireOpen();
+        reference.capabilityKey();
+        return new PlatformPayload(Kind.FILE_REFERENCE, reference, "$");
+    }
+
     /** Returns the exact stored kind. */
     public Kind kind() {
         return kind;
@@ -190,6 +200,12 @@ public final class PlatformPayload {
     public HuxerUIExternalTexture requireExternalTexture() {
         requireKind(Kind.EXTERNAL_TEXTURE);
         return (HuxerUIExternalTexture) value;
+    }
+
+    /** Returns the retained FileReference capability or throws when the kind does not match. */
+    public HuxerUIFileReference requireFileReference() {
+        requireKind(Kind.FILE_REFERENCE);
+        return (HuxerUIFileReference) value;
     }
 
     /** Returns a required Object field with its full validation path, or throws when it is missing. */
@@ -264,13 +280,22 @@ public final class PlatformPayload {
         if (kind == Kind.BYTES) {
             return Arrays.equals((byte[]) value, (byte[]) payload.value);
         }
+        if (kind == Kind.FILE_REFERENCE) {
+            return ((HuxerUIFileReference) value).capabilityKey()
+                    == ((HuxerUIFileReference) payload.value).capabilityKey();
+        }
         return Objects.equals(value, payload.value);
     }
 
     @Override
     public int hashCode() {
-        return kind == Kind.BYTES ? 31 * kind.hashCode() + Arrays.hashCode((byte[]) value)
-                                  : 31 * kind.hashCode() + Objects.hashCode(value);
+        if (kind == Kind.BYTES) {
+            return 31 * kind.hashCode() + Arrays.hashCode((byte[]) value);
+        }
+        if (kind == Kind.FILE_REFERENCE) {
+            return 31 * kind.hashCode() + Long.hashCode(((HuxerUIFileReference) value).capabilityKey());
+        }
+        return 31 * kind.hashCode() + Objects.hashCode(value);
     }
 
     private PlatformPayload atPath(String nextPath) {
@@ -341,23 +366,29 @@ public final class PlatformPayload {
         return new Writer().write(Objects.requireNonNull(payload, "payload"));
     }
 
-    static PlatformPayload decodeEnvelope(byte[] bytes, List<HuxerUIExternalTexture> externalTextures) {
-        return new Reader(bytes, externalTextures).read();
+    static PlatformPayload decodeEnvelope(byte[] bytes, List<HuxerUIExternalTexture> externalTextures,
+            List<HuxerUIFileReference> fileReferences) {
+        return new Reader(bytes, externalTextures, fileReferences).read();
     }
 
     static final class Envelope {
         final byte[] bytes;
         final List<HuxerUIExternalTexture> externalTextures;
+        final List<HuxerUIFileReference> fileReferences;
 
-        Envelope(byte[] bytes, List<HuxerUIExternalTexture> externalTextures) {
+        Envelope(byte[] bytes, List<HuxerUIExternalTexture> externalTextures,
+                List<HuxerUIFileReference> fileReferences) {
             this.bytes = bytes;
             this.externalTextures = externalTextures;
+            this.fileReferences = fileReferences;
         }
     }
 
     private static final class Writer {
         private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         private final ArrayList<HuxerUIExternalTexture> externalTextures = new ArrayList<>();
+        private final ArrayList<HuxerUIFileReference> fileReferences = new ArrayList<>();
+        private final ArrayList<Long> fileReferenceKeys = new ArrayList<>();
 
         Envelope write(PlatformPayload payload) {
             writeByte('H');
@@ -367,7 +398,8 @@ public final class PlatformPayload {
             writeInt16(1);
             writeInt16(0);
             writeValue(payload, 0);
-            return new Envelope(bytes.toByteArray(), Collections.unmodifiableList(externalTextures));
+            return new Envelope(bytes.toByteArray(), Collections.unmodifiableList(externalTextures),
+                    Collections.unmodifiableList(fileReferences));
         }
 
         private void writeValue(PlatformPayload payload, int depth) {
@@ -412,14 +444,31 @@ public final class PlatformPayload {
                     HuxerUIExternalTexture texture = payload.requireExternalTexture();
                     int slot = externalTextures.indexOf(texture);
                     if (slot < 0) {
-                        if (externalTextures.size() >= MAX_CAPABILITY_SLOTS) {
+                        if (externalTextures.size() + fileReferences.size() >= MAX_CAPABILITY_SLOTS) {
                             throw new IllegalArgumentException(
-                                    "HuxerUI PlatformPayload contains too many external textures");
+                                    "HuxerUI PlatformPayload contains too many retained capabilities");
                         }
                         slot = externalTextures.size();
                         externalTextures.add(texture);
                     }
                     writeInt32(slot);
+                    return;
+                case FILE_REFERENCE:
+                    writeByte(FILE_REFERENCE_CAPABILITY);
+                    HuxerUIFileReference reference = payload.requireFileReference();
+                    reference.requireOpen();
+                    long capabilityKey = reference.capabilityKey();
+                    int referenceSlot = fileReferenceKeys.indexOf(capabilityKey);
+                    if (referenceSlot < 0) {
+                        if (externalTextures.size() + fileReferences.size() >= MAX_CAPABILITY_SLOTS) {
+                            throw new IllegalArgumentException(
+                                    "HuxerUI PlatformPayload contains too many retained capabilities");
+                        }
+                        referenceSlot = fileReferences.size();
+                        fileReferences.add(reference);
+                        fileReferenceKeys.add(capabilityKey);
+                    }
+                    writeInt32(referenceSlot);
             }
         }
 
@@ -472,18 +521,37 @@ public final class PlatformPayload {
     private static final class Reader {
         private final ByteBuffer bytes;
         private final List<HuxerUIExternalTexture> externalTextures;
+        private final List<HuxerUIFileReference> fileReferences;
+        private final boolean[] usedExternalTextures;
+        private final boolean[] usedFileReferences;
 
-        Reader(byte[] bytes, List<HuxerUIExternalTexture> externalTextures) {
+        Reader(byte[] bytes, List<HuxerUIExternalTexture> externalTextures,
+                List<HuxerUIFileReference> fileReferences) {
             Objects.requireNonNull(bytes, "bytes");
             Objects.requireNonNull(externalTextures, "externalTextures");
-            if (bytes.length > MAX_ENVELOPE_BYTES || externalTextures.size() > MAX_CAPABILITY_SLOTS) {
+            Objects.requireNonNull(fileReferences, "fileReferences");
+            if (bytes.length > MAX_ENVELOPE_BYTES || externalTextures.size() > MAX_CAPABILITY_SLOTS
+                    || fileReferences.size() > MAX_CAPABILITY_SLOTS - externalTextures.size()) {
                 throw new IllegalArgumentException("HuxerUI PlatformPayload envelope is too large");
             }
             if (new HashSet<>(externalTextures).size() != externalTextures.size() || externalTextures.contains(null)) {
                 throw new IllegalArgumentException("HuxerUI PlatformPayload capability table is invalid");
             }
+            HashSet<Long> referenceKeys = new HashSet<>();
+            for (HuxerUIFileReference reference : fileReferences) {
+                if (reference == null) {
+                    throw new IllegalArgumentException("HuxerUI PlatformPayload file reference table is invalid");
+                }
+                reference.requireOpen();
+                if (!referenceKeys.add(reference.capabilityKey())) {
+                    throw new IllegalArgumentException("HuxerUI PlatformPayload file reference table is invalid");
+                }
+            }
             this.bytes = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
             this.externalTextures = externalTextures;
+            this.fileReferences = fileReferences;
+            usedExternalTextures = new boolean[externalTextures.size()];
+            usedFileReferences = new boolean[fileReferences.size()];
         }
 
         PlatformPayload read() {
@@ -499,6 +567,16 @@ public final class PlatformPayload {
             PlatformPayload payload = readValue(0, "$");
             if (bytes.hasRemaining()) {
                 throw malformed("trailing bytes");
+            }
+            for (boolean used : usedExternalTextures) {
+                if (!used) {
+                    throw malformed("unreferenced capability");
+                }
+            }
+            for (boolean used : usedFileReferences) {
+                if (!used) {
+                    throw malformed("unreferenced capability");
+                }
             }
             return payload;
         }
@@ -558,7 +636,18 @@ public final class PlatformPayload {
                     if (slot < 0 || slot >= externalTextures.size()) {
                         throw malformed("missing external texture");
                     }
+                    usedExternalTextures[slot] = true;
                     return new PlatformPayload(Kind.EXTERNAL_TEXTURE, externalTextures.get(slot), path);
+                case FILE_REFERENCE:
+                    if (readByte() != FILE_REFERENCE_CAPABILITY) {
+                        throw malformed("unknown capability kind");
+                    }
+                    int referenceSlot = readInt32();
+                    if (referenceSlot < 0 || referenceSlot >= fileReferences.size()) {
+                        throw malformed("missing file reference");
+                    }
+                    usedFileReferences[referenceSlot] = true;
+                    return new PlatformPayload(Kind.FILE_REFERENCE, fileReferences.get(referenceSlot), path);
                 default:
                     throw malformed("unknown value tag");
             }

@@ -417,6 +417,33 @@ Each value retains shared private platform state.
 Copying a value retains the grant, and destruction of the last copy releases process-scoped resources such as Apple security-scope access, Android provider state, or a browser handle.
 The public API does not serialize references or promise that a grant remains valid after application restart.
 
+### PlatformPayload capability transport
+
+The common platform-language bridge may carry a `FileReference` as a retained `PlatformPayload` capability when a native library needs an Android `Uri`, Apple `NSURL`, or browser `File` while preserving the original grant lifetime.
+This reuses the exact shared reference state and metadata snapshot; it does not create a second file-access abstraction, import contents, or serialize a provider entry key.
+Android and Web projections do not acquire a local path; the current Apple projection uses the existing path-backed reference to create its `NSURL`.
+`PlatformPayload` equality and envelope deduplication compare the retained backend state, while companion entries preserve the complete `FileReference` value that first occupies a slot.
+
+HUXP v1 assigns FileReference value tag `9` and capability kind `2`.
+The binary contains only an envelope-local slot, and `PlatformPayload::Envelope` carries FileReference and ExternalTexture in separate strongly typed companion vectors.
+Decoding rejects empty or duplicate capability entries, missing or wrong-kind slots, unreferenced companion entries, and a combined capability count above the common limit.
+The companion table is in-process transport state and is never a persistence representation.
+
+Android reuses the existing `HuxerUIFileReference` Java class in two non-overlapping modes.
+The state-owned instance has no native handle and continues to perform `ContentResolver` I/O for its C++ `AndroidFileReferenceState` owner.
+A payload wrapper is a separate instance that owns a copied C++ `FileReference`, exposes the existing document `Uri`, and releases that copy through idempotent `close()`; the state-owned object never points back to its owning C++ state.
+
+iOS and macOS add only a lightweight `HUXFileReference` declaration to each existing platform registry header.
+The Objective-C object retains the C++ value through ARC and projects its path-backed reference to `fileURL`; it does not introduce an Apple-specific C++ reference type or acquire the security scope again.
+Apple references produced by the current backends are path-backed, and an unsupported non-path reference fails at the boundary instead of manufacturing an `NSURL`.
+
+Web retains the C++ value in `HuxerUI.FileReference`, exposes asynchronous `getFile()` over either the browser handle's current file or the captured fallback `File`, and releases the native share through `close()` with finalization as a fallback.
+The public JavaScript `PlatformPayload.encode()` and `decode()` methods remain capability-free because bytes alone cannot preserve native identity; only the framework-private bridge uses the companion FileReference list.
+
+No platform wrapper adds `CanWrite()` or another writable flag.
+The original C++ metadata remains available after the reference returns through the bridge, and actual operations continue to enforce current provider authorization.
+The projection neither attenuates nor expands the grant and does not change the existing session-scoped persistence contract.
+
 ### Directory capabilities and copying
 
 `Type()` is creation-time metadata obtained from authoritative platform item information, including Android's `MIME_TYPE_DIR`, not guessed from a display name or file extension.
