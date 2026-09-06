@@ -33,6 +33,7 @@ add_executable(huxerui_tests
         platform/web_text.cpp
         runtime/animation.cpp
         runtime/application.cpp
+        runtime/clipboard.cpp
         runtime/composition.cpp
         runtime/file.cpp
         runtime/file_picker.cpp

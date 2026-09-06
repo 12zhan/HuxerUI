@@ -202,7 +202,7 @@ Touch scrolling over a TextField does not focus the hidden input merely because 
 
 Browser clipboard events provide synchronous data during trusted copy, cut, and paste dispatch, while the asynchronous Clipboard API may require focus, user activation, and permission.
 
-The Web backend does not expose `PlatformClipboard`, because its synchronous contract cannot truthfully represent the asynchronous browser Clipboard API. Browser editing events on the hidden input continue to provide browser-managed copy, cut, and paste while the input is active.
+The Web backend does not expose `PlatformClipboard`, because its synchronous contract cannot truthfully represent the asynchronous browser Clipboard API. The Runtime-owned `Clipboard` service is still installed but reports unavailable and returns empty or failed results. Browser editing events on the hidden input continue to provide browser-managed copy, cut, and paste while the input is active.
 
 An application-triggered asynchronous clipboard operation cannot be represented as a completed synchronous read. The Web backend must not report unavailable pasted data or a rejected promise as synchronous success. A future clipboard expansion should add one shared asynchronous capability or an explicit Runtime command path only when TextField Cut, Paste, and application clipboard APIs require it.
 

@@ -1154,6 +1154,8 @@ Runtime::Runtime(const Application& application, PlatformAdapter& platform, Appl
   root.Provide(state_->window_service_);
   state_->scene_transition_service_ = std::make_shared<SceneTransitionService>(*state_);
   root.Provide(state_->scene_transition_service_);
+  state_->clipboard_ = std::shared_ptr<Clipboard>(new Clipboard(platform.Clipboard()));
+  root.Provide(state_->clipboard_);
   if (std::shared_ptr<FileSystem> file_system = platform.CreateFileSystem()) {
     root.Provide(std::move(file_system));
   }
@@ -1187,6 +1189,7 @@ Runtime::~Runtime() {
   state_->pointer_->Disconnect();
   state_->layer_controller_.Disconnect();
   state_->application_service_->Disconnect();
+  state_->clipboard_->Disconnect();
   state_->window_service_->Disconnect();
   state_->scene_transition_service_->Disconnect();
   DiscardLifecycleCommits();
