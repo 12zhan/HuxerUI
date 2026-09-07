@@ -48,7 +48,7 @@ private:
     }
   }
 
-  void Complete(FileResult<std::vector<FileReference>> result) {
+  void Complete(IoResult<std::vector<FileReference>> result) {
     if (finished_) {
       return;
     }
@@ -72,9 +72,8 @@ private:
     }
     try {
       if (value == nullptr || !G_VALUE_HOLDS(value, GDK_TYPE_FILE_LIST) || g_value_get_boxed(value) == nullptr) {
-        self->Complete(FileResult<std::vector<FileReference>>(
-            FileError{FileErrorCode::Unsupported, "HuxerUI could not receive the GTK file list"}
-        ));
+        self->Complete(IoResult<std::vector<FileReference>>(
+            IoError{IoErrorCode::Unsupported, "HuxerUI could not receive the GTK file list"}));
         return;
       }
       std::vector<File> paths;
@@ -83,9 +82,8 @@ private:
         char* path = g_file_get_path(G_FILE(entry->data));
         std::unique_ptr<char, decltype(&g_free)> owned(path, g_free);
         if (path == nullptr) {
-          self->Complete(FileResult<std::vector<FileReference>>(
-              FileError{FileErrorCode::Unsupported, "HuxerUI dropped provider has no supported local file capability"}
-          ));
+          self->Complete(IoResult<std::vector<FileReference>>(
+              IoError{IoErrorCode::Unsupported, "HuxerUI dropped provider has no supported local file capability"}));
           return;
         }
         paths.emplace_back(path);
@@ -93,21 +91,20 @@ private:
       const std::weak_ptr<LinuxDropPreparation> weak = self;
       EnqueueFileOperation([weak, canceled = self->canceled_, dispatcher = self->dispatcher_,
                             paths = std::move(paths)] {
-        auto result = [&]() -> FileResult<std::vector<FileReference>> {
+        auto result = [&]() -> IoResult<std::vector<FileReference>> {
           std::vector<FileReference> files;
           for (const File& path : paths) {
             if (*canceled) {
-              return FileResult<std::vector<FileReference>>(std::move(files));
+              return IoResult<std::vector<FileReference>>(std::move(files));
             }
             auto reference = MakeLinuxFileReference(path, false, false);
             if (!reference) {
-              return FileResult<std::vector<FileReference>>(
-                  FileError{FileErrorCode::Io, "HuxerUI could not retain every GTK dropped ordinary file"}
-              );
+              return IoResult<std::vector<FileReference>>(
+                  IoError{IoErrorCode::Io, "HuxerUI could not retain every GTK dropped ordinary file"});
             }
             files.push_back(std::move(*reference));
           }
-          return FileResult<std::vector<FileReference>>(std::move(files));
+          return IoResult<std::vector<FileReference>>(std::move(files));
         }();
         if (!*canceled) {
           dispatcher([weak, result = std::move(result)]() mutable {
@@ -118,9 +115,8 @@ private:
         }
       });
     } catch (...) {
-      self->Complete(FileResult<std::vector<FileReference>>(
-          FileError{FileErrorCode::Io, "HuxerUI could not prepare the GTK dropped files"}
-      ));
+      self->Complete(IoResult<std::vector<FileReference>>(
+          IoError{IoErrorCode::Io, "HuxerUI could not prepare the GTK dropped files"}));
     }
   }
 

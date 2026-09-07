@@ -89,7 +89,14 @@ Configure fit, alignment, sampling, and tint with typed methods.
 
 `ImageAsset::FromEncoded(Bytes)` and `RawAsset::FromBytes(Bytes)` take ownership of encoded or arbitrary binary data.
 Use `CopyEncoded(std::span<const std::byte>)` and `CopyBytes(std::span<const std::byte>)` when the source is borrowed.
-The returned byte views remain standard immutable spans rather than introducing another view type.
+`UseRawResource()` returns a lightweight package reference without reading its payload, including during recomposition.
+`RawAsset::ReadBytes(bool cache = false)` and `ReadString(bool cache = false)` return complete owned results; pass `true` to retain successfully read package bytes for all copies of the asset.
+Existing cached bytes are reused even when `cache` is false, and caching does not eliminate the cost of copying the returned result.
+`ReadString()` preserves arbitrary bytes, BOMs, and embedded nulls without validating UTF-8.
+For small declarative text, `Text(UseRawResource(app::raw::about).ReadString(true))` reads once and reuses the cache on later recompositions.
+Large resources should be opened in an event or task: `OpenRead()` returns an independent synchronous `InputStream`, while `co_await OpenReadAsync()` opens asynchronously and returns an `AsyncInputStream`.
+Streams consume the existing memory/cache or the platform package source incrementally and never populate the complete-content cache themselves.
+An uncached asset requires its Runtime resource service to remain connected when opening; retained memory and already opened streams keep their own storage alive.
 
 `Canvas` and `Path` provide custom platform-neutral drawing that is replayed by every renderer.
 Filled rectangles use `DrawRect()`, while lines, arcs, borders, and paths share `StrokeStyle` for width, caps, joins, miter limits, and optional dashes.

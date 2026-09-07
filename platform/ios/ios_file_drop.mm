@@ -57,13 +57,13 @@ public:
     }
     if (files_.size() == items_.count) {
       auto completion = std::move(completion_);
-      completion(FileResult<std::vector<FileReference>>(std::move(files_)));
+      completion(IoResult<std::vector<FileReference>>(std::move(files_)));
       return;
     }
     NSItemProvider* provider = items_[files_.size()].itemProvider;
     NSString* type = FileRepresentationType(provider);
     if (type == nil) {
-      Fail({FileErrorCode::Unsupported, "HuxerUI dropped item has no ordinary file representation"});
+      Fail({IoErrorCode::Unsupported, "HuxerUI dropped item has no ordinary file representation"});
       return;
     }
     const std::weak_ptr<IosDropPreparation> weak = shared_from_this();
@@ -73,14 +73,13 @@ public:
       if (!self || self->canceled_) {
         return;
       }
-      auto result = std::make_shared<FileResult<FileReference>>(
-          FileError{FileErrorCode::Io, "HuxerUI could not retain the iOS dropped file"}
-      );
+      auto result = std::make_shared<IoResult<FileReference>>(
+          IoError{IoErrorCode::Io, "HuxerUI could not retain the iOS dropped file"});
       if (error == nil && url != nil && url.isFileURL) {
         try {
           // Temporary provider URLs must be secured while this callback still owns their readable lifetime.
-          *result = FileResult<FileReference>(in_place ? MakeIosFileReference(url, false)
-                                                       : MakeCopiedIosFileReference(url));
+          *result =
+              IoResult<FileReference>(in_place ? MakeIosFileReference(url, false) : MakeCopiedIosFileReference(url));
         } catch (...) {
         }
       }
@@ -97,7 +96,7 @@ public:
             active->files_.push_back(std::move(*result).Value());
             active->Next();
           } catch (...) {
-            active->Fail({FileErrorCode::Io, "HuxerUI could not prepare the next iOS dropped file"});
+            active->Fail({IoErrorCode::Io, "HuxerUI could not prepare the next iOS dropped file"});
           }
         }
       });
@@ -113,11 +112,11 @@ public:
   }
 
 private:
-  void Fail(FileError error) {
+  void Fail(IoError error) {
     auto completion = std::move(completion_);
     files_.clear();
     if (completion) {
-      completion(FileResult<std::vector<FileReference>>(std::move(error)));
+      completion(IoResult<std::vector<FileReference>>(std::move(error)));
     }
   }
 

@@ -66,7 +66,7 @@ Task<void> DownloadFile(std::shared_ptr<HttpClient> http, File output, State<Dow
       .url = download_url,
       .headers = {{"Accept", "application/octet-stream"}},
   };
-  HttpStreamResult opened = co_await http->SendStream(
+  HttpResult<HttpResponseStream> opened = co_await http->SendStreamAsync(
       std::move(stream_request),
       [download](HttpProgress progress) {
         if (progress.kind != HttpProgressKind::Download) {
@@ -76,9 +76,8 @@ Task<void> DownloadFile(std::shared_ptr<HttpClient> http, File output, State<Dow
           state.transferred_bytes = progress.transferred_bytes;
           state.total_bytes = progress.total_bytes;
         });
-      }
-  );
-  if (!opened.HasResponse()) {
+      });
+  if (!opened.Succeeded()) {
     download.Update([message = opened.Error().message](DownloadState& state) {
       state.downloading = false;
       state.status = "Request failed";
@@ -87,7 +86,7 @@ Task<void> DownloadFile(std::shared_ptr<HttpClient> http, File output, State<Dow
     co_return;
   }
 
-  HttpResponseStream stream = std::move(opened).Response();
+  HttpResponseStream stream = std::move(opened).Value();
   const int status_code = stream.StatusCode();
   if (status_code < 200 || status_code >= 300) {
     download.Update([status_code](DownloadState& state) {
@@ -98,48 +97,42 @@ Task<void> DownloadFile(std::shared_ptr<HttpClient> http, File output, State<Dow
     co_return;
   }
 
-  bool wrote_data = false;
-  while (true) {
-    HttpStreamReadResult read = co_await stream.Read();
-    if (read.HasData()) {
-      Bytes chunk = std::move(read).Data();
-      const bool written = wrote_data ? co_await output.AppendBytesAsync(std::move(chunk))
-                                      : co_await output.WriteBytesAsync(std::move(chunk));
-      if (!written) {
-        download.Update([](DownloadState& state) {
-          state.downloading = false;
-          state.status = "File write failed";
-          state.detail = "The downloaded bytes could not be written to temporary storage.";
-        });
-        co_return;
-      }
-      wrote_data = true;
-    } else if (read.HasError()) {
-      download.Update([message = read.Error().message](DownloadState& state) {
-        state.downloading = false;
-        state.status = "Download failed";
-        state.detail = message;
-      });
-      co_return;
-    } else {
-      if (!wrote_data && !co_await output.WriteBytesAsync({})) {
-        download.Update([](DownloadState& state) {
-          state.downloading = false;
-          state.status = "File write failed";
-          state.detail = "The empty response could not be written to temporary storage.";
-        });
-        co_return;
-      }
-      const std::string path = output.Path();
-      download.Update([path, status_code](DownloadState& state) {
-        state.downloading = false;
-        state.complete = true;
-        state.status = "HTTP " + std::to_string(status_code) + " · Download complete";
-        state.detail = "Saved to " + path;
-      });
-      co_return;
-    }
+  IoResult<AsyncOutputStream> opened_output = co_await output.OpenWriteAsync();
+  if (!opened_output.Succeeded()) {
+    download.Update([message = opened_output.Error().message](DownloadState& state) {
+      state.downloading = false;
+      state.status = "File open failed";
+      state.detail = message;
+    });
+    co_return;
   }
+
+  const auto report_failure = [download](const IoError& error) {
+    download.Update([message = error.message](DownloadState& state) {
+      state.downloading = false;
+      state.status = "Download failed";
+      state.detail = message;
+    });
+  };
+  AsyncOutputStream output_stream = std::move(opened_output).Value();
+  auto copied = co_await stream.Body().CopyToAsync(output_stream, 64U * 1024U);
+  if (!copied.Succeeded()) {
+    report_failure(copied.Error());
+    co_return;
+  }
+  auto closed = co_await output_stream.CloseAsync();
+  if (!closed.Succeeded()) {
+    report_failure(closed.Error());
+    co_return;
+  }
+
+  const std::string path = output.Path();
+  download.Update([path, status_code](DownloadState& state) {
+    state.downloading = false;
+    state.complete = true;
+    state.status = "HTTP " + std::to_string(status_code) + " · Download complete";
+    state.detail = "Saved to " + path;
+  });
 }
 
 [[huxerui::composable]]
@@ -166,9 +159,9 @@ View HttpContent() {
               .url = "https://httpbingo.org/get",
               .headers = {{"Accept", "application/json"}},
           };
-          HttpResult result = co_await http->Send(std::move(buffered_request));
-          if (result.HasResponse()) {
-            HttpResponse& response = result.Response();
+          HttpResult<HttpResponse> result = co_await http->SendAsync(std::move(buffered_request));
+          if (result.Succeeded()) {
+            HttpResponse& response = result.Value();
             request = {
               false, "HTTP " + std::to_string(response.status_code) + " · " + response.url,
               response.body.empty() ? "(empty response body)" : Utf8Text(response.body)
@@ -187,7 +180,7 @@ View HttpContent() {
           CornerRadius(theme.shapes.medium)
       ),
       Text("Streaming download", TextRole::Title),
-      Text("SendStream reads a binary response in chunks and writes each chunk to temporary storage."),
+      Text("SendStreamAsync copies a binary response into an asynchronous file stream."),
       Text(download_url, TextRole::Label).With(Foreground(theme.colors.primary)),
       Button(download->downloading ? "Downloading..." : "Download")
           .With(Enabled(!download->downloading))

@@ -29,6 +29,7 @@
 #include <huxerui/scroll.h>
 #include <huxerui/semantics.h>
 #include <huxerui/state.h>
+#include <huxerui/stream.h>
 #include <huxerui/task.h>
 #include <huxerui/text.h>
 #include <huxerui/text_input.h>

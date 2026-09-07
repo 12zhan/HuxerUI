@@ -565,26 +565,12 @@ public:
     return {Locale::FromLanguageTag(std::move(language)), std::max(1.0F, scale)};
   }
 
-  RawAsset Read(std::string_view package_path) override {
+  std::optional<InputStream> OpenRead(std::string_view package_path) override {
     if (!IsValidResourcePackagePath(package_path)) {
       throw std::logic_error("HuxerUI Linux resource path is invalid");
     }
     const std::filesystem::path path = ResourceRoot() / std::filesystem::path(package_path);
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream) {
-      return {};
-    }
-    stream.seekg(0, std::ios::end);
-    const std::streamoff size = stream.tellg();
-    if (size < 0) {
-      throw std::logic_error("HuxerUI Linux resource size is invalid: " + path.string());
-    }
-    stream.seekg(0, std::ios::beg);
-    std::vector<std::byte> bytes(static_cast<std::size_t>(size));
-    if (!bytes.empty() && !stream.read(reinterpret_cast<char*>(bytes.data()), size)) {
-      throw std::logic_error("HuxerUI Linux resource could not be read: " + path.string());
-    }
-    return RawAsset::FromBytes(std::move(bytes));
+    return OpenPackageFile(path);
   }
 
   std::optional<std::string> ReadText() override {

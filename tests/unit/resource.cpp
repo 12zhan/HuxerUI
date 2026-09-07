@@ -3,6 +3,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -127,7 +128,7 @@ TEST_CASE("RawAssetSharesOwnedBytes") {
   RawAsset asset = RawAsset::FromBytes({std::byte{1}, std::byte{2}}, "application/test");
   RawAsset copy = asset;
   REQUIRE(copy == asset);
-  REQUIRE(copy.Bytes().size() == 2);
+  REQUIRE(copy.ReadBytes().size() == 2);
   REQUIRE(copy.MimeType() == "application/test");
 }
 
@@ -136,24 +137,56 @@ TEST_CASE("RawAssetDistinguishesMissingStorageFromZeroLengthBytes") {
 
   const RawAsset empty = RawAsset::FromBytes({});
   REQUIRE(empty.HasValue());
-  REQUIRE(empty.Bytes().empty());
+  REQUIRE(empty.ReadBytes().empty());
 }
 
-TEST_CASE("RawAssetExposesExplicitStringViewsAndCopies") {
+TEST_CASE("RawAssetReadsOwnedStringsPreservingBinaryContent") {
   RawAsset asset = RawAsset::FromBytes({std::byte{'a'}, std::byte{0}, std::byte{'b'}}, "text/plain");
-  const std::string_view view = asset.AsStringView();
+  const std::string view = asset.ReadString();
   REQUIRE(view.size() == 3);
   REQUIRE(view[0] == 'a');
   REQUIRE(view[1] == '\0');
   REQUIRE(view[2] == 'b');
 
-  const std::string copy = asset.ToString();
+  const std::string copy = asset.ReadString();
   asset = {};
   REQUIRE(copy.size() == 3);
   REQUIRE(copy[1] == '\0');
 
-  REQUIRE(RawAsset{}.AsStringView().empty());
-  REQUIRE(RawAsset{}.ToString().empty());
+  REQUIRE(RawAsset{}.ReadString().empty());
+  REQUIRE(RawAsset{}.ReadString(true).empty());
+}
+
+TEST_CASE("RawAssetCopiesBytesAndOpensAnIndependentSynchronousStream") {
+  RawAsset asset = RawAsset::FromBytes({std::byte{1}, std::byte{2}, std::byte{3}}, "application/test");
+  REQUIRE((asset.ReadBytes() == Bytes{std::byte{1}, std::byte{2}, std::byte{3}}));
+
+  InputStream stream = asset.OpenRead();
+  asset = {};
+  Bytes buffer(2);
+  REQUIRE(stream.Read(buffer).Value() == 2);
+  REQUIRE((buffer == Bytes{std::byte{1}, std::byte{2}}));
+  REQUIRE(stream.Read(buffer).Value() == 1);
+  REQUIRE(buffer[0] == std::byte{3});
+  REQUIRE(stream.Read(buffer).Value() == 0);
+  REQUIRE_THROWS_AS(RawAsset{}.OpenRead(), std::logic_error);
+}
+
+TEST_CASE("RawAssetStreamsRetainSharedByteSlicesWithoutRetainingTheAsset") {
+  auto storage = std::make_shared<const Bytes>(Bytes{std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4}});
+  std::weak_ptr<const Bytes> retained = storage;
+  RawAsset asset = RawAsset::FromSharedBytes(storage, storage->data() + 1, 2);
+  {
+    InputStream input = asset.OpenRead();
+    asset = {};
+    storage.reset();
+    REQUIRE_FALSE(retained.expired());
+    Bytes buffer(4);
+    REQUIRE(input.Read(buffer).Value() == 2);
+    REQUIRE(buffer[0] == std::byte{2});
+    REQUIRE(buffer[1] == std::byte{3});
+  }
+  REQUIRE(retained.expired());
 }
 
 TEST_CASE("ImageAssetReadsEncodedMetadataWithoutDecoding") {

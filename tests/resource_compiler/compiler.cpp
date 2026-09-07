@@ -83,14 +83,9 @@ public:
     return {};
   }
 
-  huxerui::RawAsset Read(std::string_view package_path) override {
+  std::optional<huxerui::InputStream> OpenRead(std::string_view package_path) override {
     const std::filesystem::path path = root_ / PathFromUtf8(package_path);
-    if (!std::filesystem::is_regular_file(path)) {
-      return {};
-    }
-    std::ifstream stream(path, std::ios::binary);
-    const std::string bytes{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
-    return huxerui::RawAsset::CopyBytes(std::as_bytes(std::span(bytes)));
+    return huxerui::detail::OpenPackageFile(path);
   }
 
 private:
@@ -109,11 +104,9 @@ huxerui::VectorAsset CompileVectorResource(
   Write(root / "images" / "mark.svg", svg);
   huxerui::resource_compiler::Compile({root, output, "test_app"});
   DirectoryResources resources(output / "package");
-  huxerui::detail::AppResources app_resources(&resources);
-  return app_resources.ResolveVector(
-      huxerui::ImageResource("test_app", "images/mark"),
-      huxerui::Locale::Default()
-  );
+  auto app_resources_owner = std::make_shared<huxerui::detail::AppResources>(&resources);
+  auto& app_resources = *app_resources_owner;
+  return app_resources.ResolveVector(huxerui::ImageResource("test_app", "images/mark"), huxerui::Locale::Default());
 }
 
 TEST_CASE("ResourceCompilerGeneratesTypedKeysIndexAndPayloads") {
@@ -308,10 +301,11 @@ TEST_CASE("ResourceCompilerMergesPackagesInDeclarationOrder") {
   REQUIRE(std::filesystem::exists(merged_output / "package" / "huxerui" / "app" / "images" / "icon@2x.png"));
 
   DirectoryResources platform(merged_output / "package");
-  huxerui::detail::AppResources resources(&platform);
-  REQUIRE(resources.Resolve(huxerui::RawResource("app", "raw/config.txt")).AsStringView() == "override");
-  REQUIRE(resources.Resolve(huxerui::RawResource("app", "raw/kept.txt")).AsStringView() == "kept");
-  REQUIRE(resources.Resolve(huxerui::RawResource("editor", "raw/tool.txt")).AsStringView() == "library");
+  auto resources_owner = std::make_shared<huxerui::detail::AppResources>(&platform);
+  auto& resources = *resources_owner;
+  REQUIRE(resources.Resolve(huxerui::RawResource("app", "raw/config.txt")).ReadString() == "override");
+  REQUIRE(resources.Resolve(huxerui::RawResource("app", "raw/kept.txt")).ReadString() == "kept");
+  REQUIRE(resources.Resolve(huxerui::RawResource("editor", "raw/tool.txt")).ReadString() == "library");
   REQUIRE(
       resources.Resolve(huxerui::StringResource("app", "strings/title"), huxerui::Locale::Default()).value ==
       "Welcome {0}"
@@ -328,8 +322,9 @@ TEST_CASE("ResourceCompilerMergesPackagesInDeclarationOrder") {
   const std::filesystem::path reversed_output = temporary.Path() / "reversed-output";
   huxerui::resource_compiler::Merge({{override_output / "package", base_output / "package"}, reversed_output});
   DirectoryResources reversed_platform(reversed_output / "package");
-  huxerui::detail::AppResources reversed_resources(&reversed_platform);
-  REQUIRE(reversed_resources.Resolve(huxerui::RawResource("app", "raw/config.txt")).AsStringView() == "base");
+  auto reversed_resources_owner = std::make_shared<huxerui::detail::AppResources>(&reversed_platform);
+  auto& reversed_resources = *reversed_resources_owner;
+  REQUIRE(reversed_resources.Resolve(huxerui::RawResource("app", "raw/config.txt")).ReadString() == "base");
   REQUIRE(std::filesystem::exists(reversed_output / "package" / "huxerui" / "app" / "images" / "mark.huxv"));
   REQUIRE_FALSE(std::filesystem::exists(reversed_output / "package" / "huxerui" / "app" / "images" / "mark.png"));
 }
@@ -430,9 +425,10 @@ TEST_CASE("GeneratedPackagesRoundTripThroughRuntimeResolution") {
   huxerui::resource_compiler::Compile({root, output, "test_app"});
 
   DirectoryResources platform(output / "package");
-  huxerui::detail::AppResources resources(&platform);
-  REQUIRE(resources.Resolve(huxerui::RawResource("test_app", "raw/config.txt")).AsStringView() == "enabled");
-  REQUIRE(resources.Resolve(huxerui::RawResource("test_app", "raw/" + unicode_name)).AsStringView() == "unicode");
+  auto resources_owner = std::make_shared<huxerui::detail::AppResources>(&platform);
+  auto& resources = *resources_owner;
+  REQUIRE(resources.Resolve(huxerui::RawResource("test_app", "raw/config.txt")).ReadString() == "enabled");
+  REQUIRE(resources.Resolve(huxerui::RawResource("test_app", "raw/" + unicode_name)).ReadString() == "unicode");
   const huxerui::detail::ResolvedStringResource title =
       resources.Resolve(huxerui::StringResource("test_app", "strings/title"), huxerui::Locale::Default());
   REQUIRE(title.value == "Hello {0}");
@@ -468,7 +464,8 @@ TEST_CASE("SvgResourcesCompileToTypedVectorPayloads") {
   REQUIRE(static_cast<unsigned char>(payload[8]) == 1U);
 
   DirectoryResources platform_resources(output / "package");
-  huxerui::detail::AppResources resources(&platform_resources);
+  auto resources_owner = std::make_shared<huxerui::detail::AppResources>(&platform_resources);
+  auto& resources = *resources_owner;
   const huxerui::ImageResource resource("test_app", "images/mark");
   const huxerui::VectorAsset vector = resources.ResolveVector(resource, huxerui::Locale::Default());
   REQUIRE(vector.IntrinsicSize() == huxerui::Size{24.0F, 16.0F});
@@ -503,11 +500,10 @@ TEST_CASE("SvgResourcesPreserveNormalizedDashStyles") {
 
   huxerui::resource_compiler::Compile({root, output, "test_app"});
   DirectoryResources platform(output / "package");
-  huxerui::detail::AppResources resources(&platform);
-  const huxerui::VectorAsset vector = resources.ResolveVector(
-      huxerui::ImageResource("test_app", "images/dashed"),
-      huxerui::Locale::Default()
-  );
+  auto resources_owner = std::make_shared<huxerui::detail::AppResources>(&platform);
+  auto& resources = *resources_owner;
+  const huxerui::VectorAsset vector =
+      resources.ResolveVector(huxerui::ImageResource("test_app", "images/dashed"), huxerui::Locale::Default());
   huxerui::PaintSequence sequence;
   huxerui::PaintContext context(sequence, {0.0F, 0.0F, 24.0F, 16.0F});
   context.DrawImage(vector, {0.0F, 0.0F, 24.0F, 16.0F});
@@ -606,7 +602,8 @@ TEST_CASE("SvgStylesAllowTrailingWhitespaceAndSmoothCurvesDoNotReflectArcControl
 
   huxerui::resource_compiler::Compile({root, output, "test_app"});
   DirectoryResources platform(output / "package");
-  huxerui::detail::AppResources resources(&platform);
+  auto resources_owner = std::make_shared<huxerui::detail::AppResources>(&platform);
+  auto& resources = *resources_owner;
   const huxerui::VectorAsset vector =
       resources.ResolveVector(huxerui::ImageResource("test_app", "images/mark"), huxerui::Locale::Default());
   huxerui::PaintSequence sequence;
@@ -799,10 +796,10 @@ TEST_CASE("SvgResourcesCompileGradientPathFillsInHuxvecVersionOne") {
   );
 
   DirectoryResources platform(output / "package");
-  huxerui::detail::AppResources resources(&platform);
-  const huxerui::VectorAsset vector = resources.ResolveVector(
-      huxerui::ImageResource("test_app", "images/gradient"), huxerui::Locale::Default()
-  );
+  auto resources_owner = std::make_shared<huxerui::detail::AppResources>(&platform);
+  auto& resources = *resources_owner;
+  const huxerui::VectorAsset vector =
+      resources.ResolveVector(huxerui::ImageResource("test_app", "images/gradient"), huxerui::Locale::Default());
   const std::vector<huxerui::PaintCommand>& commands = huxerui::detail::InternalAccess::Sequence(vector).Commands();
   const auto linear = std::ranges::find_if(commands, [](const huxerui::PaintCommand& command) {
     const auto* fill = std::get_if<huxerui::FillPathCommand>(&command);
@@ -866,10 +863,10 @@ TEST_CASE("SvgResourcesCompileInheritedObjectAndUserSpaceGradientTransforms") {
   );
 
   DirectoryResources platform(output / "package");
-  huxerui::detail::AppResources resources(&platform);
-  const huxerui::VectorAsset vector = resources.ResolveVector(
-      huxerui::ImageResource("test_app", "images/transformed"), huxerui::Locale::Default()
-  );
+  auto resources_owner = std::make_shared<huxerui::detail::AppResources>(&platform);
+  auto& resources = *resources_owner;
+  const huxerui::VectorAsset vector =
+      resources.ResolveVector(huxerui::ImageResource("test_app", "images/transformed"), huxerui::Locale::Default());
   const std::vector<huxerui::PaintCommand>& commands = huxerui::detail::InternalAccess::Sequence(vector).Commands();
   REQUIRE(commands.size() == 3);
   const auto& inherited =
@@ -925,10 +922,10 @@ TEST_CASE("SvgResourcesCompileGradientPathStrokesInHuxvecVersionOne") {
   );
 
   DirectoryResources platform(output / "package");
-  huxerui::detail::AppResources resources(&platform);
-  const huxerui::VectorAsset vector = resources.ResolveVector(
-      huxerui::ImageResource("test_app", "images/gradient_stroke"), huxerui::Locale::Default()
-  );
+  auto resources_owner = std::make_shared<huxerui::detail::AppResources>(&platform);
+  auto& resources = *resources_owner;
+  const huxerui::VectorAsset vector =
+      resources.ResolveVector(huxerui::ImageResource("test_app", "images/gradient_stroke"), huxerui::Locale::Default());
   const std::vector<huxerui::PaintCommand>& commands = huxerui::detail::InternalAccess::Sequence(vector).Commands();
   REQUIRE(commands.size() == 2);
   const auto& linear = std::get<huxerui::StrokePathCommand>(commands[0]);

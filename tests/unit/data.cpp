@@ -2,9 +2,12 @@
 
 #include <concepts>
 #include <cstddef>
+#include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <huxerui/data.h>
@@ -15,6 +18,111 @@ static_assert(std::is_same_v<Bytes, std::vector<std::byte>>);
 static_assert(std::copy_constructible<Uri>);
 static_assert(std::move_constructible<Uri>);
 static_assert(!std::default_initializable<Uri>);
+
+using TextResult = Result<std::string, int>;
+static_assert(!std::default_initializable<TextResult>);
+static_assert(!std::default_initializable<Result<void, int>>);
+static_assert(!std::constructible_from<Result<int, int>, int>);
+static_assert(std::copy_constructible<TextResult>);
+static_assert(std::move_constructible<Result<std::unique_ptr<int>, int>>);
+static_assert(!std::copy_constructible<Result<std::unique_ptr<int>, int>>);
+static_assert(!std::copy_constructible<Result<int, std::unique_ptr<int>>>);
+static_assert(std::is_same_v<decltype(std::declval<TextResult&>().Value()), std::string&>);
+static_assert(std::is_same_v<decltype(std::declval<const TextResult&>().Value()), const std::string&>);
+static_assert(std::is_same_v<decltype(std::declval<TextResult&&>().Value()), std::string&&>);
+static_assert(std::is_same_v<decltype(std::declval<const TextResult&&>().Value()), const std::string&&>);
+static_assert(std::is_same_v<decltype(std::declval<TextResult&>().Error()), int&>);
+static_assert(std::is_same_v<decltype(std::declval<const TextResult&>().Error()), const int&>);
+static_assert(std::is_same_v<decltype(std::declval<TextResult&&>().Error()), int&&>);
+static_assert(std::is_same_v<decltype(std::declval<const TextResult&&>().Error()), const int&&>);
+
+TEST_CASE("ResultPreservesValuesAndRejectsWrongBranchAccess") {
+  TextResult value("value");
+  value.Value() += "!";
+  REQUIRE(value.Succeeded());
+  REQUIRE(std::as_const(value).Value() == "value!");
+  REQUIRE_THROWS_AS(value.Error(), std::logic_error);
+  REQUIRE_THROWS_AS(std::as_const(value).Error(), std::logic_error);
+  REQUIRE_THROWS_AS(std::move(value).Error(), std::logic_error);
+
+  TextResult error(7);
+  error.Error() = 8;
+  REQUIRE_FALSE(error.Succeeded());
+  REQUIRE(std::as_const(error).Error() == 8);
+  REQUIRE_THROWS_AS(error.Value(), std::logic_error);
+  REQUIRE_THROWS_AS(std::as_const(error).Value(), std::logic_error);
+  REQUIRE_THROWS_AS(std::move(error).Value(), std::logic_error);
+}
+
+TEST_CASE("ResultFactoriesDisambiguateIdenticalValueAndErrorTypes") {
+  using SameResult = Result<std::string, std::string>;
+  auto success = SameResult::Success("same");
+  auto failure = SameResult::Failure("same");
+  REQUIRE(success.Succeeded());
+  REQUIRE_FALSE(failure.Succeeded());
+  REQUIRE(success.Value() == failure.Error());
+  REQUIRE_THROWS_AS(success.Error(), std::logic_error);
+  REQUIRE_THROWS_AS(failure.Value(), std::logic_error);
+
+  auto copy = success;
+  copy.Value() = "copy";
+  REQUIRE(success.Value() == "same");
+  copy = failure;
+  REQUIRE_FALSE(copy.Succeeded());
+  REQUIRE(copy.Error() == "same");
+  failure = std::move(success);
+  REQUIRE(failure.Succeeded());
+  REQUIRE(failure.Value() == "same");
+}
+
+TEST_CASE("ResultOwnsMoveOnlyValuesAndErrors") {
+  using OwnedResult = Result<std::unique_ptr<int>, std::unique_ptr<int>>;
+  auto success = OwnedResult::Success(std::make_unique<int>(3));
+  auto failure = OwnedResult::Failure(std::make_unique<int>(4));
+  auto value = std::move(success).Value();
+  auto error = std::move(failure).Error();
+  REQUIRE(*value == 3);
+  REQUIRE(*error == 4);
+  REQUIRE(success.Succeeded());
+  REQUIRE(success.Value() == nullptr);
+  REQUIRE_FALSE(failure.Succeeded());
+  REQUIRE(failure.Error() == nullptr);
+}
+
+TEST_CASE("ResultVoidUsesExplicitSuccessAndPreservesErrors") {
+  using VoidResult = Result<void, std::string>;
+  auto success = VoidResult::Success();
+  REQUIRE(success.Succeeded());
+  REQUIRE_NOTHROW(std::as_const(success).Value());
+  REQUIRE_THROWS_AS(success.Error(), std::logic_error);
+  REQUIRE_THROWS_AS(std::as_const(success).Error(), std::logic_error);
+
+  auto failure = VoidResult::Failure("failure");
+  REQUIRE_FALSE(failure.Succeeded());
+  failure.Error() += "!";
+  REQUIRE(std::as_const(failure).Error() == "failure!");
+  REQUIRE_THROWS_AS(failure.Value(), std::logic_error);
+  success = failure;
+  REQUIRE_FALSE(success.Succeeded());
+  const std::string error = std::move(success).Error();
+  REQUIRE(error == "failure!");
+  REQUIRE_FALSE(success.Succeeded());
+  failure = VoidResult::Success();
+  REQUIRE(failure.Succeeded());
+  REQUIRE_THROWS_AS(std::move(failure).Error(), std::logic_error);
+}
+
+TEST_CASE("ResultVoidSupportsMoveOnlyAndOptionalErrorValues") {
+  auto failure = Result<void, std::unique_ptr<int>>::Failure(std::make_unique<int>(5));
+  auto error = std::move(failure).Error();
+  REQUIRE(*error == 5);
+  REQUIRE_FALSE(failure.Succeeded());
+  REQUIRE(failure.Error() == nullptr);
+
+  const auto empty_error = Result<void, std::optional<int>>::Failure(std::nullopt);
+  REQUIRE_FALSE(empty_error.Succeeded());
+  REQUIRE_FALSE(empty_error.Error().has_value());
+}
 
 TEST_CASE("BytesOwnsMutableContiguousBinaryData") {
   Bytes bytes{std::byte{0}, std::byte{0xFF}};

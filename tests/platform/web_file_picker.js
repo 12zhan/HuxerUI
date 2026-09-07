@@ -106,6 +106,41 @@ async function operation(handle, request, writable = true, canceled = false) {
   const root = new DirectoryHandle("root");
   const bytes = Uint8Array.from({ length: 1024 * 1024 + 3 }, (_, index) => index % 251);
   const input = new FileHandle("source.bin", bytes);
+  const openedInput = await operation(input, { kind: "openRead" });
+  assert.equal(openedInput.kind, 1);
+  const firstChunk = await operation(input, { kind: "readChunk", file: openedInput.value, offset: 0, maximum: 3 });
+  assert.deepEqual(firstChunk.value, bytes.slice(0, 3));
+  const eof = await operation(input, { kind: "readChunk", file: openedInput.value, offset: bytes.length, maximum: 3 });
+  assert.equal(eof.value.length, 0);
+  const streamedOutput = new FileHandle("streamed.bin");
+  const openedOutput = await operation(streamedOutput, { kind: "openWrite" });
+  assert.equal(openedOutput.kind, 1);
+  assert.equal((await operation(streamedOutput, {
+    kind: "writeChunk", writable: openedOutput.value, bytes: bytes.slice(0, 3),
+  })).kind, 1);
+  assert.equal((await operation(streamedOutput, { kind: "closeStream", writable: openedOutput.value })).kind, 1);
+  assert.deepEqual(streamedOutput.bytes, bytes.slice(0, 3));
+
+  for (const abortFails of [false, true]) {
+    let resolveOpen;
+    let abortCount = 0;
+    const delayedOutput = new FileHandle("delayed.bin");
+    delayedOutput.createWritable = () => new Promise((resolve) => { resolveOpen = resolve; });
+    const state = create({ handle: delayedOutput, writable: true });
+    const completed = new Promise((resolve) => { complete = resolve; });
+    start(state, { kind: "openWrite" }, 1, helpers);
+    await Promise.resolve();
+    assert.equal(typeof resolveOpen, "function");
+    cancel(state);
+    resolveOpen({ abort: async () => {
+      abortCount++;
+      if (abortFails) { throw new Error("abort failed"); }
+    } });
+    assert.equal((await completed).kind, 3);
+    assert.equal(abortCount, 1);
+    assert.equal(state.writable, null);
+  }
+
   let result = await operation(root, { kind: "create", name: "空目录" });
   assert.equal(result.kind, 1);
   assert.equal(result.value.created, true);

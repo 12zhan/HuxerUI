@@ -30,7 +30,7 @@ Resource ownership follows the existing Runtime, Environment, PlatformAdapter, a
 | Layer | Responsibility |
 |---|---|
 | Resource tool and CMake | Validate source resources, generate typed keys and a versioned index, and stage target resources |
-| PlatformResources | Read immutable bytes from the installed platform package and report the current resource configuration |
+| PlatformResources | Open incremental streams from the installed platform package and report the current resource configuration |
 | AppResources | Resolve typed keys, locale fallback, density variants, and shared immutable assets |
 | Runtime | Own AppResources for each runtime root, seed the resource Environment, and coordinate resource-configuration invalidation |
 | Image | Measure from intrinsic logical size and translate fit and alignment into raster, vector, or ExternalTexture painting |
@@ -76,7 +76,7 @@ The domains have stable ownership:
 - For one resource variant in one domain, a later target resource root overrides an earlier root.
 
 Resource keys compare by value and include enough readable identity for diagnostics.
-The package index uses mandatory content hashes to verify payloads, while platform caches use a private stable identity carried by the resolved immutable ImageAsset rather than a ResourceId alone.
+The package index carries content hashes for deterministic merge and cache identity, while installed-package authenticity and integrity remain the responsibility of each platform's application signing and packaging mechanism.
 
 The CMake `NAMESPACE` value is both the resource domain and the exact generated C++ namespace.
 The default generated header name adds the `_resources` suffix, while single-root `hrc` generation may select another `.h` filename without changing the domain or C++ namespace.
@@ -275,14 +275,19 @@ public:
   virtual ~PlatformResources() = default;
 
   [[nodiscard]] virtual ResourceConfiguration Configuration() const = 0;
-  [[nodiscard]] virtual RawAsset Read(std::string_view package_path) = 0;
+  [[nodiscard]] virtual std::optional<InputStream> OpenRead(std::string_view package_path) = 0;
 };
 ```
 
 PlatformAdapter returns the capability when packaged resources are available.
 Using a packaged resource without an installed capability is a framework configuration error.
 
-Returning RawAsset lets a backend retain owned memory, a mapped file, a package buffer, or a WASM memory range without forcing an intermediate vector copy.
+Opening returns an independent stream without first collecting the complete payload.
+Missing payloads return `std::nullopt`; valid empty payloads return a stream that immediately reaches EOF, and other operational failures throw.
+`OpenRead()` may run on workers, and each returned stream retains the native handle and any platform owner it needs independently of the adapter.
+`Configuration()` remains a Runtime-thread operation.
+Windows, Linux, macOS, and iOS open files beneath their existing package roots; Android uses a retained AssetManager and sequential asset reads; Web opens the preloaded virtual file.
+Android native asset-open failures expose no detailed error category and are reported as an unavailable payload.
 
 The resource index is already filtered for the build target, so shared Runtime code does not branch on a platform identifier.
 ResourceConfiguration supplies only values that vary at runtime and affect resolution.
@@ -397,7 +402,7 @@ It is not a cross-platform URI loader and must not interpret Android content URI
 On Web it addresses only files already mounted in the WASM virtual filesystem and never treats an HTTP URL as a file path.
 Callers retain the resulting ImageAsset rather than recreating it during every composition.
 
-AppResources verifies the selected payload against the index and caches its shared ImageAsset storage by immutable package path and content hash.
+AppResources trusts bytes supplied by the installed platform package and caches shared ImageAsset storage by immutable package path and content hash.
 The encoded bytes are therefore already present when a renderer first decodes the image.
 
 The initial guaranteed formats are PNG and JPEG.
@@ -457,16 +462,13 @@ public:
 
   static RawAsset FromBytes(Bytes bytes, std::string mime_type = {});
   static RawAsset CopyBytes(std::span<const std::byte> bytes, std::string mime_type = {});
-  static RawAsset FromSharedBytes(
-      std::shared_ptr<const void> owner,
-      const std::byte* data,
-      std::size_t size,
-      std::string mime_type = {}
-  );
+  static RawAsset FromSharedBytes(std::shared_ptr<const void> owner, const std::byte* data, std::size_t size,
+                                 std::string mime_type = {});
 
-  [[nodiscard]] std::span<const std::byte> Bytes() const noexcept;
-  [[nodiscard]] std::string_view AsStringView() const noexcept;
-  [[nodiscard]] std::string ToString() const;
+  [[nodiscard]] Bytes ReadBytes(bool cache = false) const;
+  [[nodiscard]] std::string ReadString(bool cache = false) const;
+  [[nodiscard]] InputStream OpenRead() const;
+  [[nodiscard]] Task<AsyncInputStream> OpenReadAsync() const;
   [[nodiscard]] std::string_view MimeType() const noexcept;
   [[nodiscard]] bool HasValue() const noexcept;
 
@@ -474,21 +476,38 @@ public:
 };
 ```
 
-`UseRawResource(RawResource)` returns a shared immutable RawAsset.
+`UseRawResource(RawResource)` resolves the index entry and returns a shared RawAsset without opening or reading its payload.
+AppResources caches these lightweight values, so recomposition repeats the lookup without performing payload I/O.
 ImageAsset and RawAsset may share private byte-storage machinery but do not inherit from a public Asset base class.
 
-RawAsset storage retains a shared owner rather than requiring a vector allocation.
-The owner may represent ordinary allocated bytes, a memory-mapped Linux file, an Apple data buffer, an OHOS rawfile-backed region, or a WASM preloaded-memory slice.
-AppResources can construct ImageAsset storage from the same owner without copying encoded bytes.
+Memory assets retain their supplied shared owner, byte address, and length.
+Package assets retain a weak AppResources reference, the selected package path, MIME metadata, and optional complete byte storage inside their shared Data.
+The cache directly owns immutable Bytes; memory streams retain their byte owner and span independently of RawAsset metadata.
+The path is captured during resolution and does not change with later configuration updates.
+Image and index consumers materialize their contents explicitly; internal parsers borrow those materialized bytes without adding an encoded-content copy.
 
-`HasValue()` reports whether storage is present, not whether the byte range has content.
-A zero-length RawAsset created with `FromBytes({})` is valid; callers use `Bytes().empty()` when byte length is what matters.
+`ReadBytes()` returns an independently owned complete byte buffer; `ReadString()` returns an independently owned string.
+Neither string reading nor caching checks MIME, validates UTF-8, removes BOMs, normalizes newlines, or stops at embedded nulls.
+Both methods reuse existing memory or cached bytes.
+For uncached package assets, `cache = true` publishes complete raw bytes only after a successful read, while `false` reads without retaining the result.
+String and byte reads share one raw-byte cache, and returned buffers never alias it.
+Cache checks and publication are synchronized; concurrent initial reads may independently open the immutable source, and failures never publish partial storage.
+The cache lives with shared Data, including after Runtime destruction when application code still retains that Data.
 
-AsStringView exposes the complete byte range as characters without copying.
-The view remains valid while the RawAsset or another value sharing its storage remains alive.
-ToString returns an independently owned copy.
-Neither operation checks the MIME type, validates UTF-8, strips a byte-order mark, or stops at an embedded null byte.
-RawAsset deliberately provides no implicit string conversion because binary resources must not become text accidentally.
+`OpenRead()` creates an independent cursor over existing memory/cache or opens the package source synchronously.
+`OpenReadAsync()` returns a lazy task retaining the asset; blocking package opening and reads use existing workers, and Web uses its virtual-file operation queue.
+Memory-only asynchronous streams can complete reads immediately without worker execution.
+Both stream forms honor caller-selected read sizes, retain their own source, and never accumulate a complete-content cache.
+File and RawAsset share one blocking-input asynchronous adapter, which owns the synchronous input and schedules reads without duplicating native handle ownership.
+Cancellation suppresses delivery and requests cooperative worker stop; an active native read may finish before its retained stream is released.
+
+Runtime disconnects AppResources from the adapter under the same lock used during package opening; the lock is released before stream consumption.
+After disconnect, uncached package opens throw `std::logic_error`, even if another object still retains AppResources.
+Already opened streams and retained memory remain usable independently of the Runtime.
+Opening a missing default asset throws `std::logic_error`; its complete-buffer reads return empty values.
+`HasValue()` reports a memory value or resolved package reference, without checking payload existence or reading bytes.
+A valid zero-length resource remains distinct from a missing payload, which fails when opened.
+Equality compares memory contents or package source/path/MIME identity without I/O; cache publication does not change equality, and memory and package sources compare unequal.
 
 Custom fonts may later use FontResource and the same bundle storage without turning every resource into a public template specialization.
 
@@ -910,13 +929,13 @@ Resource compilation diagnostics are English and use the `hrc:` CLI prefix.
 
 Focused shared coverage includes:
 
-- Typed keys, resource-index parsing, and payload-hash validation.
+- Typed keys, resource-index parsing, and content-hash field validation.
 - Locale normalization and fallback.
 - Scale-variant selection.
 - ImageAsset moved-byte and copied-byte metadata, scale, equality, and byte-lifetime behavior.
 - VectorAsset construction, immutable geometry, painting, tint, and validation.
 - SVG compilation, payload signatures, runtime resolution, unsupported features, and density-suffix rejection.
-- RawAsset byte, MIME, string-view lifetime, embedded-null, and owned-string behavior.
+- RawAsset lazy lookup, shared optional caching, independent synchronous/asynchronous cursors, failure and cancellation, Runtime disconnection, MIME, and owned binary/string results.
 - Indexed string lookup, default argument-count enforcement, and invalid template generation.
 - Direct Text resource construction and Text resource formatting.
 - Intrinsic Image measurement and Contain geometry.
@@ -938,7 +957,7 @@ Windows common builds and tests, a macOS build on macOS, and Android compilation
 - ImageAsset exposes encoded bytes but never platform image objects or ambiguous decoded pixel data.
 - VectorAsset exposes immutable platform-neutral geometry without a public ImageKind or platform path objects.
 - RawResource is the explicit arbitrary-byte resource kind.
-- PlatformResources returns shared RawAsset storage and does not require an intermediate byte-vector copy.
+- PlatformResources opens incremental streams; RawAsset chooses complete reading, optional caching, or incremental consumption.
 - Packaged resources are synchronously readable before Runtime starts; the Web entry integration performs asynchronous transport during startup.
 - Filesystem construction is synchronous and distinct from platform URI services.
 - Localized formatting uses indexed positional arguments and permits translation reordering.

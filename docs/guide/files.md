@@ -46,13 +46,30 @@ Query, fragment, user-info, port, encoded separators, and platform-incompatible 
 Use `FileReference::AsFile()` to obtain a local path when the reference has one, then `File::ToUri()` if a file URI is needed.
 Do not reconstruct a path from a display name, Android content URI, or browser handle; the returned `File` does not take ownership of the reference's access capability.
 
+## Operation results
+
+`Result<T, ErrorT>` from `<huxerui/data.h>` is the shared result container; `IoResult<T>` is an alias for `Result<T, IoError>`.
+Check `Succeeded()` before using `Value()` or `Error()`; accessing the wrong branch throws `std::logic_error`.
+Use `std::move(result).Value()` or `std::move(result).Error()` to move out an owned payload.
+Existing direct value/error construction remains available for distinct types; the explicit factories also support identical value and error types:
+
+```cpp
+auto value = Result<std::string, std::string>::Success("contents");
+auto error = Result<std::string, std::string>::Failure("unavailable");
+auto done = IoResult<void>::Success();
+```
+
+`Result<void, ErrorT>` carries only success or an error, and `Value()` checks success without returning a payload.
+Results are `[[nodiscard]]` and have no public default constructor.
+The shared container does not change which existing File operations return results, bools, or streams.
+
 ## Asynchronous operations
 
 File reads, writes, directory operations, copying, moving, and external imports use `Task` where blocking platform work must leave the Runtime thread.
 Continuation resumes on the owning Runtime thread, and cancellation prevents late delivery to an unmounted owner.
 
 ```cpp
-Task<FileResult<std::string>> LoadSettings(const std::shared_ptr<FileSystem>& files) {
+Task<IoResult<std::string>> LoadSettings(const std::shared_ptr<FileSystem>& files) {
   File file(files->Directories().data_directory, "settings.json");
   co_return co_await file.ReadStringAsync();
 }
@@ -62,7 +79,7 @@ Use `Bytes` from `<huxerui/data.h>` for owned binary data and `std::span<const s
 Use byte operations for arbitrary payloads and string operations only for UTF-8 content.
 
 ```cpp
-Task<FileResult<Bytes>> LoadPayload(const std::shared_ptr<FileSystem>& files) {
+Task<IoResult<Bytes>> LoadPayload(const std::shared_ptr<FileSystem>& files) {
   File file(files->Directories().data_directory, "payload.bin");
   co_return co_await file.ReadBytesAsync();
 }
@@ -70,6 +87,46 @@ Task<FileResult<Bytes>> LoadPayload(const std::shared_ptr<FileSystem>& files) {
 
 Synchronous `WriteBytes()` and `AppendBytes()` borrow a span only for the call.
 Their asynchronous counterparts take `Bytes` by value so the operation owns the storage while suspended.
+
+## Incremental streams
+
+Use `InputStream` and `OutputStream` when synchronous code should process a local file without retaining its complete contents.
+The caller supplies the buffer for `Read()` and `CopyTo()`, and `Close()` explicitly finalizes output:
+
+```cpp
+IoResult<InputStream> opened_input = source.OpenRead();
+IoResult<OutputStream> opened_output = destination.OpenWrite();
+if (!opened_input.Succeeded() || !opened_output.Succeeded()) {
+  return false;
+}
+
+InputStream input = std::move(opened_input).Value();
+OutputStream output = std::move(opened_output).Value();
+Bytes buffer(64 * 1024);
+auto copied = input.CopyTo(output, buffer);
+if (!copied.Succeeded()) {
+  ReportIoError(copied.Error());
+  return false;
+}
+auto closed = output.Close();
+if (!closed.Succeeded()) {
+  ReportIoError(closed.Error());
+  return false;
+}
+```
+
+`AsyncInputStream` and `AsyncOutputStream` provide the same incremental contract for asynchronous sources and destinations.
+`ReadAsync(maximum_bytes)` returns at most the caller-selected maximum as owned `Bytes`, and an empty value means EOF.
+`CopyToAsync(destination, maximum_read_size)` is an input-stream member and does not close either stream.
+Only one operation may be outstanding on each asynchronous stream.
+Call `CloseAsync()` after the final write; destroying an unclosed output requests cancellation or aborts it without promising durable output.
+
+Opening and operating file streams use the same `IoResult<T> = Result<T, IoError>` alias from `<huxerui/stream.h>`.
+`Read()` yields a byte count, `ReadAsync()` yields owned `Bytes`, `CopyTo()` yields the copied byte count, and writes/closes yield `IoResult<void>`; asynchronous operations wrap these results in `Task`.
+Check `Succeeded()` before consuming `Value()`; only successful zero-byte reads mean EOF.
+Copy errors preserve the source or destination error; a written prefix may remain, and a failed close does not finalize output.
+A failed stream cannot be reused. Task cancellation suppresses result delivery instead of returning an error or EOF.
+Native `File` asynchronous streams serialize their blocking operations through a worker sequence, while provider and browser streams retain their native asynchronous resource.
 
 ## External files and directories
 
@@ -79,6 +136,10 @@ It may represent a path, security-scoped Apple URL, Android document URI, or bro
 External references can be read, imported into application storage, or used for a supported replacement operation.
 Their lifetime and persistence follow platform capability rules.
 
+`OpenReadAsync()` and `OpenWriteAsync()` expose provider-backed `AsyncInputStream` and `AsyncOutputStream` values without importing the file or buffering it in full.
+The output form replaces the selected file and must be finalized with `CloseAsync()`.
+`ReadBytesAsync()` remains the complete-memory convenience, while `ImportToAsync()` and `ReplaceWithAsync()` retain their provider-native transfer paths.
+
 `Type()` reports the item kind recorded when the reference was obtained; operations still check current storage state.
 Directory references have no `Size()` or `ContentType()` value.
 Their `ListChildrenAsync()` returns direct children, including hidden entries, without sorting or reading file contents.
@@ -86,7 +147,7 @@ Children retain the selection's grant independently of the parent value, and can
 The grant restriction is distinct from an item's `CanWrite()` snapshot: a directory that cannot create children may still contain independently writable files, but a read-only selection keeps all derived references read-only.
 External renaming or replacement can invalidate later operations; a retained directory grant does not authorize an unrelated directory subsequently occupying its old path.
 
-Directory `ReadBytesAsync()` and `ReadStringAsync()` fail with `IsDirectory`.
+Directory stream opens, `ReadBytesAsync()`, and `ReadStringAsync()` fail with `IsDirectory`.
 Existing `ImportToAsync()` and `ReplaceWithAsync()` remain single-file operations and return `false` for directories.
 
 ### Passing a reference to a platform library
@@ -183,7 +244,7 @@ Keep predicates fast and free of side effects, file I/O, and permission requests
 
 Use `Entered` and `Exited` to drive hover feedback; `Moved` reports position updates.
 Physical drop ends hover with `Exited` immediately, followed by deferred `Dropped` or `Failed` once preparation and final validation complete.
-`Failed` receives a `FileError` and never delivers a partial batch.
+`Failed` receives an `IoError` and never delivers a partial batch.
 Events run on the UI thread, and `Dropped`/`Failed` retain the target-local and window-local DIP coordinates from physical drop.
 Several accepted drops may complete independently; compatible recomposition uses the current handlers, while unmounting cancels pending delivery.
 
@@ -212,7 +273,7 @@ Existing files fail with `AlreadyExists` unless overwrite is explicitly enabled;
 The operation never automatically renames or silently skips entries.
 
 The successful `DirectoryCopySummary` counts finalized files, newly created directories below the root, and actual copied bytes.
-The first failure returns a `FileError` with the operation stage and escaped relative path, not a partial success summary.
+The first failure returns an `IoError` with the operation stage and escaped relative path, not a partial success summary.
 Completed output remains after failure or cancellation; neither a tree transaction nor rollback of an overwritten file is promised.
 Cancellation stops subsequent work and attempts to close active I/O without resuming retired application code.
 

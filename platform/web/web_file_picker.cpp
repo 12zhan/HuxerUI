@@ -15,6 +15,7 @@
 #include <emscripten/val.h>
 
 #include "io/file_internal.h"
+#include "io/stream_internal.h"
 #include "web_file_internal.h"
 
 namespace huxerui::detail {
@@ -189,6 +190,49 @@ EM_JS(void, StartWebReferenceOperation,
       const file = source.handle ? await source.handle.getFile() : source.file;
       return new Uint8Array(await file.arrayBuffer());
     }
+    if (request.kind === "openRead") {
+      if (source.handle && source.handle.kind !== "file") { fail(5); }
+      const file = source.handle ? await source.handle.getFile() : source.file;
+      if (!file || typeof file.slice !== "function") { fail(5); }
+      if (operation.canceled) { fail(3); }
+      return file;
+    }
+    if (request.kind === "readChunk") {
+      const file = request.file;
+      if (!file || typeof file.slice !== "function") { fail(5); }
+      if (!Number.isSafeInteger(request.offset) || request.offset < 0 ||
+          !Number.isSafeInteger(request.maximum) || request.maximum <= 0) { fail(6); }
+      if (request.offset >= file.size) { return new Uint8Array(); }
+      const end = request.offset + Math.min(request.maximum, file.size - request.offset);
+      const bytes = new Uint8Array(await file.slice(request.offset, end).arrayBuffer());
+      if (operation.canceled) { fail(3); }
+      return bytes;
+    }
+    if (request.kind === "openWrite") {
+      if (!source.writable || !source.handle || source.handle.kind !== "file") { fail(1); }
+      operation.writable = await source.handle.createWritable();
+      if (operation.canceled) {
+        const writable = operation.writable;
+        operation.writable = null;
+        try { await writable.abort(); } catch (_) {}
+        fail(3);
+      }
+      return operation.writable;
+    }
+    if (request.kind === "writeChunk") {
+      operation.writable = request.writable;
+      if (!operation.writable || operation.canceled) { fail(3); }
+      await operation.writable.write(request.bytes);
+      if (operation.canceled) { fail(3); }
+      return true;
+    }
+    if (request.kind === "closeStream") {
+      operation.writable = request.writable;
+      if (!operation.writable || operation.canceled) { fail(3); }
+      await operation.writable.close();
+      operation.writable = null;
+      return true;
+    }
     if (request.kind === "import") {
       return await helper.transfer(source, {path: request.path}, request.overwrite, operation);
     }
@@ -256,6 +300,13 @@ EM_JS(void, CancelWebReferenceOperation, (emscripten::EM_VAL operation_handle), 
   if (!operation) { return; }
   operation.canceled = true;
   if (operation.writable) { operation.writable.abort().catch(() => {}); }
+});
+
+EM_JS(void, AbortWebOutputStream, (emscripten::EM_VAL writable_handle), {
+  const writable = Emval.toValue(writable_handle);
+  if (writable && typeof writable.abort === "function") {
+    writable.abort().catch(() => {});
+  }
 });
 
 EM_JS(emscripten::EM_VAL, CreateWebPickerOperation, (emscripten::EM_VAL request_handle), {
@@ -467,26 +518,26 @@ EM_JS(emscripten::EM_VAL, CaptureWebDroppedFiles, (emscripten::EM_VAL transfer_h
 });
 // clang-format on
 
-FileErrorCode ToFileErrorCode(int code) noexcept {
+IoErrorCode ToFileErrorCode(int code) noexcept {
   switch (code) {
   case web_file_error_not_found:
-    return FileErrorCode::NotFound;
+    return IoErrorCode::NotFound;
   case web_file_error_permission_denied:
-    return FileErrorCode::PermissionDenied;
+    return IoErrorCode::PermissionDenied;
   case web_file_error_too_large:
-    return FileErrorCode::TooLarge;
+    return IoErrorCode::TooLarge;
   case web_file_error_io:
-    return FileErrorCode::Io;
+    return IoErrorCode::Io;
   case 4:
-    return FileErrorCode::NotDirectory;
+    return IoErrorCode::NotDirectory;
   case 5:
-    return FileErrorCode::IsDirectory;
+    return IoErrorCode::IsDirectory;
   case 6:
-    return FileErrorCode::Unsupported;
+    return IoErrorCode::Unsupported;
   case 7:
-    return FileErrorCode::AlreadyExists;
+    return IoErrorCode::AlreadyExists;
   default:
-    return FileErrorCode::Io;
+    return IoErrorCode::Io;
   }
 }
 
@@ -609,13 +660,13 @@ std::function<void()> RunWebReference(val source, val request, FileReferenceComp
   return WebReferenceOperation::Start(
       std::move(source), std::move(request),
       [completion = std::move(completion), decode = std::move(decode)](val result) mutable {
-        FileResult<T> value(FileError{FileErrorCode::Io, "HuxerUI external file operation failed"});
+        IoResult<T> value(IoError{IoErrorCode::Io, "HuxerUI external file operation failed"});
         try {
           if (result["kind"].as<int>() == web_file_result_true) {
-            value = FileResult<T>(decode(result["value"]));
+            value = IoResult<T>(decode(result["value"]));
           } else {
-            value = FileResult<T>(
-                FileError{ToFileErrorCode(result["errorCode"].as<int>()), "HuxerUI external file operation failed"});
+            value = IoResult<T>(
+                IoError{ToFileErrorCode(result["errorCode"].as<int>()), "HuxerUI external file operation failed"});
           }
         } catch (...) {
         }
@@ -631,6 +682,99 @@ val ReferenceRequest(std::string kind) {
 }
 
 FileReference MakeWebFileReference(const val& reference);
+
+class WebInputStreamState final : public AsyncInputStreamState {
+public:
+  explicit WebInputStreamState(val file) : file_(std::move(file)) {}
+
+  Task<IoResult<Bytes>> ReadAsync(std::size_t maximum_bytes) override {
+    constexpr double maximum_safe_integer = 9007199254740991.0;
+    const double maximum = std::min(static_cast<double>(maximum_bytes), maximum_safe_integer);
+    auto request = ReferenceRequest("readChunk");
+    request.set("file", file_);
+    request.set("offset", offset_);
+    request.set("maximum", maximum);
+    auto operation = [request = std::move(request)](FileReferenceBytesCompletion completion) mutable {
+      return RunWebReference<Bytes>(val::object(), std::move(request), std::move(completion), [](const val& bytes) {
+        const auto size = bytes["byteLength"].as<std::size_t>();
+        Bytes result(size);
+        if (size) {
+          val(emscripten::typed_memory_view(size, reinterpret_cast<unsigned char*>(result.data())))
+              .call<void>("set", bytes);
+        }
+        return result;
+      });
+    };
+    auto result = co_await RunFileReferenceBytesOperation(std::move(operation));
+    if (result.Succeeded()) {
+      offset_ += static_cast<double>(result.Value().size());
+    }
+    co_return result;
+  }
+
+  void Cancel() noexcept override {}
+
+private:
+  val file_;
+  double offset_ = 0;
+};
+
+class WebOutputStreamState final : public AsyncOutputStreamState {
+public:
+  explicit WebOutputStreamState(val writable) : writable_(std::move(writable)) {}
+  ~WebOutputStreamState() override { Abort(); }
+
+  Task<IoResult<void>> WriteAsync(Bytes data) override {
+    auto request = ReferenceRequest("writeChunk");
+    request.set("writable", writable_);
+    try {
+      val bytes = val::global("Uint8Array").new_(data.size());
+      if (!data.empty()) {
+        bytes.call<void>(
+            "set", val(emscripten::typed_memory_view(data.size(), reinterpret_cast<unsigned char*>(data.data()))));
+      }
+      request.set("bytes", std::move(bytes));
+    } catch (...) {
+      co_return IoResult<void>(IoError{IoErrorCode::TooLarge, "HuxerUI Web file stream write is too large"});
+    }
+    auto operation = [request = std::move(request)](FileReferenceResultBoolCompletion completion) mutable {
+      return RunWebReference<bool>(val::object(), std::move(request), std::move(completion), [](const val& value) {
+        return value.as<bool>();
+      });
+    };
+    auto result = co_await RunFileReferenceBoolOperation(std::move(operation));
+    if (!result.Succeeded()) {
+      co_return IoResult<void>(std::move(result).Error());
+    }
+    co_return IoResult<void>::Success();
+  }
+
+  Task<IoResult<void>> CloseAsync() override {
+    auto request = ReferenceRequest("closeStream");
+    request.set("writable", writable_);
+    auto operation = [request = std::move(request)](FileReferenceResultBoolCompletion completion) mutable {
+      return RunWebReference<bool>(val::object(), std::move(request), std::move(completion), [](const val& value) {
+        return value.as<bool>();
+      });
+    };
+    auto result = co_await RunFileReferenceBoolOperation(std::move(operation));
+    if (!result.Succeeded()) {
+      co_return IoResult<void>(std::move(result).Error());
+    }
+    writable_ = val::undefined();
+    co_return IoResult<void>::Success();
+  }
+
+  void Abort() noexcept override {
+    if (!writable_.isUndefined()) {
+      AbortWebOutputStream(writable_.as_handle());
+      writable_ = val::undefined();
+    }
+  }
+
+private:
+  val writable_;
+};
 
 class WebFileReferenceState final : public FileReferenceState {
 public:
@@ -656,6 +800,20 @@ public:
       }
       return result;
     });
+  }
+
+  std::function<void()> OpenRead(FileReferenceInputStreamCompletion completion) override {
+    return RunWebReference<std::shared_ptr<AsyncInputStreamState>>(
+        source_, ReferenceRequest("openRead"), std::move(completion), [](const val& file) {
+          return std::make_shared<WebInputStreamState>(file);
+        });
+  }
+
+  std::function<void()> OpenWrite(FileReferenceOutputStreamCompletion completion) override {
+    return RunWebReference<std::shared_ptr<AsyncOutputStreamState>>(
+        source_, ReferenceRequest("openWrite"), std::move(completion), [](const val& writable) {
+          return std::make_shared<WebOutputStreamState>(writable);
+        });
   }
 
   std::function<void()> ImportTo(File destination, bool overwrite,
@@ -716,8 +874,8 @@ public:
                                      FileReferenceCompletion<FileReferenceWriteResult> completion) override {
     auto input = Source(source);
     if (input.isUndefined()) {
-      completion(FileResult<FileReferenceWriteResult>(
-          FileError{FileErrorCode::Unsupported, "HuxerUI file source is unsupported"}));
+      completion(IoResult<FileReferenceWriteResult>(
+          IoError{IoErrorCode::Unsupported, "HuxerUI file source is unsupported"}));
       return {};
     }
     auto request = ReferenceRequest("copy");
@@ -733,7 +891,7 @@ public:
     auto target = Source(destination);
     if (target.isUndefined()) {
       completion(
-          FileResult<bool>(FileError{FileErrorCode::Unsupported, "HuxerUI directory containment is unavailable"}));
+          IoResult<bool>(IoError{IoErrorCode::Unsupported, "HuxerUI directory containment is unavailable"}));
       return {};
     }
     auto request = ReferenceRequest("check");
@@ -995,9 +1153,8 @@ FileDropPreparation CaptureWebFileDrop(const val& transfer) {
   const auto captured = val::take_ownership(CaptureWebDroppedFiles(transfer.as_handle()));
   return [captured](FileDropCompletion completion) {
     if (captured["error"].as<bool>()) {
-      completion(FileResult<std::vector<FileReference>>(
-          FileError{FileErrorCode::Unsupported, "HuxerUI browser drop requires identifiable ordinary files"}
-      ));
+      completion(IoResult<std::vector<FileReference>>(
+          IoError{IoErrorCode::Unsupported, "HuxerUI browser drop requires identifiable ordinary files"}));
     } else {
       std::vector<FileReference> files;
       const auto values = captured["files"];
@@ -1006,7 +1163,7 @@ FileDropPreparation CaptureWebFileDrop(const val& transfer) {
       for (unsigned index = 0; index < length; ++index) {
         files.push_back(MakeWebFileReferenceFromFile(values[index]));
       }
-      completion(FileResult<std::vector<FileReference>>(std::move(files)));
+      completion(IoResult<std::vector<FileReference>>(std::move(files)));
     }
     return std::function<void()>{};
   };

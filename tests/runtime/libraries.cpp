@@ -1,4 +1,5 @@
 #include "runtime_test_support.h"
+#include "resources/resource_internal.h"
 
 #include <huxerui_test_library/library.h>
 #include <huxerui_test_library_resources.h>
@@ -23,22 +24,17 @@ public:
     return {};
   }
 
-  RawAsset Read(std::string_view package_path) override {
+  std::optional<huxerui::InputStream> OpenRead(std::string_view package_path) override {
     const std::filesystem::path path =
         std::filesystem::path(HUXERUI_LIBRARY_TEST_RESOURCE_PACKAGE) / std::string(package_path);
-    std::ifstream input(path, std::ios::binary);
-    if (!input) {
-      return {};
-    }
-    const std::string contents{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
-    return RawAsset::CopyBytes(std::as_bytes(std::span<const char>(contents.data(), contents.size())));
+    return huxerui::detail::OpenPackageFile(path);
   }
 };
 
 View LibraryApp() {
   observed_library_value = UseService<huxerui_test_library::Service>()->value;
-  observed_library_only_resource = UseRawResource(huxerui_test_library::raw::library_only_txt).ToString();
-  observed_overridden_resource = UseRawResource(huxerui_test_library::raw::library_value_txt).ToString();
+  observed_library_only_resource = UseRawResource(huxerui_test_library::raw::library_only_txt).ReadString(true);
+  observed_overridden_resource = UseRawResource(huxerui_test_library::raw::library_value_txt).ReadString(true);
   return Text("library");
 }
 

@@ -318,7 +318,7 @@ const PaintSequence& detail::InternalAccess::Sequence(const VectorAsset& asset) 
 }
 
 bool detail::InternalAccess::IsVectorPayload(const RawAsset& asset) noexcept {
-  const std::span<const std::byte> bytes = asset.Bytes();
+  const std::span<const std::byte> bytes = RawBytes(asset);
   return bytes.size() >= vector_format::magic.size() &&
          std::equal(vector_format::magic.begin(), vector_format::magic.end(), bytes.begin());
 }
@@ -328,7 +328,7 @@ VectorAsset detail::InternalAccess::VectorFromRaw(RawAsset asset) {
     throw std::invalid_argument("HuxerUI image resource is not a vector payload");
   }
   try {
-    VectorReader reader(asset.Bytes().subspan(vector_format::magic.size()));
+    VectorReader reader(RawBytes(asset).subspan(vector_format::magic.size()));
     if (reader.U32() != vector_format::current_version) {
       throw std::logic_error("HuxerUI vector payload version is unsupported");
     }

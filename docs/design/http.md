@@ -6,27 +6,28 @@ The platform-neutral API, shared operation state, Task integration, and Windows,
 
 HTTP is a built-in Runtime capability rather than a PlatformModule.
 Runtime installs one `HttpClient` root service backed by the adapter's private `HttpTransport`.
-The shared layer owns request validation, result types, stream state, progress semantics, buffering for `Send()`, Task resumption, and cancellation races.
+The shared layer owns request validation, result types, stream state, progress semantics, buffering for `SendAsync()`, Task resumption, and cancellation races.
 Platform transports own URL loading, TLS, proxies, redirects, native decoding, headers, body delivery, and native cancellation.
 
 There is one operation state for both public request forms.
-`SendStream()` exposes that state after final headers, while `Send()` opens the same state and repeatedly reads it into `HttpResponse::body`.
+`SendStreamAsync()` exposes that state after final headers, while `SendAsync()` opens the same state and repeatedly reads it into `HttpResponse::body`.
 There is no buffered transport completion path beside the streaming path and no second registry, callback model, or data channel.
 
 ## Public contract
 
-`HttpClient::Send()` returns `Task<HttpResult>` and retains the complete final response body.
-`HttpClient::SendStream()` returns `Task<HttpStreamResult>` after final headers and before body EOF.
+`HttpClient::SendAsync()` returns `Task<HttpResult<HttpResponse>>` and retains the complete final response body.
+`HttpClient::SendStreamAsync()` returns `Task<HttpResult<HttpResponseStream>>` after final headers and before body EOF.
 Both accept `std::function<void(HttpProgress)>`.
+`HttpResult<T>` is an alias for `Result<T, HttpError>`; callers use `Succeeded()`, `Value()`, and `Error()`.
 
-`HttpResponseStream` is move-only and exposes immutable final URL, status, and headers plus pull-based `Read()`.
-Only one read may be outstanding.
-A data result contains 1 byte through 64 KiB, completion is an explicit alternative, and a post-header transport failure is an error alternative.
-The shared state splits larger platform deliveries without requesting another native read until the buffered remainder has been consumed.
+`HttpResponseStream` is move-only and exposes immutable final URL, status, and headers plus an `AsyncInputStream` body.
+Only one read or copy operation may be outstanding on that body.
+`ReadAsync(maximum_bytes)` returns at most the caller-selected maximum and uses empty `Bytes` for EOF.
+The shared state splits larger platform deliveries at that maximum without requesting another native read until the buffered remainder has been consumed.
 
 HTTP status codes, including 4xx and 5xx, remain responses.
-Errors before final headers use `HttpStreamResult::Error()`; errors after headers use `HttpStreamReadResult::Error()`.
-`Send()` maps either transport phase to `HttpResult::Error()` because its buffered result is not published until EOF.
+Errors before final headers use `HttpResult<HttpResponseStream>::Error()`; errors after headers return `IoResult<Bytes>` from the body operation, mapping transport errors to `Io`, timeouts to `Timeout`, and unsupported capabilities to `Unsupported`.
+`SendAsync()` maps either transport phase to `HttpResult<HttpResponse>::Error()` because its buffered result is not published until EOF.
 
 Request validation happens synchronously before the lazy Task is returned.
 URLs must be absolute HTTP or HTTPS URLs, GET and HEAD reject nonempty bodies, header syntax is validated, and a specified timeout must be positive.
@@ -38,8 +39,8 @@ Upload progress is the logical request body accepted or handed to the platform, 
 The shared state clamps redirect replays and native over-reporting to the request body size.
 An early server response is allowed before the logical upload reaches its total.
 
-Download progress advances immediately before a chunk is returned to `Read()`.
-The buffered `Send()` path uses those same reads, so its progress counts the exact bytes appended to `HttpResponse::body`.
+Download progress advances immediately before a chunk is returned to `ReadAsync()`.
+The buffered `SendAsync()` path uses those same reads, so its progress counts the exact bytes appended to `HttpResponse::body`.
 The bytes are post-platform-delivery bytes: a backend that performs automatic content decoding reports the decoded bytes, while a backend that exposes encoded bytes reports encoded bytes.
 
 `total_bytes` is optional.
@@ -80,11 +81,8 @@ public:
 
 class HttpTransport {
 public:
-  virtual std::shared_ptr<HttpTransportOperation> Start(
-      HttpRequest request,
-      bool require_incremental_response,
-      HttpTransportCallbacks callbacks
-  ) = 0;
+  virtual std::shared_ptr<HttpTransportOperation>
+  Start(HttpRequest request, bool require_incremental_response, HttpTransportCallbacks callbacks) = 0;
 };
 ```
 
@@ -102,13 +100,15 @@ The state keeps the transport and operation alive through EOF, timeout, error, o
 Body data or completion received before final response metadata terminates the operation with a transport error.
 Late and duplicate callbacks are ignored.
 
-Calling `Read()` reserves the single read slot synchronously before returning its lazy Task.
-Destroying an unstarted or suspended read Task cancels the complete stream.
-Consuming EOF or a read error closes the read contract; subsequent calls throw `std::logic_error`.
+Calling `ReadAsync()` reserves the single stream-operation slot synchronously before returning its lazy Task.
+Destroying an unstarted read Task releases that reservation without canceling the response; canceling a suspended body read cancels the complete HTTP operation.
+The shared stream state owns the single-operation reservation; the HTTP read guard only protects transport cancellation while a read is in flight.
+During CopyToAsync(), the input reservation also requests source cancellation if the task is destroyed while waiting for output. Discarding an unstarted copy releases both reservations without canceling either endpoint.
+EOF is cached and subsequent reads return empty `Bytes`; a failed stream cannot be reused.
 Destroying an unfinished `HttpResponseStream` reaches the same idempotent platform cancellation path.
 
 The optional HuxerUI deadline covers request start through stream EOF, including redirects and idle time between reads.
-A timeout received after headers is retained until the next `Read()`.
+A timeout received after headers is retained until the next `ReadAsync()`.
 Task cancellation remains distinct from `HttpError`: it detaches the continuation and does not resume application code.
 
 ## Platform transports
@@ -129,8 +129,8 @@ The in-memory request body uses Java's buffered upload path so automatic redirec
 JNI publishes headers, body chunks, progress, and one terminal event through the same native operation handle.
 
 Web uses Fetch and `ReadableStreamDefaultReader` when available.
-`SendStream()` returns `Unsupported` before headers when the browser cannot expose a readable body stream.
-The internal buffered `Send()` path may fall back to `Response.arrayBuffer()` on such a browser without creating another public result path.
+`SendStreamAsync()` returns `Unsupported` before headers when the browser cannot expose a readable body stream.
+The internal buffered `SendAsync()` path may fall back to `Response.arrayBuffer()` on such a browser without creating another public result path.
 `AbortController` and a separate timer remain active through EOF.
 Browser CORS, forbidden-header, credential, redirect, and visible-response-header rules are preserved.
 
@@ -159,12 +159,12 @@ This preserves the platform's header and byte-delivery contract and prevents a s
 ## Deliberate limits
 
 Request bodies remain owned in-memory `Bytes`; streaming and resumable uploads are not part of this contract.
-`Send()` remains intended for ordinary API responses that fit in memory, while `SendStream()` allows bounded consumption without implying a file destination.
+`SendAsync()` remains intended for ordinary API responses that fit in memory, while `SendStreamAsync()` allows bounded consumption without implying a file destination.
 Implicit file transfers, background transfer, retry policy, interceptors, WebSocket, certificate pinning, a framework cookie jar, and persistent HTTP caching remain separate capabilities.
 
 ## Validation
 
-Shared Runtime tests verify synchronous validation, binary preservation, headers-first completion, demand reads, 64 KiB splitting, pre- and post-header errors, logical progress, UI-thread callbacks, cancellation, late events, and unsupported adapters.
+Shared Runtime tests verify synchronous validation, binary preservation, headers-first completion, caller-selected read bounds, pre- and post-header errors, logical progress, UI-thread callbacks, cancellation, late events, and unsupported adapters.
 Windows loopback tests verify WinHTTP request conversion, pull-based body reads, reliable length metadata, deadlines, cancellation, and invalid UTF-8 handling.
 Linux loopback tests verify binary bodies, repeated headers, redirects, HTTP statuses, transport failures, deadlines, cancellation races, and transport shutdown.
 Android and Web builds validate their language boundary and generated platform artifact; Apple behavior requires macOS or iOS validation because Objective-C++ and Foundation cannot be built on Windows.

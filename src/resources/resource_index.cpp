@@ -8,6 +8,7 @@
 #include <stdexcept>
 
 #include "resource_format.h"
+#include "internal_access.h"
 
 namespace huxerui::detail {
 
@@ -82,7 +83,7 @@ ResourceEntryKind ReadEntryKind(Reader& reader) {
 } // namespace
 
 std::vector<ResourceIndexEntry> ParseResourceIndex(RawAsset index) {
-  const std::span<const std::byte> bytes = index.Bytes();
+  const std::span<const std::byte> bytes = InternalAccess::RawBytes(index);
   if (bytes.empty()) {
     return {};
   }

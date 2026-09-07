@@ -49,9 +49,6 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -978,27 +975,6 @@ public final class HuxerUIView extends ViewGroup {
 
     private long processPssBytes() {
         return Debug.getPss() * 1024L;
-    }
-
-    private byte[] readResource(byte[] encodedPath) {
-        String path = new String(encodedPath, StandardCharsets.UTF_8);
-        try (InputStream stream = getContext().getAssets().open(path)) {
-            return readAllBytes(stream);
-        } catch (IOException exception) {
-            return null;
-        }
-    }
-
-    private static byte[] readAllBytes(InputStream stream) throws IOException {
-        ByteArrayOutputStream result = new ByteArrayOutputStream();
-        byte[] buffer = new byte[8192];
-        int length;
-        while ((length = stream.read(buffer)) != -1) {
-            if (length > 0) {
-                result.write(buffer, 0, length);
-            }
-        }
-        return result.toByteArray();
     }
 
     private void resizeRuntime(int width, int height) {

@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -55,16 +56,18 @@ static_assert(std::move_constructible<File>);
 static_assert(!std::default_initializable<File>);
 static_assert(std::constructible_from<File, const Uri&>);
 static_assert(!std::copy_constructible<FileSystem>);
+static_assert(std::is_same_v<IoResult<std::string>, Result<std::string, IoError>>);
+static_assert(std::is_same_v<IoResult<void>, Result<void, IoError>>);
 
-TEST_CASE("FileResultDistinguishesValuesFromErrors") {
-  FileResult<std::string> value(std::string{"value"});
+TEST_CASE("IoResultDistinguishesValuesFromErrors") {
+  IoResult<std::string> value(std::string{"value"});
   REQUIRE(value.Succeeded());
   REQUIRE(value.Value() == "value");
   REQUIRE_THROWS_AS(value.Error(), std::logic_error);
 
-  FileResult<std::string> error(FileError{FileErrorCode::NotFound, "missing"});
+  IoResult<std::string> error(IoError{IoErrorCode::NotFound, "missing"});
   REQUIRE_FALSE(error.Succeeded());
-  REQUIRE(error.Error().code == FileErrorCode::NotFound);
+  REQUIRE(error.Error().code == IoErrorCode::NotFound);
   REQUIRE_THROWS_AS(error.Value(), std::logic_error);
 }
 
@@ -170,16 +173,16 @@ TEST_CASE("FilePerformsSynchronousLocalFileAndDirectoryOperations") {
   File text = directory.Child("内容.txt");
   REQUIRE(text.WriteString("first"));
   REQUIRE(text.AppendString("\n第二行"));
-  FileResult<std::string> text_result = text.ReadString();
+  IoResult<std::string> text_result = text.ReadString();
   REQUIRE(text_result.Succeeded());
   REQUIRE(text_result.Value() == "first\n第二行");
 
-  FileResult<FileInfo> info = text.Stat();
+  IoResult<FileInfo> info = text.Stat();
   REQUIRE(info.Succeeded());
   REQUIRE(info.Value().type == FileType::File);
   REQUIRE(info.Value().size == text_result.Value().size());
 
-  FileResult<std::vector<File>> children = directory.ListChildren();
+  IoResult<std::vector<File>> children = directory.ListChildren();
   REQUIRE(children.Succeeded());
   REQUIRE(children.Value().size() == 1);
   REQUIRE(children.Value().front() == text);
@@ -203,7 +206,7 @@ TEST_CASE("FilePerformsSynchronousLocalFileAndDirectoryOperations") {
   const Bytes suffix{std::byte{'a'}, std::byte{0}};
   REQUIRE(binary.WriteBytes(prefix));
   REQUIRE(binary.AppendBytes(suffix));
-  FileResult<Bytes> binary_result = binary.ReadBytes();
+  IoResult<Bytes> binary_result = binary.ReadBytes();
   REQUIRE(binary_result.Succeeded());
   REQUIRE((binary_result.Value() == Bytes{std::byte{0}, std::byte{0xFF}, std::byte{'a'}, std::byte{0}}));
 
@@ -222,15 +225,52 @@ TEST_CASE("FilePerformsSynchronousLocalFileAndDirectoryOperations") {
   const Bytes invalid_bytes{std::byte{0xFF}};
   REQUIRE(invalid.WriteBytes(invalid_bytes));
   REQUIRE_FALSE(invalid.ReadString().Succeeded());
-  REQUIRE(invalid.ReadString().Error().code == FileErrorCode::InvalidEncoding);
+  REQUIRE(invalid.ReadString().Error().code == IoErrorCode::InvalidEncoding);
 
   REQUIRE_FALSE(directory.ReadBytes().Succeeded());
-  REQUIRE(directory.ReadBytes().Error().code == FileErrorCode::IsDirectory);
+  REQUIRE(directory.ReadBytes().Error().code == IoErrorCode::IsDirectory);
   REQUIRE_FALSE(root.Child("missing").Stat().Succeeded());
-  REQUIRE(root.Child("missing").Stat().Error().code == FileErrorCode::NotFound);
+  REQUIRE(root.Child("missing").Stat().Error().code == IoErrorCode::NotFound);
 
   REQUIRE(directory.DeleteRecursively());
   REQUIRE_FALSE(directory.Exists());
+}
+
+TEST_CASE("FileStreamsReadWriteAppendAndCopyWithCallerOwnedBuffers") {
+  TemporaryDirectory temporary;
+  File root(temporary.Path());
+  File source = root.Child("source.bin");
+  REQUIRE(source.WriteBytes(Bytes{std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4}, std::byte{5}}));
+
+  IoResult<InputStream> opened_input = source.OpenRead();
+  REQUIRE(opened_input.Succeeded());
+  InputStream input = std::move(opened_input).Value();
+  Bytes read_buffer(2);
+  REQUIRE(input.Read(read_buffer).Value() == 2);
+  REQUIRE((read_buffer == Bytes{std::byte{1}, std::byte{2}}));
+
+  File destination = root.Child("destination.bin");
+  IoResult<OutputStream> opened_output = destination.OpenWrite();
+  REQUIRE(opened_output.Succeeded());
+  OutputStream output = std::move(opened_output).Value();
+  Bytes copy_buffer(3);
+  REQUIRE(input.CopyTo(output, copy_buffer).Value() == 3);
+  REQUIRE(output.Close().Succeeded());
+  REQUIRE((destination.ReadBytes().Value() == Bytes{std::byte{3}, std::byte{4}, std::byte{5}}));
+
+  IoResult<OutputStream> opened_append = destination.OpenWrite(FileWriteMode::Append);
+  REQUIRE(opened_append.Succeeded());
+  OutputStream append = std::move(opened_append).Value();
+  REQUIRE(append.Write(Bytes{std::byte{6}, std::byte{7}}).Succeeded());
+  REQUIRE(append.Close().Succeeded());
+  REQUIRE((destination.ReadBytes().Value() ==
+           Bytes{std::byte{3}, std::byte{4}, std::byte{5}, std::byte{6}, std::byte{7}}));
+
+  REQUIRE_FALSE(root.Child("missing.bin").OpenRead().Succeeded());
+  REQUIRE_FALSE(root.OpenRead().Succeeded());
+  REQUIRE(root.OpenRead().Error().code == IoErrorCode::IsDirectory);
+  REQUIRE_FALSE(root.OpenWrite().Succeeded());
+  REQUIRE(root.OpenWrite().Error().code == IoErrorCode::IsDirectory);
 }
 
 TEST_CASE("FileSystemCreatesAndProtectsApplicationDirectories") {

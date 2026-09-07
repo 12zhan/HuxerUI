@@ -70,8 +70,8 @@ template <class Predicate> bool RunMainLoopUntil(Predicate&& predicate, std::chr
 }
 
 TaskScope mac_file_reference_tasks;
-std::optional<FileResult<std::string>> mac_file_reference_text;
-std::optional<FileErrorCode> mac_file_reference_error;
+std::optional<IoResult<std::string>> mac_file_reference_text;
+std::optional<IoErrorCode> mac_file_reference_error;
 bool mac_file_reference_imported = false;
 bool mac_file_reference_second_import = false;
 bool mac_file_reference_directory_import = false;
@@ -162,7 +162,7 @@ TEST_CASE("MacFileReferenceMapsMissingFilesAndPickerCapabilities") {
     Runtime runtime(MacFileReferenceApp, platform);
     runtime.BuildFrame();
     mac_file_reference_tasks.Launch([reference]() -> Task<void> {
-      FileResult<std::string> result = co_await reference.ReadStringAsync();
+      IoResult<std::string> result = co_await reference.ReadStringAsync();
       if (!result.Succeeded()) {
         mac_file_reference_error = result.Error().code;
       }
@@ -170,7 +170,7 @@ TEST_CASE("MacFileReferenceMapsMissingFilesAndPickerCapabilities") {
     });
 
     REQUIRE(RunMainLoopUntil([] { return mac_file_reference_completed; }));
-    REQUIRE(mac_file_reference_error == FileErrorCode::NotFound);
+    REQUIRE(mac_file_reference_error == IoErrorCode::NotFound);
   }
 }
 
@@ -207,9 +207,9 @@ TEST_CASE("MacFileDropRetainsReadOnlyReferencesAfterPasteboardAndPreparationRele
     [pasteboard releaseGlobally];
     REQUIRE(written);
 
-    auto completion = std::make_shared<std::promise<FileResult<std::vector<FileReference>>>>();
+    auto completion = std::make_shared<std::promise<IoResult<std::vector<FileReference>>>>();
     auto ready = completion->get_future();
-    auto cancel = preparation([completion](FileResult<std::vector<FileReference>> result) {
+    auto cancel = preparation([completion](IoResult<std::vector<FileReference>> result) {
       completion->set_value(std::move(result));
     });
     preparation = {};

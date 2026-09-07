@@ -11,10 +11,10 @@
 #include <string>
 #include <string_view>
 #include <utility>
-#include <variant>
 #include <vector>
 
 #include <huxerui/data.h>
+#include <huxerui/stream.h>
 #include <huxerui/task.h>
 
 namespace huxerui {
@@ -57,113 +57,12 @@ struct FileInfo {
   bool operator==(const FileInfo&) const = default;
 };
 
-/// @brief Portable error categories for operations that return FileResult.
-/// A platform may report Io when it cannot classify a provider or operating-system failure more precisely.
-enum class FileErrorCode {
-  /// The requested entry or a required parent does not exist.
-  NotFound,
-  /// The operation is not allowed by the current permissions or retained access grant.
-  PermissionDenied,
-  /// An operation requiring a directory encountered a different entry kind.
-  NotDirectory,
-  /// An operation requiring a file encountered a directory.
-  IsDirectory,
-  /// The contents or requested result exceed a supported size limit.
-  TooLarge,
-  /// File contents cannot be decoded as valid UTF-8.
-  InvalidEncoding,
-  /// The entry kind, provider capability, or requested operation is not supported.
-  Unsupported,
-  /// An I/O or provider failure that is not represented by a more specific category.
-  Io,
-  /// A conflicting entry already exists and cannot be reused or replaced under the requested policy.
-  AlreadyExists,
-};
-
-/// @brief A portable failure category accompanied by a human-readable diagnostic.
-struct FileError {
-  /// The category to use for programmatic error handling.
-  FileErrorCode code;
-  /// Diagnostic context, which may include a path or provider message; do not parse it as a stable error code.
-  std::string message;
-
-  bool operator==(const FileError&) const = default;
-};
-
-/// @brief Either a successful value or a FileError from a file operation.
-/// @tparam T The non-void success value type.
-/// Check Succeeded() before accessing the corresponding alternative. Operational failures are values;
-/// accessing the wrong alternative is a programming error and throws std::logic_error.
-/// @code{.cpp}
-/// std::string ReadTextOrEmpty(const File& file) {
-///   auto result = file.ReadString();
-///   if (!result.Succeeded()) {
-///     return {};
-///   }
-///   return std::move(result).Value();
-/// }
-/// @endcode
-template <class T> class [[nodiscard]] FileResult final {
-public:
-  explicit FileResult(T value) : value_(std::move(value)) {}
-  explicit FileResult(FileError error) : value_(std::move(error)) {}
-
-  /// @brief Tests which result alternative is present without accessing it.
-  /// @return True for a success value, including an empty value; false for a FileError.
-  [[nodiscard]] bool Succeeded() const noexcept {
-    return std::holds_alternative<T>(value_);
-  }
-
-  /// @brief Borrows the success value for inspection or modification.
-  /// @return A mutable reference owned by this result, valid while that alternative remains alive.
-  /// @throws std::logic_error If this result contains a FileError.
-  [[nodiscard]] T& Value() & {
-    if (auto* value = std::get_if<T>(&value_)) {
-      return *value;
-    }
-    throw std::logic_error("HuxerUI file result does not contain a value");
-  }
-
-  /// @brief Borrows the success value without allowing modification.
-  /// @return A const reference owned by this result, valid while that alternative remains alive.
-  /// @throws std::logic_error If this result contains a FileError.
-  [[nodiscard]] const T& Value() const& {
-    if (const auto* value = std::get_if<T>(&value_)) {
-      return *value;
-    }
-    throw std::logic_error("HuxerUI file result does not contain a value");
-  }
-
-  /// @brief Allows the success value to be moved out of this result.
-  /// @return An rvalue reference to the stored value, not a separately owned object.
-  /// Moving from it leaves this result in the success alternative with a moved-from value.
-  /// @throws std::logic_error If this result contains a FileError.
-  [[nodiscard]] T&& Value() && {
-    return std::move(static_cast<FileResult&>(*this).Value());
-  }
-
-  /// @brief Borrows the failure for inspection or modification.
-  /// @return A mutable reference to the FileError owned by this result.
-  /// @throws std::logic_error If this result contains a success value.
-  [[nodiscard]] FileError& Error() & {
-    if (auto* error = std::get_if<FileError>(&value_)) {
-      return *error;
-    }
-    throw std::logic_error("HuxerUI file result does not contain an error");
-  }
-
-  /// @brief Borrows the failure without allowing modification.
-  /// @return A const reference to the FileError owned by this result.
-  /// @throws std::logic_error If this result contains a success value.
-  [[nodiscard]] const FileError& Error() const& {
-    if (const auto* error = std::get_if<FileError>(&value_)) {
-      return *error;
-    }
-    throw std::logic_error("HuxerUI file result does not contain an error");
-  }
-
-private:
-  std::variant<T, FileError> value_;
+/// Controls how File::OpenWrite() and File::OpenWriteAsync() initialize the destination.
+enum class FileWriteMode {
+  /// Creates the file if needed and otherwise discards its previous contents.
+  Truncate,
+  /// Creates the file if needed and writes after its current contents.
+  Append,
 };
 
 /// @brief A normalized absolute UTF-8 path in the application's local file system.
@@ -177,7 +76,7 @@ private:
 /// Tasks retain the path and owned arguments. Cancelling a task suppresses result delivery but does not
 /// guarantee that queued or running local I/O stops, and never rolls back writes.
 ///
-/// Operational failures use FileResult or false. Invalid caller-supplied text or path segments throw
+/// Operational failures use IoResult or false. Invalid caller-supplied text or path segments throw
 /// std::invalid_argument; allocation and task infrastructure failures may also throw.
 /// On Web, paths refer to the virtual file system, not arbitrary user-disk paths. Mutations under persistent
 /// application roots require async methods, which wait for persistence; browser quota and eviction still apply.
@@ -250,27 +149,45 @@ public:
   [[nodiscard]] bool IsDirectory() const;
 
   /// @brief Queries the entry kind, file size, and available modification time, following symbolic links.
-  /// @return Best-effort metadata or a FileError. The fields are not an atomic snapshot against concurrent changes.
-  [[nodiscard]] FileResult<FileInfo> Stat() const;
+  /// @return Best-effort metadata or an IoError. The fields are not an atomic snapshot against concurrent changes.
+  [[nodiscard]] IoResult<FileInfo> Stat() const;
   /// @brief Performs Stat() asynchronously.
-  /// @return A task yielding the metadata or a FileError, with the same semantics as Stat().
-  [[nodiscard]] Task<FileResult<FileInfo>> StatAsync() const;
+  /// @return A task yielding the metadata or an IoError, with the same semantics as Stat().
+  [[nodiscard]] Task<IoResult<FileInfo>> StatAsync() const;
+
+  /// @brief Opens an ordinary file for synchronous incremental reads.
+  /// @return A uniquely owned stream or an IoError. The stream returns zero at EOF.
+  [[nodiscard]] IoResult<InputStream> OpenRead() const;
+  /// @brief Opens an ordinary file for incremental reads performed on the file worker path.
+  /// @return A task yielding a uniquely owned async stream or an IoError.
+  [[nodiscard]] Task<IoResult<AsyncInputStream>> OpenReadAsync() const;
+
+  /// @brief Opens a synchronous incremental writer, creating the file when it is missing.
+  /// @param mode Whether to truncate existing contents or append after them.
+  /// @return A uniquely owned stream or an IoError. Call Close() to finalize output.
+  /// @warning Web persistent paths require OpenWriteAsync().
+  [[nodiscard]] IoResult<OutputStream> OpenWrite(FileWriteMode mode = FileWriteMode::Truncate) const;
+  /// @brief Opens an incremental writer whose blocking operations use the file worker path.
+  /// @param mode Whether to truncate existing contents or append after them.
+  /// @return A task yielding a uniquely owned async stream or an IoError. CloseAsync() includes required Web
+  /// persistence.
+  [[nodiscard]] Task<IoResult<AsyncOutputStream>> OpenWriteAsync(FileWriteMode mode = FileWriteMode::Truncate) const;
 
   /// @brief Reads an entire ordinary file into owned memory.
-  /// @return Bytes, including an empty buffer for an empty file, or a FileError such as NotFound, IsDirectory,
+  /// @return Bytes, including an empty buffer for an empty file, or an IoError such as NotFound, IsDirectory,
   /// Unsupported for a non-ordinary entry, or TooLarge when the result cannot be represented.
-  [[nodiscard]] FileResult<Bytes> ReadBytes() const;
+  [[nodiscard]] IoResult<Bytes> ReadBytes() const;
   /// @brief Performs ReadBytes() asynchronously; this is not a streaming read.
-  /// @return A task yielding the complete byte buffer or a FileError.
-  [[nodiscard]] Task<FileResult<Bytes>> ReadBytesAsync() const;
+  /// @return A task yielding the complete byte buffer or an IoError.
+  [[nodiscard]] Task<IoResult<Bytes>> ReadBytesAsync() const;
 
   /// @brief Reads the entire file as UTF-8 text, removing one leading UTF-8 byte-order mark if present.
-  /// @return The decoded string without newline conversion, or a FileError, including InvalidEncoding for
+  /// @return The decoded string without newline conversion, or an IoError, including InvalidEncoding for
   /// malformed UTF-8 contents. An empty file is a successful empty string.
-  [[nodiscard]] FileResult<std::string> ReadString() const;
+  [[nodiscard]] IoResult<std::string> ReadString() const;
   /// @brief Performs ReadString() asynchronously, including its UTF-8 validation and byte-order-mark handling.
-  /// @return A task yielding the complete string or a FileError.
-  [[nodiscard]] Task<FileResult<std::string>> ReadStringAsync() const;
+  /// @return A task yielding the complete string or an IoError.
+  [[nodiscard]] Task<IoResult<std::string>> ReadStringAsync() const;
 
   /// @brief Creates or truncates a file and writes the supplied bytes; its parent directory must already exist.
   /// @param bytes Data borrowed for the duration of this call. An empty span still creates or truncates the file.
@@ -315,12 +232,12 @@ public:
   [[nodiscard]] Task<bool> AppendStringAsync(std::string value) const;
 
   /// @brief Enumerates immediate children, including hidden entries, without reading their contents.
-  /// @return Child paths in unspecified order, or a FileError. An empty directory yields a successful empty vector.
+  /// @return Child paths in unspecified order, or an IoError. An empty directory yields a successful empty vector.
   /// Enumeration is not recursive and is not a snapshot against concurrent directory changes.
-  [[nodiscard]] FileResult<std::vector<File>> ListChildren() const;
+  [[nodiscard]] IoResult<std::vector<File>> ListChildren() const;
   /// @brief Performs ListChildren() asynchronously.
-  /// @return A task yielding the immediate child paths or a FileError.
-  [[nodiscard]] Task<FileResult<std::vector<File>>> ListChildrenAsync() const;
+  /// @return A task yielding the immediate child paths or an IoError.
+  [[nodiscard]] Task<IoResult<std::vector<File>>> ListChildrenAsync() const;
 
   /// @brief Creates this directory only; its parent must already exist.
   /// @return True if created or already a directory; false on failure or a conflicting non-directory entry.
@@ -465,14 +382,22 @@ public:
   /// @endcode
   [[nodiscard]] std::optional<File> AsFile() const;
 
+  /// @brief Opens this ordinary referenced file for incremental asynchronous reads.
+  /// @return A task yielding a uniquely owned stream or an IoError. Provider failures after opening also use IoResult.
+  [[nodiscard]] Task<IoResult<AsyncInputStream>> OpenReadAsync() const;
+  /// @brief Opens this writable ordinary referenced file for incremental asynchronous replacement.
+  /// @return A task yielding a uniquely owned truncating stream or an IoError. Call CloseAsync() to finalize output.
+  /// Provider failures after opening also use IoResult.
+  [[nodiscard]] Task<IoResult<AsyncOutputStream>> OpenWriteAsync() const;
+
   /// @brief Reads the complete contents of an ordinary referenced file into owned memory.
-  /// @return A task yielding Bytes or a FileError; directories report IsDirectory and unsupported kinds report
+  /// @return A task yielding Bytes or an IoError; directories report IsDirectory and unsupported kinds report
   /// Unsupported. An empty file yields a successful empty buffer; this method is not a streaming interface.
-  [[nodiscard]] Task<FileResult<Bytes>> ReadBytesAsync() const;
+  [[nodiscard]] Task<IoResult<Bytes>> ReadBytesAsync() const;
   /// @brief Reads the complete referenced file as UTF-8 text, stripping one leading UTF-8 byte-order mark.
-  /// @return A task yielding text without newline conversion, or a FileError; malformed contents report
+  /// @return A task yielding text without newline conversion, or an IoError; malformed contents report
   /// InvalidEncoding. Entry-kind and provider errors follow ReadBytesAsync().
-  [[nodiscard]] Task<FileResult<std::string>> ReadStringAsync() const;
+  [[nodiscard]] Task<IoResult<std::string>> ReadStringAsync() const;
   /// @brief Imports one referenced file into application-accessible local storage without presenting a picker.
   /// @param destination The complete local target file path; its parent directory must already exist.
   /// @param overwrite Whether an existing destination file may be replaced; false rejects a conflicting entry.
@@ -488,65 +413,65 @@ public:
   [[nodiscard]] Task<bool> ReplaceWithAsync(File source) const;
 
   /// @brief Enumerates the immediate children of this directory without reading file contents.
-  /// @return A task yielding child references in unspecified order, or a FileError such as NotDirectory.
+  /// @return A task yielding child references in unspecified order, or an IoError such as NotDirectory.
   /// Empty directories yield a successful empty vector. Hidden entries are included, and each child preserves
   /// the parent's grant limits while retaining access independently. Enumeration is not a concurrent snapshot.
-  [[nodiscard]] Task<FileResult<std::vector<FileReference>>> ListChildrenAsync() const;
+  [[nodiscard]] Task<IoResult<std::vector<FileReference>>> ListChildrenAsync() const;
   /// @brief Creates or reuses one immediate child directory under this writable directory.
   /// @param name The exact UTF-8 child name: nonempty, not "." or "..", and containing no NUL, slash, or backslash.
-  /// @return A task yielding the new or existing directory reference, or a FileError. A conflicting non-directory
+  /// @return A task yielding the new or existing directory reference, or an IoError. A conflicting non-directory
   /// reports AlreadyExists. Missing parents are not created, and the requested name is not silently changed.
   /// @throws std::invalid_argument If name violates the portable single-segment rules, before returning a task.
-  /// Additional provider-specific name restrictions are reported through FileResult.
-  [[nodiscard]] Task<FileResult<FileReference>> CreateDirectoryAsync(std::string name) const;
+  /// Additional provider-specific name restrictions are reported through IoResult.
+  [[nodiscard]] Task<IoResult<FileReference>> CreateDirectoryAsync(std::string name) const;
   /// @brief Copies one ordinary local file into this writable directory under an exact child name.
   /// @param source An existing ordinary local file; the source is retained as a path, not opened at the call site.
   /// @param name The exact target name, subject to the same portable name rules as CreateDirectoryAsync().
   /// @param overwrite Whether an existing target file may be replaced; entry-kind conflicts are never replaced.
-  /// @return A task yielding the destination file reference after the copy is finalized, or a FileError.
+  /// @return A task yielding the destination file reference after the copy is finalized, or an IoError.
   /// Existing files report AlreadyExists when overwrite is false. Failure can leave partial destination contents.
   /// @throws std::invalid_argument If name is not a valid portable child name, before returning a task.
-  [[nodiscard]] Task<FileResult<FileReference>>
+  [[nodiscard]] Task<IoResult<FileReference>>
   CopyFileFromAsync(File source, std::string name, bool overwrite = false) const;
   /// @brief Copies one referenced file into this writable directory without staging it through an application file.
   /// @param source An ordinary file reference; read-only source access is sufficient.
   /// @param name The exact target name, subject to the same portable name rules as CreateDirectoryAsync().
   /// @param overwrite Whether an existing target file may be replaced; entry-kind conflicts are never replaced.
-  /// @return A task yielding the finalized destination reference or a FileError, including Unsupported when the
+  /// @return A task yielding the finalized destination reference or an IoError, including Unsupported when the
   /// providers cannot support this transfer. Conflict and partial-write rules match the local-file overload.
   /// @throws std::invalid_argument If name is not a valid portable child name, before returning a task.
-  [[nodiscard]] Task<FileResult<FileReference>>
+  [[nodiscard]] Task<IoResult<FileReference>>
   CopyFileFromAsync(FileReference source, std::string name, bool overwrite = false) const;
   /// @brief Recursively copies this directory's contents into an existing local destination directory.
   /// @param destination The existing destination root; no extra directory named after the source is added.
   /// @param overwrite Whether conflicting files may be replaced. Existing directories are merged; conflicting
   /// entry kinds are rejected, and destination-only entries are left untouched.
-  /// @return A task yielding counts for a fully completed copy or the first FileError, with relative-path context.
+  /// @return A task yielding counts for a fully completed copy or the first IoError, with relative-path context.
   /// Hidden entries and empty directories are included. Source and destination must be independent trees;
   /// identical or overlapping roots, symbolic links, cycles, and unprovable provider relationships are rejected.
   /// @warning Copying is not a transaction or a point-in-time snapshot. Failure or cancellation can leave output
   /// behind, and overwrite=false is not a universal atomic no-replace guarantee against external writers.
   /// On Web, completion includes local persistence where required, but virtual files still occupy memory.
   /// @code{.cpp}
-  /// Task<FileResult<DirectoryCopySummary>> ImportDirectory(FileReference source, File destination) {
+  /// Task<IoResult<DirectoryCopySummary>> ImportDirectory(FileReference source, File destination) {
   ///   if (!co_await destination.CreateDirectoriesAsync()) {
-  ///     co_return FileResult<DirectoryCopySummary>(
-  ///         FileError{FileErrorCode::Io, "HuxerUI destination creation failed"});
+  ///     co_return IoResult<DirectoryCopySummary>(
+  ///         IoError{IoErrorCode::Io, "HuxerUI destination creation failed"});
   ///   }
   ///   co_return co_await source.CopyDirectoryContentsToAsync(destination);
   /// }
   /// @endcode
-  [[nodiscard]] Task<FileResult<DirectoryCopySummary>>
+  [[nodiscard]] Task<IoResult<DirectoryCopySummary>>
   CopyDirectoryContentsToAsync(File destination, bool overwrite = false) const;
   /// @brief Recursively copies this directory's contents into another existing writable directory reference.
   /// @param destination The independent writable destination root; it is retained for the operation's lifetime.
   /// @param overwrite Whether existing files may be replaced; directory merging and entry-kind conflict rules
   /// are the same as for the local-destination overload.
-  /// @return A task yielding the completed copy summary or the first FileError. Unsupported is returned when
+  /// @return A task yielding the completed copy summary or the first IoError. Unsupported is returned when
   /// provider capabilities cannot establish independent roots or perform the requested transfer.
   /// This has the same contents-only layout, partial-output, cancellation, and concurrency rules as the
   /// local-destination overload. Directory writability does not override a read-only existing child's permissions.
-  [[nodiscard]] Task<FileResult<DirectoryCopySummary>>
+  [[nodiscard]] Task<IoResult<DirectoryCopySummary>>
   CopyDirectoryContentsToAsync(FileReference destination, bool overwrite = false) const;
 
 private:
@@ -695,7 +620,7 @@ struct AppDirectories {
 /// Obtain a shared instance with UseService<FileSystem>() during composition. It supplies local File paths;
 /// external documents and directory grants belong to FilePicker and FileReference instead.
 /// @code{.cpp}
-/// Task<FileResult<std::string>> LoadSettings(std::shared_ptr<FileSystem> files) {
+/// Task<IoResult<std::string>> LoadSettings(std::shared_ptr<FileSystem> files) {
 ///   File settings = files->Directories().data_directory.Child("settings.json");
 ///   co_return co_await settings.ReadStringAsync();
 /// }

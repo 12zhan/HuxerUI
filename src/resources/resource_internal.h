@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <unordered_map>
@@ -19,6 +20,9 @@ class VisualFill;
 namespace huxerui::detail {
 
 inline constexpr std::string_view resource_index_path = "huxerui/resources.bin";
+
+[[nodiscard]] Bytes ReadStreamBytes(InputStream input);
+[[nodiscard]] std::optional<InputStream> OpenPackageFile(const std::filesystem::path& path);
 
 enum class ResourceEntryKind {
   Raw,
@@ -53,9 +57,11 @@ bool IsValidResourcePackagePath(std::string_view path) noexcept;
 
 using ResolvedImageAsset = std::variant<ImageAsset, VectorAsset>;
 
-class AppResources {
+class AppResources : public std::enable_shared_from_this<AppResources> {
 public:
   explicit AppResources(PlatformResources* platform_resources);
+  void Disconnect();
+  [[nodiscard]] InputStream OpenRead(std::string_view package_path);
 
   void UpdateConfiguration(ResourceConfiguration configuration);
   [[nodiscard]] ResourceConfiguration Configuration() const;
@@ -72,6 +78,7 @@ private:
   [[nodiscard]] RawAsset ReadEntry(const ResourceIndexEntry& entry);
 
   PlatformResources* platform_resources_ = nullptr;
+  std::mutex platform_mutex_;
   ResourceConfiguration configuration_;
   std::shared_ptr<CompositionDependency> configuration_dependency_ = std::make_shared<CompositionDependency>();
   std::vector<ResourceIndexEntry> entries_;

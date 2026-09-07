@@ -6,6 +6,7 @@ import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
+import android.os.ParcelFileDescriptor;
 import android.content.pm.ProviderInfo;
 import java.util.ArrayList;
 import java.util.List;
@@ -164,6 +165,14 @@ public final class HuxerUIFileReference implements AutoCloseable {
 
     Operation prepareReplace(long nativeHandle, String source) {
         return new Operation(nativeHandle, Operation.REPLACE, source, false);
+    }
+
+    Operation prepareOpenRead(long nativeHandle) {
+        return new Operation(nativeHandle, Operation.OPEN_READ, null, false);
+    }
+
+    Operation prepareOpenWrite(long nativeHandle) {
+        return new Operation(nativeHandle, Operation.OPEN_WRITE, null, false);
     }
 
     static Future<?> submit(Runnable operation) {
@@ -352,6 +361,8 @@ public final class HuxerUIFileReference implements AutoCloseable {
         static final int CREATE_DIRECTORY = 5;
         static final int COPY_FILE = 6;
         static final int CHECK_DESTINATION = 7;
+        static final int OPEN_READ = 8;
+        static final int OPEN_WRITE = 9;
 
         private final long nativeHandle;
         private final int kind;
@@ -404,6 +415,11 @@ public final class HuxerUIFileReference implements AutoCloseable {
                 } else if (kind == REPLACE) {
                     if (!writeAllowed) { throw new SecurityException(); }
                     finishBoolean(copyFileToUri(resolver, new File(path), uri, copyState));
+                } else if (kind == OPEN_READ) {
+                    finishDescriptor(openDescriptor(false));
+                } else if (kind == OPEN_WRITE) {
+                    if (!writeAllowed) { throw new SecurityException(); }
+                    finishDescriptor(openDescriptor(true));
                 } else {
                     directoryOperation();
                 }
@@ -597,6 +613,29 @@ public final class HuxerUIFileReference implements AutoCloseable {
             }
         }
 
+        private int openDescriptor(boolean writing) throws IOException {
+            ParcelFileDescriptor descriptor = null;
+            try {
+                if (writing) {
+                    try {
+                        descriptor = resolver.openFileDescriptor(uri, "rwt");
+                    } catch (FileNotFoundException ignored) {
+                        descriptor = resolver.openFileDescriptor(uri, "wt");
+                    }
+                } else {
+                    descriptor = resolver.openFileDescriptor(uri, "r");
+                }
+                if (descriptor == null) {
+                    throw new FileNotFoundException("HuxerUI external file descriptor is unavailable");
+                }
+                return descriptor.detachFd();
+            } finally {
+                if (descriptor != null) {
+                    descriptor.close();
+                }
+            }
+        }
+
         private boolean importTo(File destination, boolean overwrite) throws IOException {
             // Stage beside the local destination so rename happens only after the streams close.
             // The existence check is not an atomic no-overwrite reservation against external writers.
@@ -642,6 +681,18 @@ public final class HuxerUIFileReference implements AutoCloseable {
             }
         }
 
+        private void finishDescriptor(int descriptor) {
+            if (finished.compareAndSet(false, true)) {
+                if (nativeComplete(nativeHandle, RESULT_TRUE, ERROR_IO, null, null, null, descriptor, false)) {
+                    return;
+                }
+            }
+            try {
+                ParcelFileDescriptor.adoptFd(descriptor).close();
+            } catch (IOException ignored) {
+            }
+        }
+
         private void finishError(int code, String message) {
             if (finished.compareAndSet(false, true)) {
                 nativeComplete(nativeHandle, RESULT_ERROR, code, null, message, null, 0, false);
@@ -666,7 +717,7 @@ public final class HuxerUIFileReference implements AutoCloseable {
         }
     }
 
-    private static native void nativeComplete(
-            long nativeHandle, int result, int errorCode, byte[] bytes, String message,
-            Metadata[] references, long transferred, boolean created);
+    private static native boolean nativeComplete(long nativeHandle, int result, int errorCode, byte[] bytes,
+                                                 String message, Metadata[] references, long transferred,
+                                                 boolean created);
 }

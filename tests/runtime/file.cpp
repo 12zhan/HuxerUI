@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 
@@ -185,7 +186,7 @@ public:
   std::string EntryKey() const override { return entry_key_; }
 
   std::function<void()> ReadBytes(detail::FileReferenceBytesCompletion completion) override {
-    completion(FileResult<Bytes>(FileError{FileErrorCode::Unsupported, "HuxerUI test source requires streaming"}));
+    completion(IoResult<Bytes>(IoError{IoErrorCode::Unsupported, "HuxerUI test source requires streaming"}));
     return {};
   }
 
@@ -204,11 +205,11 @@ public:
   std::function<void()> ListChildren(detail::FileReferenceCompletion<std::vector<FileReference>> completion) override {
     ++list_count;
     if (list_error) {
-      completion(FileResult<std::vector<FileReference>>(
-          FileError{*list_error, "HuxerUI test directory enumeration failed"}));
+      completion(IoResult<std::vector<FileReference>>(
+          IoError{*list_error, "HuxerUI test directory enumeration failed"}));
       return {};
     }
-    completion(FileResult<std::vector<FileReference>>(children));
+    completion(IoResult<std::vector<FileReference>>(children));
     return {};
   }
 
@@ -221,40 +222,40 @@ public:
     for (const auto& child : children) {
       if (child.Name() == name) {
         if (found) {
-          completion(FileResult<std::optional<FileReference>>(
-              FileError{FileErrorCode::AlreadyExists, "HuxerUI test lookup is ambiguous"}));
+          completion(IoResult<std::optional<FileReference>>(
+              IoError{IoErrorCode::AlreadyExists, "HuxerUI test lookup is ambiguous"}));
           return {};
         }
         found = child;
       }
     }
-    completion(FileResult<std::optional<FileReference>>(std::move(found)));
+    completion(IoResult<std::optional<FileReference>>(std::move(found)));
     return {};
   }
 
-  std::function<void()> CopyFileFrom(detail::FileReferenceSource, std::string name, bool,
-                                     std::optional<FileReference> existing,
-                                     detail::FileReferenceCompletion<detail::FileReferenceWriteResult> completion) override {
+  std::function<void()>
+  CopyFileFrom(detail::FileReferenceSource, std::string name, bool, std::optional<FileReference> existing,
+               detail::FileReferenceCompletion<detail::FileReferenceWriteResult> completion) override {
     if (write_error) {
-      completion(FileResult<detail::FileReferenceWriteResult>(
-          FileError{*write_error, "HuxerUI test provider rejected the write"}));
+      completion(IoResult<detail::FileReferenceWriteResult>(
+          IoError{*write_error, "HuxerUI test provider rejected the write"}));
       return {};
     }
     ++write_count;
     if (existing) {
       CHECK(existing->Name() == name);
-      completion(FileResult<detail::FileReferenceWriteResult>({*existing, 1, false}));
+      completion(IoResult<detail::FileReferenceWriteResult>({*existing, 1, false}));
     } else {
       auto state = std::make_shared<ProviderReferenceState>(entry_key_ + "/" + name);
       children.push_back(detail::MakeFileReference({.name = name, .can_write = true}, std::move(state)));
-      completion(FileResult<detail::FileReferenceWriteResult>({children.back(), 1, true}));
+      completion(IoResult<detail::FileReferenceWriteResult>({children.back(), 1, true}));
     }
     return {};
   }
 
   std::function<void()> CheckCopyDestination(detail::FileReferenceSource,
                                              detail::FileReferenceCompletion<bool> completion) override {
-    completion(FileResult<bool>(true));
+    completion(IoResult<bool>(true));
     return {};
   }
 
@@ -266,8 +267,8 @@ public:
   std::size_t list_count = 0;
   std::size_t find_count = 0;
   std::size_t write_count = 0;
-  std::optional<FileErrorCode> list_error;
-  std::optional<FileErrorCode> write_error;
+  std::optional<IoErrorCode> list_error;
+  std::optional<IoErrorCode> write_error;
 
 private:
   std::string entry_key_;
@@ -363,7 +364,7 @@ TEST_CASE("RuntimeInstallsFileSystemAndFileAsyncOperationsResumeOnTheUIThread") 
       file_task_complete = true;
       co_return;
     }
-    FileResult<std::string> result = co_await file.ReadStringAsync();
+    IoResult<std::string> result = co_await file.ReadStringAsync();
     if (result.Succeeded()) {
       async_text = std::move(result).Value();
     }
@@ -390,7 +391,7 @@ TEST_CASE("FileAsyncByteOperationsRetainOwnedBinaryDataUntilCompletion") {
       file_task_complete = true;
       co_return;
     }
-    FileResult<Bytes> result = co_await file.ReadBytesAsync();
+    IoResult<Bytes> result = co_await file.ReadBytesAsync();
     if (result.Succeeded()) {
       async_bytes = std::move(result).Value();
     }
@@ -399,6 +400,170 @@ TEST_CASE("FileAsyncByteOperationsRetainOwnedBinaryDataUntilCompletion") {
 
   platform.RunUntil([] { return file_task_complete; });
   REQUIRE((async_bytes == Bytes{std::byte{0}, std::byte{0xFF}, std::byte{'a'}, std::byte{0}}));
+}
+
+TEST_CASE("FileAsyncStreamsUseRequestedReadSizesAndExplicitClose") {
+  ResetFileState();
+  TemporaryDirectory temporary;
+  FileTestPlatform platform(temporary.Paths());
+  Runtime runtime(FileApp, platform);
+  runtime.BuildFrame();
+
+  const File source = file_system->Directories().data_directory.Child("stream-source.bin");
+  const File destination = file_system->Directories().data_directory.Child("stream-destination.bin");
+  std::vector<std::size_t> read_sizes;
+  std::uint64_t copied = 0;
+  file_tasks.Launch([&]() -> Task<void> {
+    IoResult<AsyncOutputStream> opened_output = co_await source.OpenWriteAsync();
+    REQUIRE(opened_output.Succeeded());
+    AsyncOutputStream output = std::move(opened_output).Value();
+    REQUIRE((co_await output.WriteAsync(Bytes{std::byte{1}, std::byte{2}})).Succeeded());
+    REQUIRE((co_await output.WriteAsync(Bytes{std::byte{3}, std::byte{4}, std::byte{5}})).Succeeded());
+    REQUIRE((co_await output.CloseAsync()).Succeeded());
+
+    IoResult<AsyncInputStream> opened_input = co_await source.OpenReadAsync();
+    REQUIRE(opened_input.Succeeded());
+    AsyncInputStream input = std::move(opened_input).Value();
+    while (true) {
+      Bytes data = (co_await input.ReadAsync(2)).Value();
+      read_sizes.push_back(data.size());
+      if (data.empty()) {
+        break;
+      }
+      async_bytes.insert(async_bytes.end(), data.begin(), data.end());
+    }
+
+    IoResult<AsyncInputStream> opened_copy_input = co_await source.OpenReadAsync();
+    IoResult<AsyncOutputStream> opened_copy_output = co_await destination.OpenWriteAsync();
+    REQUIRE(opened_copy_input.Succeeded());
+    REQUIRE(opened_copy_output.Succeeded());
+    AsyncInputStream copy_input = std::move(opened_copy_input).Value();
+    AsyncOutputStream copy_output = std::move(opened_copy_output).Value();
+    copied = (co_await copy_input.CopyToAsync(copy_output, 3)).Value();
+    REQUIRE((co_await copy_output.CloseAsync()).Succeeded());
+    file_task_complete = true;
+  });
+
+  platform.RunUntil([] { return file_task_complete; });
+  REQUIRE((async_bytes == Bytes{std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4}, std::byte{5}}));
+  REQUIRE(read_sizes == std::vector<std::size_t>{2, 2, 1, 0});
+  REQUIRE(copied == 5);
+  REQUIRE(destination.ReadBytes().Value() == async_bytes);
+}
+
+TEST_CASE("FilePendingOutputRetainsTheFileAfterItsOwnerIsReleased") {
+  ResetFileState();
+  TemporaryDirectory temporary;
+  FileTestPlatform platform(temporary.Paths());
+  Runtime runtime(FileApp, platform);
+  runtime.BuildFrame();
+  const File file = file_system->Directories().data_directory.Child("retained-output.bin");
+  file_tasks.Launch([&]() -> Task<void> {
+    auto opened = co_await file.OpenWriteAsync();
+    REQUIRE(opened.Succeeded());
+    auto pending = [&] {
+      auto output = std::move(opened).Value();
+      return output.WriteAsync(Bytes{std::byte{1}, std::byte{2}});
+    }();
+    REQUIRE((co_await std::move(pending)).Succeeded());
+    file_task_complete = true;
+  });
+  platform.RunUntil([] { return file_task_complete; });
+  REQUIRE((file.ReadBytes().Value() == Bytes{std::byte{1}, std::byte{2}}));
+}
+
+TEST_CASE("LocalReferenceStreamsPreserveOperationalReadWriteCloseAndCopyErrors") {
+  enum class Operation { Read, Write, Close, CopyRead, CopyWrite };
+  const auto operation =
+      GENERATE(Operation::Read, Operation::Write, Operation::Close, Operation::CopyRead, Operation::CopyWrite);
+  ResetFileState();
+  TemporaryDirectory temporary;
+  FileTestPlatform platform(temporary.Paths());
+  Runtime runtime(FileApp, platform);
+  runtime.BuildFrame();
+  const File source = file_system->Directories().data_directory.Child("error-source.bin");
+  const File destination = file_system->Directories().data_directory.Child("error-destination.bin");
+  REQUIRE(source.WriteBytes(Bytes{std::byte{1}, std::byte{2}}));
+  REQUIRE(destination.WriteBytes({}));
+  std::atomic<bool> fail_read = false;
+  std::atomic<bool> fail_write = false;
+  const auto coordinate = [&](const File* reading, const File* writing, const std::function<void()>& action) {
+    if ((reading && fail_read) || (writing && fail_write)) {
+      throw std::system_error(std::make_error_code(std::errc::permission_denied));
+    }
+    action();
+  };
+  auto input_reference = detail::MakeLocalFileReference(source, false, {}, coordinate);
+  auto output_reference = detail::MakeLocalFileReference(destination, true, {}, coordinate);
+  file_tasks.Launch([&]() -> Task<void> {
+    auto opened_input = co_await input_reference.OpenReadAsync();
+    auto opened_output = co_await output_reference.OpenWriteAsync();
+    REQUIRE(opened_input.Succeeded());
+    REQUIRE(opened_output.Succeeded());
+    auto input = std::move(opened_input).Value();
+    auto output = std::move(opened_output).Value();
+    fail_read = operation == Operation::Read || operation == Operation::CopyRead;
+    fail_write = !fail_read.load();
+    if (operation == Operation::Read) {
+      auto result = co_await input.ReadAsync(1);
+      REQUIRE_FALSE(result.Succeeded());
+      REQUIRE(result.Error().code == IoErrorCode::PermissionDenied);
+    } else if (operation == Operation::Write || operation == Operation::Close) {
+      auto pending = operation == Operation::Write ? output.WriteAsync(Bytes{std::byte{3}}) : output.CloseAsync();
+      auto result = co_await std::move(pending);
+      REQUIRE_FALSE(result.Succeeded());
+      REQUIRE(result.Error().code == IoErrorCode::PermissionDenied);
+    } else {
+      auto result = co_await input.CopyToAsync(output, 1);
+      REQUIRE_FALSE(result.Succeeded());
+      REQUIRE(result.Error().code == IoErrorCode::PermissionDenied);
+    }
+    if (fail_read) {
+      REQUIRE_THROWS_AS(input.ReadAsync(1), std::logic_error);
+    } else {
+      REQUIRE_THROWS_AS(output.CloseAsync(), std::logic_error);
+    }
+    file_task_complete = true;
+  });
+  platform.RunUntil([] { return file_task_complete; });
+}
+
+TEST_CASE("LocalFileReferencesProvideIncrementalAsyncStreams") {
+  ResetFileState();
+  TemporaryDirectory temporary;
+  FileTestPlatform platform(temporary.Paths());
+  Runtime runtime(FileApp, platform);
+  runtime.BuildFrame();
+
+  const File file = file_system->Directories().data_directory.Child("reference-stream.bin");
+  REQUIRE(file.WriteBytes(Bytes{std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4}, std::byte{5}}));
+  FileReference reference = detail::MakeLocalFileReference(file, true);
+  std::vector<std::size_t> read_sizes;
+  file_tasks.Launch([&]() -> Task<void> {
+    IoResult<AsyncInputStream> opened_input = co_await reference.OpenReadAsync();
+    REQUIRE(opened_input.Succeeded());
+    AsyncInputStream input = std::move(opened_input).Value();
+    while (true) {
+      Bytes data = (co_await input.ReadAsync(2)).Value();
+      read_sizes.push_back(data.size());
+      if (data.empty()) {
+        break;
+      }
+      async_bytes.insert(async_bytes.end(), data.begin(), data.end());
+    }
+
+    IoResult<AsyncOutputStream> opened_output = co_await reference.OpenWriteAsync();
+    REQUIRE(opened_output.Succeeded());
+    AsyncOutputStream output = std::move(opened_output).Value();
+    REQUIRE((co_await output.WriteAsync(Bytes{std::byte{9}, std::byte{8}})).Succeeded());
+    REQUIRE((co_await output.CloseAsync()).Succeeded());
+    file_task_complete = true;
+  });
+
+  platform.RunUntil([] { return file_task_complete; });
+  REQUIRE(read_sizes == std::vector<std::size_t>{2, 2, 1, 0});
+  REQUIRE((async_bytes == Bytes{std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4}, std::byte{5}}));
+  REQUIRE((file.ReadBytes().Value() == Bytes{std::byte{9}, std::byte{8}}));
 }
 
 TEST_CASE("CancelingAFileTaskDropsItsContinuation") {
@@ -443,7 +608,7 @@ TEST_CASE("DirectoryReferencesEnumerateRepeatedlyAndCopyBothDestinationKinds") {
   REQUIRE_FALSE(reference.ContentType().has_value());
   std::vector<std::size_t> enumerations;
   std::vector<DirectoryCopySummary> summaries;
-  std::optional<FileError> failure;
+  std::optional<IoError> failure;
   file_tasks.Launch([&]() -> Task<void> {
     for (int index = 0; index < 2; ++index) {
       auto children = co_await reference.ListChildrenAsync();
@@ -485,7 +650,7 @@ TEST_CASE("DirectoryReferencesFinalizeProviderImportsAndPreserveFailureAndCancel
   auto directory = std::make_shared<ProviderReferenceState>("provider:directory");
   directory->children.push_back(detail::MakeFileReference({.name = "value.bin", .size = 1000}, input));
   auto source = detail::MakeFileReference({.name = "source", .type = FileType::Directory}, directory);
-  std::optional<FileResult<DirectoryCopySummary>> result;
+  std::optional<IoResult<DirectoryCopySummary>> result;
 #if defined(_WIN32)
   // The native Windows destination cannot delegate its retained authority to a path-only provider.
   file_tasks.Launch([&]() -> Task<void> {
@@ -495,20 +660,20 @@ TEST_CASE("DirectoryReferencesFinalizeProviderImportsAndPreserveFailureAndCancel
   platform.RunUntil([] { return file_task_complete; });
   REQUIRE(result.has_value());
   REQUIRE_FALSE(result->Succeeded());
-  REQUIRE(result->Error().code == FileErrorCode::Unsupported);
+  REQUIRE(result->Error().code == IoErrorCode::Unsupported);
   REQUIRE_FALSE(input->imported_to.has_value());
   REQUIRE_FALSE(destination.Child("value.bin").Exists());
 #else
   bool write_output = true;
   bool cancel = false;
-  std::optional<FileErrorCode> expected_error;
+  std::optional<IoErrorCode> expected_error;
   SECTION("Actual transferred bytes are counted instead of source metadata") {}
   SECTION("The provider error is preserved") {
-    expected_error = FileErrorCode::PermissionDenied;
+    expected_error = IoErrorCode::PermissionDenied;
   }
   SECTION("A missing finalized output preserves the metadata error") {
     write_output = false;
-    expected_error = FileErrorCode::NotFound;
+    expected_error = IoErrorCode::NotFound;
   }
   SECTION("Cancellation suppresses late provider completion") {
     cancel = true;
@@ -530,10 +695,10 @@ TEST_CASE("DirectoryReferencesFinalizeProviderImportsAndPreserveFailureAndCancel
     REQUIRE(input->imported_to->WriteBytes(Bytes{std::byte{0}, std::byte{255}, std::byte{42}}));
   }
   auto complete = std::move(input->imported);
-  if (expected_error == FileErrorCode::PermissionDenied) {
-    complete(FileResult<std::uint64_t>(FileError{*expected_error, "HuxerUI provider secret URI"}));
+  if (expected_error == IoErrorCode::PermissionDenied) {
+    complete(IoResult<std::uint64_t>(IoError{*expected_error, "HuxerUI provider secret URI"}));
   } else {
-    complete(FileResult<std::uint64_t>(3));
+    complete(IoResult<std::uint64_t>(3));
   }
   if (cancel) {
     bool drained = false;
@@ -580,7 +745,7 @@ TEST_CASE("DirectoryCopiesIndexListingBasedDestinationsOnlyWithinOneCopy") {
   auto source = detail::MakeFileReference({.name = "source", .type = FileType::Directory}, input);
   auto destination = detail::MakeFileReference(
       {.name = "destination", .can_write = true, .type = FileType::Directory}, output);
-  std::optional<FileErrorCode> expected_error;
+  std::optional<IoErrorCode> expected_error;
   SECTION("Listing lookup is indexed and rebuilt for each copy") {}
   SECTION("Native lookup is not replaced by a display-name index") {
     output->listing_lookup = false;
@@ -594,17 +759,17 @@ TEST_CASE("DirectoryCopiesIndexListingBasedDestinationsOnlyWithinOneCopy") {
     auto duplicate = detail::MakeFileReference(
         {.name = "0.txt"}, std::make_shared<ProviderReferenceState>("provider:duplicate"));
     output->children = {duplicate, duplicate};
-    expected_error = FileErrorCode::AlreadyExists;
+    expected_error = IoErrorCode::AlreadyExists;
   }
   SECTION("Enumeration failure is not treated as an empty directory") {
-    output->list_error = FileErrorCode::PermissionDenied;
-    expected_error = FileErrorCode::PermissionDenied;
+    output->list_error = IoErrorCode::PermissionDenied;
+    expected_error = IoErrorCode::PermissionDenied;
   }
   SECTION("An index does not bypass final write authorization") {
-    output->write_error = FileErrorCode::PermissionDenied;
-    expected_error = FileErrorCode::PermissionDenied;
+    output->write_error = IoErrorCode::PermissionDenied;
+    expected_error = IoErrorCode::PermissionDenied;
   }
-  std::optional<FileResult<DirectoryCopySummary>> result;
+  std::optional<IoResult<DirectoryCopySummary>> result;
   const auto copy = [&](bool overwrite) {
     file_task_complete = false;
     file_tasks.Launch([&, overwrite]() -> Task<void> {
@@ -628,7 +793,7 @@ TEST_CASE("DirectoryCopiesIndexListingBasedDestinationsOnlyWithinOneCopy") {
   REQUIRE(output->write_count == 1000);
   copy(false);
   REQUIRE_FALSE(result->Succeeded());
-  REQUIRE(result->Error().code == FileErrorCode::AlreadyExists);
+  REQUIRE(result->Error().code == IoErrorCode::AlreadyExists);
   REQUIRE(output->write_count == 1000);
   copy(true);
   REQUIRE(result->Succeeded());
@@ -655,7 +820,7 @@ TEST_CASE("DirectoryReferencesRejectReadonlyConflictsOverlapAndInvalidNames") {
   auto target = detail::MakeLocalFileReference(destination, true);
   REQUIRE_THROWS_AS(target.CreateDirectoryAsync("../escape"), std::invalid_argument);
   REQUIRE_THROWS_AS(target.CopyFileFromAsync(source.Child("file.txt"), "a/b"), std::invalid_argument);
-  std::vector<FileErrorCode> errors;
+  std::vector<IoErrorCode> errors;
   bool overwritten = false;
   bool children_readonly = false;
   file_tasks.Launch([&]() -> Task<void> {
@@ -680,8 +845,8 @@ TEST_CASE("DirectoryReferencesRejectReadonlyConflictsOverlapAndInvalidNames") {
   });
   platform.RunUntil([] { return file_task_complete; });
   REQUIRE(children_readonly);
-  REQUIRE((errors == std::vector<FileErrorCode>{FileErrorCode::PermissionDenied, FileErrorCode::IsDirectory,
-      FileErrorCode::AlreadyExists, FileErrorCode::Unsupported, FileErrorCode::Unsupported}));
+  REQUIRE((errors == std::vector<IoErrorCode>{IoErrorCode::PermissionDenied, IoErrorCode::IsDirectory,
+      IoErrorCode::AlreadyExists, IoErrorCode::Unsupported, IoErrorCode::Unsupported}));
   REQUIRE(overwritten);
   REQUIRE(destination.Child("file.txt").ReadString().Value() == "source");
   REQUIRE_FALSE(source.Child("denied").Exists());
@@ -721,7 +886,7 @@ TEST_CASE("DirectoryReferencesKeepRetainedChildrenAndRejectLinksAndRenamedChildr
     auto existing = co_await target.CreateDirectoryAsync("Case");
     idempotent = existing.Succeeded() && existing.Value().Name() == "Case";
     auto alias = co_await target.CreateDirectoryAsync("case");
-    rejected_alias = !alias.Succeeded() && alias.Error().code == FileErrorCode::Unsupported;
+    rejected_alias = !alias.Succeeded() && alias.Error().code == IoErrorCode::Unsupported;
     file_task_complete = true;
   });
   platform.RunUntil([] { return file_task_complete; });
@@ -741,7 +906,7 @@ TEST_CASE("DirectoryReferencesKeepRetainedChildrenAndRejectLinksAndRenamedChildr
   auto source = detail::MakeLocalFileReference(directory, false);
   file_tasks.Launch([&]() -> Task<void> {
     auto result = co_await source.CopyDirectoryContentsToAsync(target, true);
-    rejected_link = !result.Succeeded() && result.Error().code == FileErrorCode::Unsupported;
+    rejected_link = !result.Succeeded() && result.Error().code == IoErrorCode::Unsupported;
     file_task_complete = true;
   });
   platform.RunUntil([] { return file_task_complete; });
@@ -819,8 +984,8 @@ TEST_CASE("WindowsDirectoryReferencesProbeWriteAccessWithoutChangingTheDirectory
   const auto entries = directory.ListChildren();
   REQUIRE(entries.Succeeded());
   REQUIRE(entries.Value().empty());
-  std::optional<FileResult<std::vector<FileReference>>> children;
-  std::optional<FileResult<FileReference>> created;
+  std::optional<IoResult<std::vector<FileReference>>> children;
+  std::optional<IoResult<FileReference>> created;
   file_tasks.Launch([&]() -> Task<void> {
     children = co_await reference->ListChildrenAsync();
     created = co_await reference->CreateDirectoryAsync("child");
@@ -834,7 +999,7 @@ TEST_CASE("WindowsDirectoryReferencesProbeWriteAccessWithoutChangingTheDirectory
   REQUIRE(created->Succeeded() == expected_write);
   REQUIRE(directory.Child("child").Exists() == expected_write);
   if (!expected_write) {
-    REQUIRE(created->Error().code == FileErrorCode::PermissionDenied);
+    REQUIRE(created->Error().code == IoErrorCode::PermissionDenied);
   }
 }
 
@@ -880,7 +1045,7 @@ TEST_CASE("WindowsDirectoryOverwritesPreserveOriginalsAndCleanUpFailedStagingFil
       FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
   REQUIRE(handle != INVALID_HANDLE_VALUE);
   std::unique_ptr<void, decltype(&CloseHandle)> blocker{handle, CloseHandle};
-  std::optional<FileResult<FileReference>> result;
+  std::optional<IoResult<FileReference>> result;
   const auto copy = [&] {
     file_task_complete = false;
     result.reset();

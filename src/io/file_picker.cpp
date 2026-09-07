@@ -19,6 +19,7 @@
 
 #include "file_internal.h"
 #include "runtime/task_internal.h"
+#include "stream_internal.h"
 
 namespace huxerui::detail {
 
@@ -258,24 +259,66 @@ Task<Result> RunCallbackOperation(typename CallbackOperationState<Result>::Start
   co_return co_await CallbackOperationAwaiter<Result>(std::move(starter), std::move(failure));
 }
 
-Task<FileResult<Bytes>> ReadReferenceBytes(std::shared_ptr<FileReferenceState> state, FileType type) {
+Task<IoResult<Bytes>> ReadReferenceBytes(std::shared_ptr<FileReferenceState> state, FileType type) {
   if (type != FileType::File) {
-    co_return FileResult<Bytes>(
-        FileError{type == FileType::Directory ? FileErrorCode::IsDirectory : FileErrorCode::Unsupported,
+    co_return IoResult<Bytes>(
+        IoError{type == FileType::Directory ? IoErrorCode::IsDirectory : IoErrorCode::Unsupported,
                   "HuxerUI external item is not an ordinary file"});
   }
-  co_return co_await RunCallbackOperation<FileResult<Bytes>>(
+  co_return co_await RunCallbackOperation<IoResult<Bytes>>(
       [state = std::move(state)](FileReferenceBytesCompletion completion) {
         return state->ReadBytes(std::move(completion));
       },
-      FileResult<Bytes>(FileError{
-          FileErrorCode::Io,
+      IoResult<Bytes>(IoError{
+          IoErrorCode::Io,
           "HuxerUI external file read failed",
       })
   );
 }
 
-Task<FileResult<std::string>> ReadReferenceString(std::shared_ptr<FileReferenceState> state, FileType type) {
+Task<IoResult<AsyncInputStream>> OpenReferenceInputStream(std::shared_ptr<FileReferenceState> state, FileType type) {
+  if (type != FileType::File) {
+    co_return IoResult<AsyncInputStream>(IoError{
+        type == FileType::Directory ? IoErrorCode::IsDirectory : IoErrorCode::Unsupported,
+        "HuxerUI external item is not an ordinary file",
+    });
+  }
+  auto opened = co_await RunCallbackOperation<IoResult<std::shared_ptr<AsyncInputStreamState>>>(
+      [state = std::move(state)](FileReferenceInputStreamCompletion completion) {
+        return state->OpenRead(std::move(completion));
+      },
+      IoResult<std::shared_ptr<AsyncInputStreamState>>(
+          IoError{IoErrorCode::Io, "HuxerUI external file stream could not be opened"}));
+  if (!opened.Succeeded()) {
+    co_return IoResult<AsyncInputStream>(std::move(opened).Error());
+  }
+  co_return IoResult<AsyncInputStream>(StreamAccess::MakeAsyncInputStream(std::move(opened).Value()));
+}
+
+Task<IoResult<AsyncOutputStream>> OpenReferenceOutputStream(std::shared_ptr<FileReferenceState> state, bool can_write,
+                                                            FileType type) {
+  if (type != FileType::File || !can_write) {
+    co_return IoResult<AsyncOutputStream>(IoError{
+        type == FileType::Directory ? IoErrorCode::IsDirectory
+                                    : type == FileType::File ? IoErrorCode::PermissionDenied
+                                                             : IoErrorCode::Unsupported,
+        type == FileType::File ? "HuxerUI external file is not writable"
+                               : "HuxerUI external item is not an ordinary file",
+    });
+  }
+  auto opened = co_await RunCallbackOperation<IoResult<std::shared_ptr<AsyncOutputStreamState>>>(
+      [state = std::move(state)](FileReferenceOutputStreamCompletion completion) {
+        return state->OpenWrite(std::move(completion));
+      },
+      IoResult<std::shared_ptr<AsyncOutputStreamState>>(
+          IoError{IoErrorCode::Io, "HuxerUI external file stream could not be opened"}));
+  if (!opened.Succeeded()) {
+    co_return IoResult<AsyncOutputStream>(std::move(opened).Error());
+  }
+  co_return IoResult<AsyncOutputStream>(StreamAccess::MakeAsyncOutputStream(std::move(opened).Value()));
+}
+
+Task<IoResult<std::string>> ReadReferenceString(std::shared_ptr<FileReferenceState> state, FileType type) {
   // This is a whole-file read. Decoding runs after resumption on the owning Runtime thread, unlike
   // File::ReadStringAsync(), which decodes inside its scheduled file operation.
   co_return DecodeFileUtf8(co_await ReadReferenceBytes(std::move(state), type));
@@ -285,11 +328,11 @@ Task<bool> ImportReference(std::shared_ptr<FileReferenceState> state, File desti
   if (type != FileType::File) {
     co_return false;
   }
-  auto result = co_await RunCallbackOperation<FileResult<std::uint64_t>>(
+  auto result = co_await RunCallbackOperation<IoResult<std::uint64_t>>(
       [state = std::move(state), destination = std::move(destination), overwrite](auto completion) {
         return state->ImportTo(destination, overwrite, std::move(completion));
       },
-      FileResult<std::uint64_t>(FileError{FileErrorCode::Io, "HuxerUI external file import failed"}));
+      IoResult<std::uint64_t>(IoError{IoErrorCode::Io, "HuxerUI external file import failed"}));
   co_return result.Succeeded();
 }
 
@@ -305,29 +348,29 @@ Task<bool> ReplaceReference(std::shared_ptr<FileReferenceState> state, File sour
   );
 }
 
-FileError ReferenceError(FileErrorCode code, std::string_view operation) {
+IoError ReferenceError(IoErrorCode code, std::string_view operation) {
   return {code, "HuxerUI external " + std::string(operation) + " failed"};
 }
 
-template <class T, class Starter> Task<FileResult<T>> RunReferenceOperation(Starter starter) {
-  return RunCallbackOperation<FileResult<T>>(std::move(starter),
-                                             FileResult<T>(ReferenceError(FileErrorCode::Io, "directory operation")));
+template <class T, class Starter> Task<IoResult<T>> RunReferenceOperation(Starter starter) {
+  return RunCallbackOperation<IoResult<T>>(std::move(starter),
+                                           IoResult<T>(ReferenceError(IoErrorCode::Io, "directory operation")));
 }
 
-std::optional<FileError> DirectoryError(const FileReference& reference, bool writing) {
+std::optional<IoError> DirectoryError(const FileReference& reference, bool writing) {
   if (reference.Type() != FileType::Directory) {
-    return ReferenceError(reference.Type() == FileType::File ? FileErrorCode::NotDirectory : FileErrorCode::Unsupported,
+    return ReferenceError(reference.Type() == FileType::File ? IoErrorCode::NotDirectory : IoErrorCode::Unsupported,
                           "directory access");
   }
   if (writing && !reference.CanWrite()) {
-    return ReferenceError(FileErrorCode::PermissionDenied, "directory write");
+    return ReferenceError(IoErrorCode::PermissionDenied, "directory write");
   }
   return std::nullopt;
 }
 
-Task<FileResult<std::vector<FileReference>>> ListReferenceChildren(FileReference reference) {
+Task<IoResult<std::vector<FileReference>>> ListReferenceChildren(FileReference reference) {
   if (auto error = DirectoryError(reference, false)) {
-    co_return FileResult<std::vector<FileReference>>(*error);
+    co_return IoResult<std::vector<FileReference>>(*error);
   }
   co_return co_await RunReferenceOperation<std::vector<FileReference>>(
       [state = FileReferenceState::Of(reference)](auto completion) {
@@ -336,9 +379,9 @@ Task<FileResult<std::vector<FileReference>>> ListReferenceChildren(FileReference
 }
 
 template <class Starter>
-Task<FileResult<FileReference>> WriteReference(FileReference directory, std::string name, Starter starter) {
+Task<IoResult<FileReference>> WriteReference(FileReference directory, std::string name, Starter starter) {
   if (auto error = DirectoryError(directory, true)) {
-    co_return FileResult<FileReference>(*error);
+    co_return IoResult<FileReference>(*error);
   }
   auto state = FileReferenceState::Of(directory);
   // Carry the child lookup into the write so providers can reuse its entry key. Native and Web writes
@@ -346,21 +389,21 @@ Task<FileResult<FileReference>> WriteReference(FileReference directory, std::str
   auto existing = co_await RunReferenceOperation<std::optional<FileReference>>(
       [state, name](auto completion) { return state->FindChild(name, std::move(completion)); });
   if (!existing.Succeeded()) {
-    co_return FileResult<FileReference>(existing.Error());
+    co_return IoResult<FileReference>(existing.Error());
   }
-  co_return co_await RunReferenceOperation<FileReference>([state, existing = std::move(existing.Value()),
-                                                           starter = std::move(starter)](auto completion) mutable {
-    return starter(*state, std::move(existing),
-                   [completion = std::move(completion)](FileResult<FileReferenceWriteResult> result) mutable {
-                     completion(result.Succeeded() ? FileResult<FileReference>(std::move(result.Value().reference))
-                                                   : FileResult<FileReference>(result.Error()));
-                   });
-  });
+  co_return co_await RunReferenceOperation<FileReference>(
+      [state, existing = std::move(existing.Value()), starter = std::move(starter)](auto completion) mutable {
+        return starter(*state, std::move(existing),
+                       [completion = std::move(completion)](IoResult<FileReferenceWriteResult> result) mutable {
+                         completion(result.Succeeded() ? IoResult<FileReference>(std::move(result.Value().reference))
+                                                       : IoResult<FileReference>(result.Error()));
+                       });
+      });
 }
 
 // Report the source-relative stage without leaking provider URIs or native paths. Escape untrusted
 // names so a newline or quote in a filename cannot disguise the entry that failed.
-FileError DirectoryCopyError(FileErrorCode code, std::string_view stage, std::string_view path) {
+IoError DirectoryCopyError(IoErrorCode code, std::string_view stage, std::string_view path) {
   std::string escaped;
   for (unsigned char character : path) {
     if (character < 0x20 || character == 0x7f || character == '"' || character == '\\') {
@@ -375,10 +418,10 @@ FileError DirectoryCopyError(FileErrorCode code, std::string_view stage, std::st
   return {code, "HuxerUI directory copy " + std::string(stage) + " failed at \"" + escaped + "\""};
 }
 
-Task<FileResult<DirectoryCopySummary>> CopyDirectoryContents(
-    FileReference source, std::variant<File, FileReference> destination, bool overwrite) {
+Task<IoResult<DirectoryCopySummary>>
+CopyDirectoryContents(FileReference source, std::variant<File, FileReference> destination, bool overwrite) {
   if (auto error = DirectoryError(source, false)) {
-    co_return FileResult<DirectoryCopySummary>(DirectoryCopyError(error->code, "source access", ""));
+    co_return IoResult<DirectoryCopySummary>(DirectoryCopyError(error->code, "source access", ""));
   }
   std::shared_ptr<FileReferenceState> target;
   FileReferenceSource target_location{target};
@@ -387,14 +430,14 @@ Task<FileResult<DirectoryCopySummary>> CopyDirectoryContents(
     // but retains its File identity for the source platform's root-containment check.
     auto local = co_await MakeLocalDirectoryState(*file);
     if (!local.Succeeded()) {
-      co_return FileResult<DirectoryCopySummary>(DirectoryCopyError(local.Error().code, "destination access", ""));
+      co_return IoResult<DirectoryCopySummary>(DirectoryCopyError(local.Error().code, "destination access", ""));
     }
     target = std::move(local.Value());
     target_location = *file;
   } else {
     const auto& reference = std::get<1>(destination);
     if (auto error = DirectoryError(reference, true)) {
-      co_return FileResult<DirectoryCopySummary>(DirectoryCopyError(error->code, "destination access", ""));
+      co_return IoResult<DirectoryCopySummary>(DirectoryCopyError(error->code, "destination access", ""));
     }
     target = FileReferenceState::Of(reference);
     target_location = target;
@@ -406,8 +449,8 @@ Task<FileResult<DirectoryCopySummary>> CopyDirectoryContents(
         return state->CheckCopyDestination(target_location, std::move(completion));
       });
   if (!independent.Succeeded() || !independent.Value()) {
-    co_return FileResult<DirectoryCopySummary>(DirectoryCopyError(
-        independent.Succeeded() ? FileErrorCode::Unsupported : independent.Error().code, "root containment", ""));
+    co_return IoResult<DirectoryCopySummary>(DirectoryCopyError(
+        independent.Succeeded() ? IoErrorCode::Unsupported : independent.Error().code, "root containment", ""));
   }
 
   // Retain only active directory frames and their sibling lists, not the complete source tree.
@@ -432,12 +475,12 @@ Task<FileResult<DirectoryCopySummary>> CopyDirectoryContents(
     if (!frame.listed) {
       const std::string entry_key = FileReferenceState::Of(frame.source)->EntryKey();
       if (entry_key.empty() || !ancestors.insert(entry_key).second) {
-        co_return FileResult<DirectoryCopySummary>(
-            DirectoryCopyError(FileErrorCode::Unsupported, "source ancestry", frame.path));
+        co_return IoResult<DirectoryCopySummary>(
+            DirectoryCopyError(IoErrorCode::Unsupported, "source ancestry", frame.path));
       }
       auto children = co_await ListReferenceChildren(frame.source);
       if (!children.Succeeded()) {
-        co_return FileResult<DirectoryCopySummary>(
+        co_return IoResult<DirectoryCopySummary>(
             DirectoryCopyError(children.Error().code, "source enumeration", frame.path));
       }
       frame.children = std::move(children.Value());
@@ -447,19 +490,17 @@ Task<FileResult<DirectoryCopySummary>> CopyDirectoryContents(
         const std::string name = child.Name();
         const std::string path = frame.path.empty() ? name : frame.path + "/" + name;
         if (!IsValidReferenceChildName(name)) {
-          co_return FileResult<DirectoryCopySummary>(
-              DirectoryCopyError(FileErrorCode::Unsupported, "source name", path));
+          co_return IoResult<DirectoryCopySummary>(DirectoryCopyError(IoErrorCode::Unsupported, "source name", path));
         }
         if (!names.insert(name).second) {
-          co_return FileResult<DirectoryCopySummary>(
-              DirectoryCopyError(FileErrorCode::AlreadyExists, "source name", path));
+          co_return IoResult<DirectoryCopySummary>(DirectoryCopyError(IoErrorCode::AlreadyExists, "source name", path));
         }
       }
       if (!frame.children.empty() && frame.destination->NeedsChildListingForLookup()) {
         auto targets = co_await RunReferenceOperation<std::vector<FileReference>>(
             [state = frame.destination](auto completion) { return state->ListChildren(std::move(completion)); });
         if (!targets.Succeeded()) {
-          co_return FileResult<DirectoryCopySummary>(
+          co_return IoResult<DirectoryCopySummary>(
               DirectoryCopyError(targets.Error().code, "destination enumeration", frame.path));
         }
         // Retain duplicates so ambiguity is rejected only if the copy addresses that name. This
@@ -480,7 +521,7 @@ Task<FileResult<DirectoryCopySummary>> CopyDirectoryContents(
     const std::string name = child.Name();
     const std::string path = frame.path.empty() ? name : frame.path + "/" + name;
     if (child.Type() == FileType::Other) {
-      co_return FileResult<DirectoryCopySummary>(DirectoryCopyError(FileErrorCode::Unsupported, "source type", path));
+      co_return IoResult<DirectoryCopySummary>(DirectoryCopyError(IoErrorCode::Unsupported, "source type", path));
     }
     std::optional<FileReference> existing;
     if (frame.destination_children) {
@@ -488,8 +529,8 @@ Task<FileResult<DirectoryCopySummary>> CopyDirectoryContents(
       if (first != last) {
         auto next = first;
         if (++next != last) {
-          co_return FileResult<DirectoryCopySummary>(
-              DirectoryCopyError(FileErrorCode::AlreadyExists, "destination lookup", path));
+          co_return IoResult<DirectoryCopySummary>(
+              DirectoryCopyError(IoErrorCode::AlreadyExists, "destination lookup", path));
         }
         existing = first->second;
       }
@@ -497,7 +538,7 @@ Task<FileResult<DirectoryCopySummary>> CopyDirectoryContents(
       auto found = co_await RunReferenceOperation<std::optional<FileReference>>(
           [state = frame.destination, name](auto completion) { return state->FindChild(name, std::move(completion)); });
       if (!found.Succeeded()) {
-        co_return FileResult<DirectoryCopySummary>(DirectoryCopyError(found.Error().code, "destination lookup", path));
+        co_return IoResult<DirectoryCopySummary>(DirectoryCopyError(found.Error().code, "destination lookup", path));
       }
       existing = std::move(found.Value());
     }
@@ -505,13 +546,13 @@ Task<FileResult<DirectoryCopySummary>> CopyDirectoryContents(
       const FileReference& target = *existing;
       const std::string entry_key = FileReferenceState::Of(target)->EntryKey();
       if (entry_key.empty()) {
-        co_return FileResult<DirectoryCopySummary>(
-            DirectoryCopyError(FileErrorCode::Unsupported, "destination entry key", path));
+        co_return IoResult<DirectoryCopySummary>(
+            DirectoryCopyError(IoErrorCode::Unsupported, "destination entry key", path));
       }
       if (frame.outputs.contains(entry_key) || target.Type() != child.Type() ||
           (child.Type() == FileType::File && !overwrite)) {
-        co_return FileResult<DirectoryCopySummary>(
-            DirectoryCopyError(FileErrorCode::AlreadyExists, "destination collision", path));
+        co_return IoResult<DirectoryCopySummary>(
+            DirectoryCopyError(IoErrorCode::AlreadyExists, "destination collision", path));
       }
     }
     // The destination owns creation, transfer, and finalization. Shared traversal does not read file
@@ -524,13 +565,13 @@ Task<FileResult<DirectoryCopySummary>> CopyDirectoryContents(
           return state->CopyFileFrom(FileReferenceState::Of(child), name, overwrite, existing, std::move(completion));
         });
     if (!output.Succeeded()) {
-      co_return FileResult<DirectoryCopySummary>(DirectoryCopyError(output.Error().code, "entry transfer", path));
+      co_return IoResult<DirectoryCopySummary>(DirectoryCopyError(output.Error().code, "entry transfer", path));
     }
     FileReferenceWriteResult written = std::move(output.Value());
     const std::string entry_key = FileReferenceState::Of(written.reference)->EntryKey();
     if (entry_key.empty() || !frame.outputs.insert(entry_key).second) {
-      co_return FileResult<DirectoryCopySummary>(
-          DirectoryCopyError(FileErrorCode::Unsupported, "destination entry key", path));
+      co_return IoResult<DirectoryCopySummary>(
+          DirectoryCopyError(IoErrorCode::Unsupported, "destination entry key", path));
     }
     if (frame.destination_children) {
       frame.destination_children->erase(name);
@@ -541,7 +582,7 @@ Task<FileResult<DirectoryCopySummary>> CopyDirectoryContents(
       stack.push_back({child, FileReferenceState::Of(written.reference), path, {}, {}});
     } else {
       if (written.bytes_copied > std::numeric_limits<std::uint64_t>::max() - summary.bytes_copied) {
-        co_return FileResult<DirectoryCopySummary>(DirectoryCopyError(FileErrorCode::TooLarge, "byte count", path));
+        co_return IoResult<DirectoryCopySummary>(DirectoryCopyError(IoErrorCode::TooLarge, "byte count", path));
       }
       ++summary.files_copied;
       summary.bytes_copied += written.bytes_copied;
@@ -549,7 +590,7 @@ Task<FileResult<DirectoryCopySummary>> CopyDirectoryContents(
   }
   // Only complete success returns a summary. Earlier output survives errors or Task cancellation;
   // this traversal is not a snapshot, an externally isolated transaction, or a rollback mechanism.
-  co_return FileResult<DirectoryCopySummary>(summary);
+  co_return IoResult<DirectoryCopySummary>(summary);
 }
 
 class PickerRequestBase {
@@ -886,6 +927,18 @@ Task<bool> SaveLocalFile(std::shared_ptr<FilePickerController> controller, File 
 
 } // namespace
 
+Task<IoResult<Bytes>> RunFileReferenceBytesOperation(FileReferenceBytesOperation operation) {
+  co_return co_await RunCallbackOperation<IoResult<Bytes>>(
+      std::move(operation),
+      IoResult<Bytes>(IoError{IoErrorCode::Io, "HuxerUI external file stream operation failed"}));
+}
+
+Task<IoResult<bool>> RunFileReferenceBoolOperation(FileReferenceResultBoolOperation operation) {
+  co_return co_await RunCallbackOperation<IoResult<bool>>(
+      std::move(operation),
+      IoResult<bool>(IoError{IoErrorCode::Io, "HuxerUI external file stream operation failed"}));
+}
+
 FileReference MakeFileReference(FileReferenceMetadata metadata, std::shared_ptr<FileReferenceState> state) {
   if (!state) {
     throw std::logic_error("HuxerUI platform file reference state must not be empty");
@@ -918,6 +971,16 @@ void ValidateReferenceChildName(std::string_view name) {
 std::shared_ptr<FileReferenceState> FileReferenceState::Of(const FileReference& reference) {
   return reference.state_;
 }
+std::function<void()> FileReferenceState::OpenRead(FileReferenceInputStreamCompletion completion) {
+  completion(
+      IoResult<std::shared_ptr<AsyncInputStreamState>>(ReferenceError(IoErrorCode::Unsupported, "file stream open")));
+  return {};
+}
+std::function<void()> FileReferenceState::OpenWrite(FileReferenceOutputStreamCompletion completion) {
+  completion(
+      IoResult<std::shared_ptr<AsyncOutputStreamState>>(ReferenceError(IoErrorCode::Unsupported, "file stream open")));
+  return {};
+}
 std::optional<File> FileReferenceState::AsFile() const {
   return std::nullopt;
 }
@@ -926,33 +989,33 @@ std::string FileReferenceState::EntryKey() const {
 }
 
 std::function<void()> FileReferenceState::ListChildren(FileReferenceCompletion<std::vector<FileReference>> completion) {
-  completion(FileResult<std::vector<FileReference>>(ReferenceError(FileErrorCode::Unsupported, "enumeration")));
+  completion(IoResult<std::vector<FileReference>>(ReferenceError(IoErrorCode::Unsupported, "enumeration")));
   return {};
 }
 
 std::function<void()> FileReferenceState::FindChild(std::string,
                                                     FileReferenceCompletion<std::optional<FileReference>> completion) {
-  completion(FileResult<std::optional<FileReference>>(ReferenceError(FileErrorCode::Unsupported, "child lookup")));
+  completion(IoResult<std::optional<FileReference>>(ReferenceError(IoErrorCode::Unsupported, "child lookup")));
   return {};
 }
 
 std::function<void()>
 FileReferenceState::CreateDirectory(std::string, std::optional<FileReference>,
                                     FileReferenceCompletion<FileReferenceWriteResult> completion) {
-  completion(FileResult<FileReferenceWriteResult>(ReferenceError(FileErrorCode::Unsupported, "directory creation")));
+  completion(IoResult<FileReferenceWriteResult>(ReferenceError(IoErrorCode::Unsupported, "directory creation")));
   return {};
 }
 
-std::function<void()> FileReferenceState::CopyFileFrom(
-    FileReferenceSource, std::string, bool, std::optional<FileReference>,
-    FileReferenceCompletion<FileReferenceWriteResult> completion) {
-  completion(FileResult<FileReferenceWriteResult>(ReferenceError(FileErrorCode::Unsupported, "file copy")));
+std::function<void()> FileReferenceState::CopyFileFrom(FileReferenceSource, std::string, bool,
+                                                       std::optional<FileReference>,
+                                                       FileReferenceCompletion<FileReferenceWriteResult> completion) {
+  completion(IoResult<FileReferenceWriteResult>(ReferenceError(IoErrorCode::Unsupported, "file copy")));
   return {};
 }
 
 std::function<void()> FileReferenceState::CheckCopyDestination(FileReferenceSource,
                                                                FileReferenceCompletion<bool> completion) {
-  completion(FileResult<bool>(ReferenceError(FileErrorCode::Unsupported, "containment check")));
+  completion(IoResult<bool>(ReferenceError(IoErrorCode::Unsupported, "containment check")));
   return {};
 }
 
@@ -1000,11 +1063,19 @@ std::optional<File> FileReference::AsFile() const {
   return state_ ? state_->AsFile() : std::nullopt;
 }
 
-Task<FileResult<Bytes>> FileReference::ReadBytesAsync() const {
+Task<IoResult<AsyncInputStream>> FileReference::OpenReadAsync() const {
+  return detail::OpenReferenceInputStream(state_, type_);
+}
+
+Task<IoResult<AsyncOutputStream>> FileReference::OpenWriteAsync() const {
+  return detail::OpenReferenceOutputStream(state_, can_write_, type_);
+}
+
+Task<IoResult<Bytes>> FileReference::ReadBytesAsync() const {
   return detail::ReadReferenceBytes(state_, type_);
 }
 
-Task<FileResult<std::string>> FileReference::ReadStringAsync() const {
+Task<IoResult<std::string>> FileReference::ReadStringAsync() const {
   return detail::ReadReferenceString(state_, type_);
 }
 
@@ -1016,20 +1087,20 @@ Task<bool> FileReference::ReplaceWithAsync(File source) const {
   return detail::ReplaceReference(state_, std::move(source), can_write_ && type_ == FileType::File);
 }
 
-Task<FileResult<std::vector<FileReference>>> FileReference::ListChildrenAsync() const {
+Task<IoResult<std::vector<FileReference>>> FileReference::ListChildrenAsync() const {
   return detail::ListReferenceChildren(*this);
 }
 
-Task<FileResult<FileReference>> FileReference::CreateDirectoryAsync(std::string name) const {
+Task<IoResult<FileReference>> FileReference::CreateDirectoryAsync(std::string name) const {
   // Validate caller input before returning the lazy Task. Provider-reported name restrictions instead
-  // become FileErrors during execution; they must not silently rename the requested child.
+  // become IoErrors during execution; they must not silently rename the requested child.
   detail::ValidateReferenceChildName(name);
   return detail::WriteReference(*this, name, [name](auto& state, auto existing, auto completion) mutable {
     return state.CreateDirectory(std::move(name), std::move(existing), std::move(completion));
   });
 }
 
-Task<FileResult<FileReference>> FileReference::CopyFileFromAsync(File source, std::string name, bool overwrite) const {
+Task<IoResult<FileReference>> FileReference::CopyFileFromAsync(File source, std::string name, bool overwrite) const {
   detail::ValidateReferenceChildName(name);
   return detail::WriteReference(
       *this, name, [name, source = std::move(source), overwrite](auto& state, auto existing, auto completion) mutable {
@@ -1038,8 +1109,8 @@ Task<FileResult<FileReference>> FileReference::CopyFileFromAsync(File source, st
       });
 }
 
-Task<FileResult<FileReference>> FileReference::CopyFileFromAsync(FileReference source, std::string name,
-                                                                 bool overwrite) const {
+Task<IoResult<FileReference>> FileReference::CopyFileFromAsync(FileReference source, std::string name,
+                                                               bool overwrite) const {
   detail::ValidateReferenceChildName(name);
   return detail::WriteReference(
       *this, name, [name, source = source.state_, overwrite](auto& state, auto existing, auto completion) mutable {
@@ -1048,13 +1119,13 @@ Task<FileResult<FileReference>> FileReference::CopyFileFromAsync(FileReference s
       });
 }
 
-Task<FileResult<DirectoryCopySummary>> FileReference::CopyDirectoryContentsToAsync(File destination,
-                                                                                   bool overwrite) const {
+Task<IoResult<DirectoryCopySummary>> FileReference::CopyDirectoryContentsToAsync(File destination,
+                                                                                 bool overwrite) const {
   return detail::CopyDirectoryContents(*this, std::move(destination), overwrite);
 }
 
-Task<FileResult<DirectoryCopySummary>> FileReference::CopyDirectoryContentsToAsync(FileReference destination,
-                                                                                   bool overwrite) const {
+Task<IoResult<DirectoryCopySummary>> FileReference::CopyDirectoryContentsToAsync(FileReference destination,
+                                                                                 bool overwrite) const {
   return detail::CopyDirectoryContents(*this, std::move(destination), overwrite);
 }
 

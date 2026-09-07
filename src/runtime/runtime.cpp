@@ -1186,6 +1186,7 @@ Runtime::Runtime(const Application& application, PlatformAdapter& platform, Appl
 }
 
 Runtime::~Runtime() {
+  state_->app_resources_->Disconnect();
   state_->file_drop_->DisconnectFileDrop();
   try {
     state_->text_->StopTextInputSession(TextInputEndReason::RuntimeDestroyed);

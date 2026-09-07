@@ -39,17 +39,17 @@ std::string MakeString(NSString* value) {
   return std::string(static_cast<const char*>(data.bytes), data.length);
 }
 
-FileErrorCode FileErrorCodeFor(NSError* error) noexcept {
+IoErrorCode FileErrorCodeFor(NSError* error) noexcept {
   if (error == nil || ![error.domain isEqualToString:NSCocoaErrorDomain]) {
-    return FileErrorCode::Io;
+    return IoErrorCode::Io;
   }
   if (error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError) {
-    return FileErrorCode::NotFound;
+    return IoErrorCode::NotFound;
   }
   if (error.code == NSFileReadNoPermissionError || error.code == NSFileWriteNoPermissionError) {
-    return FileErrorCode::PermissionDenied;
+    return IoErrorCode::PermissionDenied;
   }
-  return FileErrorCode::Io;
+  return IoErrorCode::Io;
 }
 
 NSURL* FileURL(const File& file) {
@@ -281,7 +281,7 @@ FileReference MakeMacReference(NSURL* url, bool writable, std::shared_ptr<MacFil
             std::rethrow_exception(exception);
           }
           if (!accessed || error) {
-            throw std::system_error(std::make_error_code(FileErrorCodeFor(error) == FileErrorCode::PermissionDenied
+            throw std::system_error(std::make_error_code(FileErrorCodeFor(error) == IoErrorCode::PermissionDenied
                                                              ? std::errc::permission_denied
                                                              : std::errc::io_error));
           }
@@ -549,9 +549,8 @@ FileDropPreparation CaptureMacFileDrop(NSPasteboard* pasteboard) {
       @autoreleasepool {
         try {
           if (!complete) {
-            completion(FileResult<std::vector<FileReference>>(
-                FileError{FileErrorCode::Unsupported, "HuxerUI file drop requires a complete batch of file URLs"}
-            ));
+            completion(IoResult<std::vector<FileReference>>(
+                IoError{IoErrorCode::Unsupported, "HuxerUI file drop requires a complete batch of file URLs"}));
             return;
           }
           std::vector<FileReference> files;
@@ -563,13 +562,12 @@ FileDropPreparation CaptureMacFileDrop(NSPasteboard* pasteboard) {
             files.push_back(MakeMacReference(urls[index], false, access[index]));
           }
           if (!*canceled) {
-            completion(FileResult<std::vector<FileReference>>(std::move(files)));
+            completion(IoResult<std::vector<FileReference>>(std::move(files)));
           }
         } catch (...) {
           if (!*canceled) {
-            completion(FileResult<std::vector<FileReference>>(
-                FileError{FileErrorCode::Io, "HuxerUI could not retain the macOS dropped files"}
-            ));
+            completion(IoResult<std::vector<FileReference>>(
+                IoError{IoErrorCode::Io, "HuxerUI could not retain the macOS dropped files"}));
           }
         }
       }

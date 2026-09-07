@@ -82,16 +82,16 @@ bool AcceptsFileDropOffer(const FileDropOptions& options, const FileDropOffer& o
   return !offer.item_count || (*offer.item_count > 0 && (options.allows_multiple || *offer.item_count == 1));
 }
 
-std::optional<FileError> ValidateDroppedFiles(const FileDropOptions& options, const std::vector<FileReference>& files) {
+std::optional<IoError> ValidateDroppedFiles(const FileDropOptions& options, const std::vector<FileReference>& files) {
   if (files.empty() || (!options.allows_multiple && files.size() != 1)) {
-    return FileError{FileErrorCode::Unsupported, "HuxerUI file drop contains a disallowed number of files"};
+    return IoError{IoErrorCode::Unsupported, "HuxerUI file drop contains a disallowed number of files"};
   }
   for (const FileReference& file : files) {
     if (file.Type() == FileType::Directory) {
-      return FileError{FileErrorCode::IsDirectory, "HuxerUI file drop does not accept directories"};
+      return IoError{IoErrorCode::IsDirectory, "HuxerUI file drop does not accept directories"};
     }
     if (file.Type() != FileType::File || !MatchesFile(options, file)) {
-      return FileError{FileErrorCode::Unsupported, "HuxerUI file drop does not match the receiving target's filter"};
+      return IoError{IoErrorCode::Unsupported, "HuxerUI file drop does not match the receiving target's filter"};
     }
   }
   return std::nullopt;
@@ -366,14 +366,13 @@ bool detail::FileDropReceiver::HandleFileDrop(
       pending->Cancel();
     }
   } catch (...) {
-    completion(FileResult<std::vector<FileReference>>(
-        FileError{FileErrorCode::Io, "HuxerUI could not prepare the dropped files"}
-    ));
+    completion(IoResult<std::vector<FileReference>>(
+        IoError{IoErrorCode::Io, "HuxerUI could not prepare the dropped files"}));
   }
   return true;
 }
 
-void detail::FileDropReceiver::FinishFileDrop(std::uint64_t operation, FileResult<std::vector<FileReference>> result) {
+void detail::FileDropReceiver::FinishFileDrop(std::uint64_t operation, IoResult<std::vector<FileReference>> result) {
   const auto drop = state_;
   if (!drop) {
     return;
@@ -396,7 +395,7 @@ void detail::FileDropReceiver::FinishFileDrop(std::uint64_t operation, FileResul
   const auto bindings = node->event_bindings;
   if (result.Succeeded()) {
     if (auto error = ValidateDroppedFiles(pending->options, result.Value())) {
-      result = FileResult<std::vector<FileReference>>(std::move(*error));
+      result = IoResult<std::vector<FileReference>>(std::move(*error));
     }
   }
   if (result.Succeeded()) {

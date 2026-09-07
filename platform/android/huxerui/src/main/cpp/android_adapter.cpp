@@ -1,6 +1,8 @@
 #include <huxerui/app.h>
 
 #include <android/input.h>
+#include <android/asset_manager.h>
+#include <android/asset_manager_jni.h>
 #include <android/keycodes.h>
 #include <jni.h>
 #include <sys/resource.h>
@@ -8,6 +10,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -34,12 +37,91 @@
 #include "android_text_input_internal.h"
 #include "application/platform_frame_internal.h"
 #include "resources/resource_internal.h"
+#include "io/stream_internal.h"
 #include "text/text_input_internal.h"
 #include "text/text_internal.h"
 
 namespace huxerui::detail {
 
 namespace {
+
+class AndroidAssetManager final {
+public:
+  AndroidAssetManager(JNIEnv* environment, jobject context) {
+    if (environment->GetJavaVM(&vm_) != JNI_OK) {
+      throw std::runtime_error("HuxerUI asset manager could not retain its Java VM");
+    }
+    android::LocalRef<jclass> type(environment, environment->GetObjectClass(context));
+    const jmethodID get_assets =
+        type ? environment->GetMethodID(type.Get(), "getAssets", "()Landroid/content/res/AssetManager;") : nullptr;
+    if (!get_assets) {
+      throw std::runtime_error("HuxerUI Android asset manager method is unavailable");
+    }
+    android::LocalRef<jobject> manager(environment, environment->CallObjectMethod(context, get_assets));
+    if (environment->ExceptionCheck() || !manager) {
+      throw std::runtime_error("HuxerUI Android asset manager is unavailable");
+    }
+    native_ = AAssetManager_fromJava(environment, manager.Get());
+    if (!native_) {
+      throw std::runtime_error("HuxerUI Android native asset manager is unavailable");
+    }
+    owner_ = environment->NewGlobalRef(manager.Get());
+    if (!owner_) {
+      throw std::runtime_error("HuxerUI Android asset manager could not be retained");
+    }
+  }
+
+  ~AndroidAssetManager() {
+    JNIEnv* environment = nullptr;
+    bool attached = false;
+    if (vm_->GetEnv(reinterpret_cast<void**>(&environment), JNI_VERSION_1_6) != JNI_OK) {
+      if (vm_->AttachCurrentThread(&environment, nullptr) != JNI_OK) {
+        return;
+      }
+      attached = true;
+    }
+    environment->DeleteGlobalRef(owner_);
+    if (attached) {
+      vm_->DetachCurrentThread();
+    }
+  }
+
+  AAssetManager* Get() const noexcept { return native_; }
+
+private:
+  JavaVM* vm_ = nullptr;
+  jobject owner_ = nullptr;
+  AAssetManager* native_ = nullptr;
+};
+
+class AndroidAssetInputStreamState final : public InputStreamState {
+public:
+  AndroidAssetInputStreamState(std::shared_ptr<AndroidAssetManager> owner, std::string_view path)
+      : owner_(std::move(owner)),
+        asset_(AAssetManager_open(owner_->Get(), std::string(path).c_str(), AASSET_MODE_STREAMING)) {}
+  ~AndroidAssetInputStreamState() override { Release(); }
+
+  bool IsOpen() const noexcept { return asset_ != nullptr; }
+
+  IoResult<std::size_t> Read(std::span<std::byte> buffer) override {
+    const int count = AAsset_read(asset_, buffer.data(), std::min(buffer.size(), static_cast<std::size_t>(INT_MAX)));
+    if (count < 0) {
+      return IoResult<std::size_t>(IoError{IoErrorCode::Io, "HuxerUI Android package resource read failed"});
+    }
+    return IoResult<std::size_t>(static_cast<std::size_t>(count));
+  }
+
+  void Release() noexcept override {
+    if (asset_) {
+      AAsset_close(std::exchange(asset_, nullptr));
+    }
+  }
+
+private:
+  // The Java AssetManager must outlive all native assets, even after the adapter is destroyed.
+  std::shared_ptr<AndroidAssetManager> owner_;
+  AAsset* asset_ = nullptr;
+};
 
 double TimevalSeconds(const timeval& value) noexcept {
   return static_cast<double>(value.tv_sec) + static_cast<double>(value.tv_usec) / 1'000'000.0;
@@ -465,7 +547,6 @@ private:
     resource_locale_ = environment->GetMethodID(view_class, "resourceLocale", "()[B");
     resource_scale_ = environment->GetMethodID(view_class, "resourceScale", "()F");
     process_pss_bytes_ = environment->GetMethodID(view_class, "processPssBytes", "()J");
-    read_resource_ = environment->GetMethodID(view_class, "readResource", "([B)[B");
     set_system_bars_content_brightness_ =
         environment->GetMethodID(view_class, "setSystemBarsContentBrightness", "(II)V");
     set_pointer_cursor_ = environment->GetMethodID(view_class, "setHuxerUIPointerCursor", "(I)V");
@@ -475,7 +556,7 @@ private:
         create_text_layout_ == nullptr || start_text_input_ == nullptr || update_text_input_ == nullptr ||
         restart_text_input_ == nullptr || stop_text_input_ == nullptr || request_show_text_input_ == nullptr ||
         read_clipboard_text_ == nullptr || write_clipboard_text_ == nullptr || resource_locale_ == nullptr ||
-        resource_scale_ == nullptr || process_pss_bytes_ == nullptr || read_resource_ == nullptr ||
+        resource_scale_ == nullptr || process_pss_bytes_ == nullptr ||
         set_system_bars_content_brightness_ == nullptr || set_pointer_cursor_ == nullptr) {
       if (environment->ExceptionCheck()) {
         environment->ExceptionClear();
@@ -514,6 +595,13 @@ private:
       environment->DeleteGlobalRef(view_);
       view_ = nullptr;
       throw std::runtime_error("HuxerUI could not retain the Android platform Context");
+    }
+    try {
+      asset_manager_ = std::make_shared<AndroidAssetManager>(environment, context_);
+    } catch (...) {
+      environment->DeleteGlobalRef(context_);
+      environment->DeleteGlobalRef(view_);
+      throw;
     }
   }
 
@@ -956,36 +1044,15 @@ public:
     return {Locale::FromLanguageTag(language_tag), scale};
   }
 
-  RawAsset Read(std::string_view package_path) override {
+  std::optional<InputStream> OpenRead(std::string_view package_path) override {
     if (!IsValidResourcePackagePath(package_path)) {
       throw std::logic_error("HuxerUI Android resource path is invalid");
     }
-    JNIEnv* environment = Environment();
-    if (environment == nullptr || view_ == nullptr) {
-      return {};
+    auto state = std::make_shared<AndroidAssetInputStreamState>(asset_manager_, package_path);
+    if (!state->IsOpen()) {
+      return std::nullopt;
     }
-    jbyteArray path = ToByteArray(environment, package_path);
-    if (path == nullptr) {
-      return {};
-    }
-    auto* payload = static_cast<jbyteArray>(environment->CallObjectMethod(view_, read_resource_, path));
-    environment->DeleteLocalRef(path);
-    if (environment->ExceptionCheck()) {
-      throw std::runtime_error("HuxerUI Android packaged resource could not be read");
-    }
-    if (payload == nullptr) {
-      return {};
-    }
-    const jsize length = environment->GetArrayLength(payload);
-    std::vector<std::byte> bytes(static_cast<std::size_t>(length));
-    if (length > 0) {
-      environment->GetByteArrayRegion(payload, 0, length, reinterpret_cast<jbyte*>(bytes.data()));
-    }
-    environment->DeleteLocalRef(payload);
-    if (environment->ExceptionCheck()) {
-      throw std::runtime_error("HuxerUI Android packaged resource bytes could not be copied");
-    }
-    return RawAsset::FromBytes(std::move(bytes));
+    return StreamAccess::MakeInputStream(std::move(state));
   }
 
   std::optional<std::string> ReadText() override {
@@ -1142,6 +1209,7 @@ private:
   JavaVM* virtual_machine_ = nullptr;
   jobject view_ = nullptr;
   jobject context_ = nullptr;
+  std::shared_ptr<AndroidAssetManager> asset_manager_;
   jmethodID schedule_frame_ = nullptr;
   jmethodID invalidate_full_frame_ = nullptr;
   jmethodID font_metrics_ = nullptr;
@@ -1158,7 +1226,6 @@ private:
   jmethodID resource_locale_ = nullptr;
   jmethodID resource_scale_ = nullptr;
   jmethodID process_pss_bytes_ = nullptr;
-  jmethodID read_resource_ = nullptr;
   jmethodID set_system_bars_content_brightness_ = nullptr;
   jmethodID set_pointer_cursor_ = nullptr;
   PlatformFrameState frame_state_;

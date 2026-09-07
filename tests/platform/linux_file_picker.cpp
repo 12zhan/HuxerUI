@@ -770,7 +770,7 @@ private:
 
 TaskScope reference_tasks;
 std::shared_ptr<FilePicker> runtime_file_picker;
-std::optional<FileResult<std::string>> reference_text;
+std::optional<IoResult<std::string>> reference_text;
 bool reference_imported = false;
 bool reference_replaced = false;
 bool reference_operations_complete = false;

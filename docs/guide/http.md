@@ -5,7 +5,7 @@ Requests use `Task`, and continuations and progress callbacks run on the owning 
 
 ## Buffered requests
 
-`Send()` is the compact API for an ordinary request whose complete response should be retained in memory:
+`SendAsync()` is the compact API for an ordinary request whose complete response should be retained in memory:
 
 ```cpp
 Bytes Utf8Bytes(std::string_view text) {
@@ -13,8 +13,8 @@ Bytes Utf8Bytes(std::string_view text) {
   return Bytes(bytes.begin(), bytes.end());
 }
 
-Task<HttpResult> CreateItem(const std::shared_ptr<HttpClient>& http) {
-  co_return co_await http->Send({
+Task<HttpResult<HttpResponse>> CreateItem(const std::shared_ptr<HttpClient>& http) {
+  co_return co_await http->SendAsync({
       .url = "https://api.example.com/items",
       .method = HttpMethod::Post,
       .headers = {{"Content-Type", "application/json; charset=utf-8"}},
@@ -23,8 +23,8 @@ Task<HttpResult> CreateItem(const std::shared_ptr<HttpClient>& http) {
 }
 ```
 
-`HttpResult::HasResponse()` distinguishes a received HTTP response from a transport error.
-Status codes such as 404 and 500 are valid responses and remain available through `Response()`.
+`HttpResult<T>::Succeeded()` distinguishes a received HTTP response from a transport error.
+Status codes such as 404 and 500 are valid responses and remain available through `Value()`.
 Timeouts, transport failures, and unsupported adapters produce `HttpError`.
 
 HTTP bodies use `Bytes` because their content is binary regardless of `Content-Type`.
@@ -33,66 +33,69 @@ It does not infer an encoding, parse JSON, or decode application response format
 
 ## Streaming responses
 
-`SendStream()` returns after the final response headers are available and before the response body reaches EOF:
+`SendStreamAsync()` returns after the final response headers are available and before the response body reaches EOF.
+The response body is an `AsyncInputStream`, so the consumer chooses the maximum size of every read or copy buffer:
 
 ```cpp
-Task<HttpResult> DownloadManifest(const std::shared_ptr<HttpClient>& http) {
-  HttpStreamResult opened = co_await http->SendStream({
-      .url = "https://api.example.com/manifest",
+Task<bool> DownloadArchive(const std::shared_ptr<HttpClient>& http, File destination) {
+  HttpResult<HttpResponseStream> opened = co_await http->SendStreamAsync({
+      .url = "https://api.example.com/archive",
   });
-  if (!opened.HasResponse()) {
-    co_return HttpResult(std::move(opened.Error()));
+  if (!opened.Succeeded()) {
+    ReportHttpError(opened.Error());
+    co_return false;
   }
 
-  HttpResponseStream stream = std::move(opened).Response();
-  HttpResponse response{
-      .url = stream.Url(),
-      .status_code = stream.StatusCode(),
-      .headers = std::vector<HttpHeader>(stream.Headers().begin(), stream.Headers().end()),
-  };
-  while (true) {
-    HttpStreamReadResult read = co_await stream.Read();
-    if (read.HasData()) {
-      Bytes chunk = std::move(read).Data();
-      response.body.insert(response.body.end(), chunk.begin(), chunk.end());
-    } else if (read.HasError()) {
-      co_return HttpResult(std::move(read.Error()));
-    } else {
-      co_return HttpResult(std::move(response));
-    }
+  auto output = co_await destination.OpenWriteAsync();
+  if (!output.Succeeded()) {
+    ReportIoError(output.Error());
+    co_return false;
   }
+
+  HttpResponseStream response = std::move(opened).Value();
+  AsyncOutputStream file = std::move(output).Value();
+  auto copied = co_await response.Body().CopyToAsync(file, 64 * 1024);
+  if (!copied.Succeeded()) {
+    ReportIoError(copied.Error());
+    co_return false;
+  }
+  auto closed = co_await file.CloseAsync();
+  if (!closed.Succeeded()) {
+    ReportIoError(closed.Error());
+    co_return false;
+  }
+  co_return true;
 }
 ```
 
-Only one `Read()` may be pending for a stream.
-Each successful read returns between 1 byte and 64 KiB, and `IsComplete()` reports EOF explicitly.
+Only one `ReadAsync()` or `CopyToAsync()` operation may be pending on an input stream, and only one write or close may be pending on an output stream.
+`ReadAsync(maximum_bytes)` returns between 1 and `maximum_bytes` owned bytes, with empty `Bytes` representing EOF.
 Chunks are arbitrary binary boundaries and do not preserve text, JSON, multipart, or application-record boundaries.
-Calling `Read()` after EOF or an error, or accessing a moved-from stream, throws `std::logic_error`.
+Reading after EOF remains an empty success; reusing a failed stream, overlapping operations, or accessing a moved-from stream throws `std::logic_error`.
 
-An error before final headers appears in `HttpStreamResult`.
-An error after headers appears in `HttpStreamReadResult`, so status and headers remain available as soon as the platform has received them.
-Destroying an unfinished stream cancels it, and canceling a Task suspended in `Read()` cancels the complete HTTP operation.
+An error before final headers appears in `HttpResult<HttpResponseStream>`.
+An error after headers appears as `IoError` in the body operation’s `IoResult`, so status and headers remain available as soon as the platform has received them.
+Destroying an unfinished stream cancels it, and canceling a Task suspended in `ReadAsync()` or `CopyToAsync()` cancels the complete HTTP operation.
 
 ## Transfer progress
 
 Both request forms accept an optional progress callback:
 
 ```cpp
-HttpResult result = co_await http->Send(
+HttpResult<HttpResponse> result = co_await http->SendAsync(
     {.url = "https://api.example.com/archive"},
     [](HttpProgress progress) {
       if (progress.kind == HttpProgressKind::Download) {
         UpdateDownloadedBytes(progress.transferred_bytes, progress.total_bytes);
       }
-    }
-);
+    });
 ```
 
 Upload progress counts request bytes accepted by the platform transport, not bytes acknowledged by the server.
 An early response such as 401 or 413 may arrive without a final upload callback.
 Redirect replays never make the logical uploaded count exceed `HttpRequest::body.size()`.
 
-Download progress counts the exact bytes returned by `Read()` or accumulated into `HttpResponse::body`.
+Download progress counts the exact bytes returned by `ReadAsync()` or accumulated into `HttpResponse::body`.
 Those bytes reflect any automatic decoding performed by the current platform transport.
 `total_bytes` is present only when the platform exposes a reliable total for that same delivered representation.
 If delivered bytes contradict a reported total, later progress omits the total instead of reporting an impossible fraction.
@@ -118,7 +121,7 @@ macOS requests follow the application's normal process lifetime and system sched
 
 URLs must be absolute HTTP or HTTPS URLs.
 GET and HEAD reject nonempty bodies; header names and values reject invalid protocol characters; specified timeouts must be positive.
-Invalid request configuration throws `std::invalid_argument` synchronously from `Send()` or `SendStream()`.
+Invalid request configuration throws `std::invalid_argument` synchronously from `SendAsync()` or `SendStreamAsync()`.
 
 Retries, resumable or streaming uploads, implicit file transfers, WebSocket, certificate pinning, and a framework-owned cookie jar remain outside this API.
 See [HTTP Client Design](../design/http.md) for transport ownership and concurrency contracts.

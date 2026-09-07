@@ -625,7 +625,7 @@ public:
     return {std::move(locale), static_cast<float>(dpi) / kDipsPerInch};
   }
 
-  RawAsset Read(std::string_view package_path) override {
+  std::optional<InputStream> OpenRead(std::string_view package_path) override {
     if (!IsValidResourcePackagePath(package_path)) {
       throw std::logic_error("HuxerUI Windows resource path is invalid");
     }
@@ -643,21 +643,7 @@ public:
       throw std::logic_error("HuxerUI Windows resource path is not valid UTF-8");
     }
     const std::filesystem::path path = resource_root / std::filesystem::path(wide_package_path);
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream) {
-      return {};
-    }
-    stream.seekg(0, std::ios::end);
-    const std::streamoff size = stream.tellg();
-    if (size < 0) {
-      throw std::logic_error("HuxerUI Windows resource size is invalid: " + WideToUtf8(path.native()));
-    }
-    stream.seekg(0, std::ios::beg);
-    std::vector<std::byte> bytes(static_cast<std::size_t>(size));
-    if (!bytes.empty() && !stream.read(reinterpret_cast<char*>(bytes.data()), size)) {
-      throw std::logic_error("HuxerUI Windows resource could not be read: " + WideToUtf8(path.native()));
-    }
-    return RawAsset::FromBytes(std::move(bytes));
+    return OpenPackageFile(path);
   }
 
   std::optional<std::string> ReadText() override {

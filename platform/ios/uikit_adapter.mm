@@ -696,26 +696,25 @@ public:
     return {std::move(locale), scale};
   }
 
-  RawAsset Read(std::string_view package_path) override {
+  std::optional<InputStream> OpenRead(std::string_view package_path) override {
     if (!IsValidResourcePackagePath(package_path)) {
       throw std::logic_error("HuxerUI iOS resource path is invalid");
     }
-    NSString* relative = [[NSString alloc] initWithBytes:package_path.data()
-                                                  length:package_path.size()
-                                                encoding:NSUTF8StringEncoding];
-    if (relative == nil) {
-      throw std::logic_error("HuxerUI iOS resource path is not valid UTF-8");
+    @autoreleasepool {
+      NSString* relative = [[NSString alloc] initWithBytes:package_path.data()
+                                                    length:package_path.size()
+                                                  encoding:NSUTF8StringEncoding];
+      if (relative == nil) {
+        throw std::logic_error("HuxerUI iOS resource path is not valid UTF-8");
+      }
+      NSURL* root = [NSBundle.mainBundle.bundleURL URLByAppendingPathComponent:@"HuxerUI" isDirectory:YES];
+      NSURL* url = [root URLByAppendingPathComponent:relative];
+      const char* path = url.fileSystemRepresentation;
+      if (path == nullptr) {
+        throw std::runtime_error("HuxerUI package resource path could not be resolved");
+      }
+      return OpenPackageFile(std::filesystem::path(path));
     }
-    NSURL* root = [NSBundle.mainBundle.bundleURL URLByAppendingPathComponent:@"HuxerUI" isDirectory:YES];
-    NSData* data = [NSData dataWithContentsOfURL:[root URLByAppendingPathComponent:relative]];
-    if (data == nil) {
-      return {};
-    }
-    std::vector<std::byte> bytes(data.length);
-    if (!bytes.empty()) {
-      std::memcpy(bytes.data(), data.bytes, bytes.size());
-    }
-    return RawAsset::FromBytes(std::move(bytes));
   }
 
   std::optional<std::string> ReadText() override {

@@ -32,7 +32,7 @@ public:
 
   std::function<void()> ReadBytes(detail::FileReferenceBytesCompletion completion) override {
     ++read_count;
-    completion(FileResult<Bytes>(bytes));
+    completion(IoResult<Bytes>(bytes));
     return {};
   }
 
@@ -40,8 +40,8 @@ public:
   ImportTo(File destination, bool overwrite, detail::FileReferenceCompletion<std::uint64_t> completion) override {
     imported_to = std::move(destination);
     imported_with_overwrite = overwrite;
-    completion(import_succeeds ? FileResult<std::uint64_t>(bytes.size()) :
-                                 FileResult<std::uint64_t>(FileError{FileErrorCode::Io, "HuxerUI test import failed"}));
+    completion(import_succeeds ? IoResult<std::uint64_t>(bytes.size()) :
+                                 IoResult<std::uint64_t>(IoError{IoErrorCode::Io, "HuxerUI test import failed"}));
     return {};
   }
 
@@ -152,7 +152,7 @@ std::shared_ptr<FilePicker> file_picker;
 TaskScope file_picker_tasks;
 std::optional<FileReference> opened_reference;
 std::vector<FileReference> opened_references;
-std::optional<FileResult<std::string>> reference_text;
+std::optional<IoResult<std::string>> reference_text;
 bool imported_reference = false;
 bool replaced_reference = false;
 bool saved_file = false;

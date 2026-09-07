@@ -10,7 +10,6 @@
 #include <huxerui/environment.h>
 #include <huxerui/root.h>
 
-#include "resource_format.h"
 #include "runtime/profiling_internal.h"
 
 namespace huxerui::detail {
@@ -111,11 +110,30 @@ AppResources::AppResources(PlatformResources* platform_resources) : platform_res
   if (!std::isfinite(configuration_.display_scale) || configuration_.display_scale <= 0.0F) {
     throw std::logic_error("HuxerUI platform resource display scale must be finite and positive");
   }
-  entries_ = ParseResourceIndex(platform_resources_->Read(resource_index_path));
+  auto index = platform_resources_->OpenRead(resource_index_path);
+  entries_ = ParseResourceIndex(index ? RawAsset::FromBytes(ReadStreamBytes(std::move(*index))) : RawAsset{});
   // The immutable package keeps each resource's locale and scale variants contiguous after this initial sort.
   std::ranges::sort(entries_, {}, [](const ResourceIndexEntry& entry) {
     return std::tuple{ResourceKey(entry), std::string_view(entry.locale), entry.scale};
   });
+}
+
+void AppResources::Disconnect() {
+  std::scoped_lock lock(platform_mutex_);
+  platform_resources_ = nullptr;
+}
+
+InputStream AppResources::OpenRead(std::string_view package_path) {
+  // Disconnect waits only for opening. Returned streams own their native handles independently.
+  std::scoped_lock lock(platform_mutex_);
+  if (!platform_resources_) {
+    throw std::logic_error("HuxerUI packaged resource service is disconnected");
+  }
+  auto stream = platform_resources_->OpenRead(package_path);
+  if (!stream) {
+    throw std::logic_error("HuxerUI packaged resource payload is missing: " + std::string(package_path));
+  }
+  return std::move(*stream);
 }
 
 void AppResources::UpdateConfiguration(ResourceConfiguration configuration) {
@@ -142,7 +160,14 @@ RawAsset AppResources::Resolve(RawResource resource) {
   if (entries.empty()) {
     throw std::logic_error(MissingResourceMessage(resource));
   }
-  return ReadEntry(entries.front());
+  const auto& entry = entries.front();
+  const auto cached = raw_cache_.find(entry.package_path);
+  if (cached != raw_cache_.end()) {
+    return cached->second;
+  }
+  RawAsset asset = InternalAccess::PackagedRaw(weak_from_this(), entry.package_path, entry.mime_type);
+  raw_cache_.emplace(entry.package_path, asset);
+  return asset;
 }
 
 std::span<const ResourceIndexEntry> AppResources::FindEntries(ResourceEntryKind kind, const ResourceId& id) const {
@@ -164,23 +189,7 @@ AppResources::ResolveLocalized(const ResourceId& id, ResourceEntryKind kind, con
 }
 
 RawAsset AppResources::ReadEntry(const ResourceIndexEntry& entry) {
-  if (platform_resources_ == nullptr) {
-    throw std::logic_error("HuxerUI packaged resources require PlatformResources");
-  }
-  const auto cached = raw_cache_.find(entry.package_path);
-  if (cached != raw_cache_.end()) {
-    return cached->second;
-  }
-  RawAsset asset = platform_resources_->Read(entry.package_path);
-  if (!asset.HasValue()) {
-    throw std::logic_error("HuxerUI packaged resource payload is missing: " + entry.package_path);
-  }
-  if (resource_format::ContentHash(asset.Bytes()) != entry.content_hash) {
-    throw std::logic_error("HuxerUI packaged resource payload does not match its index: " + entry.package_path);
-  }
-  asset = InternalAccess::WithMimeType(std::move(asset), entry.mime_type);
-  raw_cache_.emplace(entry.package_path, asset);
-  return asset;
+  return RawAsset::FromBytes(ReadStreamBytes(OpenRead(entry.package_path)), entry.mime_type);
 }
 
 ResolvedImageAsset AppResources::ResolveImage(ImageResource resource, const Locale& locale) {

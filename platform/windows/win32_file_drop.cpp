@@ -62,15 +62,14 @@ FileDropPreparation CaptureFiles(IDataObject* object) {
         }
         auto file = MakeWin32FileReference(path, false);
         if (!file) {
-          completion(FileResult<std::vector<FileReference>>(
-              FileError{FileErrorCode::Io, "HuxerUI could not retain every dropped ordinary file"}
-          ));
+          completion(IoResult<std::vector<FileReference>>(
+              IoError{IoErrorCode::Io, "HuxerUI could not retain every dropped ordinary file"}));
           return;
         }
         files.push_back(std::move(*file));
       }
       if (!*canceled) {
-        completion(FileResult<std::vector<FileReference>>(std::move(files)));
+        completion(IoResult<std::vector<FileReference>>(std::move(files)));
       }
     });
     return [canceled] { *canceled = true; };

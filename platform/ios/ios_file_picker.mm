@@ -72,17 +72,17 @@ std::string MakeString(NSString* value) {
   return std::string(static_cast<const char*>(data.bytes), data.length);
 }
 
-FileErrorCode FileErrorCodeFor(NSError* error) noexcept {
+IoErrorCode FileErrorCodeFor(NSError* error) noexcept {
   if (error == nil || ![error.domain isEqualToString:NSCocoaErrorDomain]) {
-    return FileErrorCode::Io;
+    return IoErrorCode::Io;
   }
   if (error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError) {
-    return FileErrorCode::NotFound;
+    return IoErrorCode::NotFound;
   }
   if (error.code == NSFileReadNoPermissionError || error.code == NSFileWriteNoPermissionError) {
-    return FileErrorCode::PermissionDenied;
+    return IoErrorCode::PermissionDenied;
   }
-  return FileErrorCode::Io;
+  return IoErrorCode::Io;
 }
 
 NSURL* FileURL(const File& file) {
@@ -436,7 +436,7 @@ FileReference MakeIosReference(NSURL* url, bool writable, std::shared_ptr<IosFil
             std::rethrow_exception(exception);
           }
           if (!accessed || error) {
-            throw std::system_error(std::make_error_code(FileErrorCodeFor(error) == FileErrorCode::PermissionDenied
+            throw std::system_error(std::make_error_code(FileErrorCodeFor(error) == IoErrorCode::PermissionDenied
                                                              ? std::errc::permission_denied
                                                              : std::errc::io_error));
           }

@@ -228,7 +228,7 @@ private:
 };
 
 struct PendingRequest {
-  std::future<HttpResult> result;
+  std::future<HttpResult<HttpResponse>> result;
   std::shared_ptr<detail::HttpTransportOperation> operation;
 };
 
@@ -261,7 +261,7 @@ PendingRequest StartRequest(const std::shared_ptr<detail::HttpTransport>& transp
       }
     }
 
-    void Complete(HttpResult result) {
+    void Complete(HttpResult<HttpResponse> result) {
       bool publish = false;
       {
         std::scoped_lock lock(mutex);
@@ -276,7 +276,7 @@ PendingRequest StartRequest(const std::shared_ptr<detail::HttpTransport>& transp
     }
 
     std::mutex mutex;
-    std::promise<HttpResult> promise;
+    std::promise<HttpResult<HttpResponse>> promise;
     std::shared_ptr<detail::HttpTransportOperation> operation;
     std::optional<detail::HttpTransportResponse> response;
     Bytes body;
@@ -285,7 +285,7 @@ PendingRequest StartRequest(const std::shared_ptr<detail::HttpTransport>& transp
   };
 
   auto state = std::make_shared<State>();
-  std::future<HttpResult> future = state->promise.get_future();
+  std::future<HttpResult<HttpResponse>> future = state->promise.get_future();
   detail::HttpTransportCallbacks callbacks{
       .response = [state](detail::HttpTransportResponse response) {
         {
@@ -309,14 +309,14 @@ PendingRequest StartRequest(const std::shared_ptr<detail::HttpTransport>& transp
           metadata = std::move(*state->response);
           body = std::move(state->body);
         }
-        state->Complete(HttpResult(HttpResponse{
+        state->Complete(HttpResult<HttpResponse>(HttpResponse{
             .url = std::move(metadata.url),
             .status_code = metadata.status_code,
             .headers = std::move(metadata.headers),
             .body = std::move(body),
         }));
       },
-      .error = [state](HttpError error) { state->Complete(HttpResult(std::move(error))); },
+      .error = [state](HttpError error) { state->Complete(HttpResult<HttpResponse>(std::move(error))); },
   };
   auto operation = transport->Start(std::move(request), false, std::move(callbacks));
   state->SetOperation(operation);
@@ -374,13 +374,12 @@ TEST_CASE("Linux HTTP transport preserves buffered requests and responses") {
           .headers = {{"Content-Type", "application/octet-stream"}, {"X-Trace", "first"}, {"X-Trace", "second"}},
           .body = BytesFromString(request_body),
           .timeout = 2s,
-      }
-  );
+      });
 
   REQUIRE(pending.result.wait_for(2s) == std::future_status::ready);
-  HttpResult result = pending.result.get();
-  REQUIRE(result.HasResponse());
-  const HttpResponse& response = result.Response();
+  HttpResult<HttpResponse> result = pending.result.get();
+  REQUIRE(result.Succeeded());
+  const HttpResponse& response = result.Value();
   REQUIRE(response.status_code == 201);
   REQUIRE(response.url == server.Url("/items"));
   REQUIRE(response.body == BytesFromString(response_body));
@@ -405,11 +404,11 @@ TEST_CASE("Linux HTTP transport follows redirects and returns HTTP error statuse
   PendingRequest pending = StartRequest(transport, {.url = server.Url("/redirect"), .timeout = 2s});
 
   REQUIRE(pending.result.wait_for(2s) == std::future_status::ready);
-  HttpResult result = pending.result.get();
-  REQUIRE(result.HasResponse());
-  REQUIRE(result.Response().status_code == 404);
-  REQUIRE(result.Response().url == server.Url("/missing"));
-  REQUIRE(result.Response().body == BytesFromString("missing"));
+  HttpResult<HttpResponse> result = pending.result.get();
+  REQUIRE(result.Succeeded());
+  REQUIRE(result.Value().status_code == 404);
+  REQUIRE(result.Value().url == server.Url("/missing"));
+  REQUIRE(result.Value().body == BytesFromString("missing"));
   REQUIRE(server.WaitForRequests(2));
   REQUIRE(server.Request(0).starts_with("GET /redirect HTTP/1.1\r\n"));
   REQUIRE(server.Request(1).starts_with("GET /missing HTTP/1.1\r\n"));
@@ -422,12 +421,11 @@ TEST_CASE("Linux HTTP transport maps connection failures") {
       {
           .url = "http://127.0.0.1:" + std::to_string(ClosedLoopbackPort()) + "/unavailable",
           .timeout = 2s,
-      }
-  );
+      });
 
   REQUIRE(pending.result.wait_for(2s) == std::future_status::ready);
-  HttpResult result = pending.result.get();
-  REQUIRE_FALSE(result.HasResponse());
+  HttpResult<HttpResponse> result = pending.result.get();
+  REQUIRE_FALSE(result.Succeeded());
   REQUIRE(result.Error().code == HttpErrorCode::Transport);
 }
 
@@ -440,8 +438,8 @@ TEST_CASE("Linux HTTP transport enforces the complete request timeout") {
   PendingRequest pending = StartRequest(transport, {.url = server.Url("/slow"), .timeout = 20ms});
 
   REQUIRE(pending.result.wait_for(2s) == std::future_status::ready);
-  HttpResult result = pending.result.get();
-  REQUIRE_FALSE(result.HasResponse());
+  HttpResult<HttpResponse> result = pending.result.get();
+  REQUIRE_FALSE(result.Succeeded());
   REQUIRE(result.Error().code == HttpErrorCode::Timeout);
 }
 
@@ -458,8 +456,7 @@ TEST_CASE("Linux HTTP transport suppresses completion after cancellation") {
       {
           .complete = [&completions] { ++completions; },
           .error = [&completions](HttpError) { ++completions; },
-      }
-  );
+      });
 
   REQUIRE(server.WaitForRequests(1));
   operation->Cancel();
@@ -484,8 +481,7 @@ TEST_CASE("Linux HTTP transport resolves cancellation and completion races once"
         {
             .complete = [&completions] { ++completions; },
             .error = [&completions](HttpError) { ++completions; },
-        }
-    );
+        });
     REQUIRE(server.WaitForRequests(1));
 
     std::thread cancel_thread([operation, &release_response] {
@@ -514,8 +510,7 @@ TEST_CASE("Destroying Linux HTTP transport cancels active requests and joins its
       {
           .complete = [&completions] { ++completions; },
           .error = [&completions](HttpError) { ++completions; },
-      }
-  );
+      });
   REQUIRE(server.WaitForRequests(1));
 
   const auto start = std::chrono::steady_clock::now();

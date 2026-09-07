@@ -850,20 +850,11 @@ public:
     configuration_ = std::move(configuration);
   }
 
-  [[nodiscard]] RawAsset Read(std::string_view package_path) override {
+  [[nodiscard]] std::optional<InputStream> OpenRead(std::string_view package_path) override {
     if (!IsValidResourcePackagePath(package_path)) {
       throw std::logic_error("HuxerUI Web resource path is invalid");
     }
-    std::ifstream stream(std::filesystem::path("/") / std::string(package_path), std::ios::binary);
-    if (!stream) {
-      return {};
-    }
-    std::vector<char> source{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
-    std::vector<std::byte> bytes(source.size());
-    std::transform(source.begin(), source.end(), bytes.begin(), [](char value) {
-      return static_cast<std::byte>(static_cast<unsigned char>(value));
-    });
-    return RawAsset::FromBytes(std::move(bytes));
+    return OpenPackageFile(std::filesystem::path("/") / std::string(package_path));
   }
 
 private:

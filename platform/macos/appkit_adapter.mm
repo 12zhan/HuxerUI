@@ -688,7 +688,7 @@ public:
     }
   }
 
-  RawAsset Read(std::string_view package_path) override {
+  std::optional<InputStream> OpenRead(std::string_view package_path) override {
     if (!IsValidResourcePackagePath(package_path)) {
       throw std::logic_error("HuxerUI macOS resource path is invalid");
     }
@@ -700,15 +700,12 @@ public:
         throw std::logic_error("HuxerUI macOS resource path is not valid UTF-8");
       }
       NSURL* root = [NSBundle.mainBundle.resourceURL URLByAppendingPathComponent:@"HuxerUI" isDirectory:YES];
-      NSData* data = [NSData dataWithContentsOfURL:[root URLByAppendingPathComponent:relative]];
-      if (data == nil) {
-        return {};
+      NSURL* url = [root URLByAppendingPathComponent:relative];
+      const char* path = url.fileSystemRepresentation;
+      if (path == nullptr) {
+        throw std::runtime_error("HuxerUI package resource path could not be resolved");
       }
-      std::vector<std::byte> bytes(data.length);
-      if (!bytes.empty()) {
-        std::memcpy(bytes.data(), data.bytes, bytes.size());
-      }
-      return RawAsset::FromBytes(std::move(bytes));
+      return OpenPackageFile(std::filesystem::path(path));
     }
   }
 

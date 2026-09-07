@@ -213,7 +213,8 @@ struct InternalAccess {
 
 #pragma region RawAsset
 
-  static RawAsset WithMimeType(RawAsset asset, std::string mime_type);
+  static RawAsset PackagedRaw(std::weak_ptr<AppResources> resources, std::string path, std::string mime_type);
+  static std::span<const std::byte> RawBytes(const RawAsset& asset) noexcept;
 
 #pragma endregion
 

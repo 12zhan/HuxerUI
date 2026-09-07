@@ -56,7 +56,7 @@ public:
 private:
   struct State;
   void RefreshFileDropTarget(bool emit_moved);
-  void FinishFileDrop(std::uint64_t operation, FileResult<std::vector<FileReference>> result);
+  void FinishFileDrop(std::uint64_t operation, IoResult<std::vector<FileReference>> result);
 
   Runtime::State& runtime_state_;
   std::shared_ptr<State> state_;

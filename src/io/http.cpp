@@ -13,10 +13,9 @@
 
 #include "http_internal.h"
 #include "runtime/task_internal.h"
+#include "stream_internal.h"
 
 namespace huxerui::detail {
-
-constexpr std::size_t max_stream_chunk_size = 64U * 1024U;
 
 namespace {
 
@@ -125,21 +124,19 @@ struct HttpOpenEvent {
 
 } // namespace
 
-class HttpOperationState final : public std::enable_shared_from_this<HttpOperationState> {
+class HttpOperationState final : public AsyncInputStreamState, public std::enable_shared_from_this<HttpOperationState> {
 public:
-  HttpOperationState(
-      std::shared_ptr<HttpTransport> transport,
-      HttpRequest request,
-      bool require_incremental_response,
-      std::function<void(HttpProgress)> progress
-  )
+  HttpOperationState(std::shared_ptr<HttpTransport> transport, HttpRequest request, bool require_incremental_response,
+                     std::function<void(HttpProgress)> progress)
       : transport_(std::move(transport)), request_(std::move(request)),
         require_incremental_response_(require_incremental_response), progress_(std::move(progress)),
         upload_total_(static_cast<std::uint64_t>(request_.body.size())) {}
 
-  ~HttpOperationState() {
+  ~HttpOperationState() override {
     Cancel();
   }
+
+  Task<IoResult<Bytes>> ReadAsync(std::size_t maximum_bytes) override;
 
   void SuspendOpen(std::weak_ptr<TaskExecution> execution, std::coroutine_handle<> continuation) {
     bool start = false;
@@ -215,10 +212,10 @@ public:
     }
   }
 
-  HttpStreamReadResult TakeReadEvent() {
+  IoResult<Bytes> TakeReadEvent(std::size_t maximum_bytes) {
     std::scoped_lock lock(mutex_);
     if (body_offset_ < body_.size()) {
-      const std::size_t size = std::min(max_stream_chunk_size, body_.size() - body_offset_);
+      const std::size_t size = std::min(maximum_bytes, body_.size() - body_offset_);
       Bytes data(body_.begin() + static_cast<std::ptrdiff_t>(body_offset_),
                  body_.begin() + static_cast<std::ptrdiff_t>(body_offset_ + size));
       body_offset_ += size;
@@ -226,34 +223,33 @@ public:
         body_.clear();
         body_offset_ = 0;
       }
-      return HttpStreamReadResult(std::move(data));
+      return IoResult<Bytes>(std::move(data));
     }
     if (error_.has_value()) {
-      return HttpStreamReadResult(*error_);
+      return IoResult<Bytes>(IoError{
+          error_->code == HttpErrorCode::Timeout       ? IoErrorCode::Timeout
+          : error_->code == HttpErrorCode::Unsupported ? IoErrorCode::Unsupported
+                                                       : IoErrorCode::Io,
+          error_->message});
     }
     if (complete_) {
-      return HttpStreamReadResult::Complete();
+      return IoResult<Bytes>(Bytes{});
     }
     throw std::logic_error("HuxerUI HTTP stream resumed without an event");
   }
 
-  void ReserveRead() {
+  void RequireReadable() {
     std::scoped_lock lock(mutex_);
     if (canceled_) {
       throw std::logic_error("HuxerUI HTTP response stream is canceled");
     }
-    if (read_reserved_) {
-      throw std::logic_error("HuxerUI HTTP response stream already has a pending read");
-    }
     if (terminal_consumed_) {
       throw std::logic_error("HuxerUI HTTP response stream has already completed");
     }
-    read_reserved_ = true;
   }
 
   void FinishRead(bool terminal) noexcept {
     std::scoped_lock lock(mutex_);
-    read_reserved_ = false;
     terminal_consumed_ = terminal;
   }
 
@@ -292,7 +288,7 @@ public:
     };
   }
 
-  void Cancel() noexcept {
+  void Cancel() noexcept override {
     std::shared_ptr<HttpTransportOperation> operation;
     bool cancel_operation = false;
     {
@@ -540,7 +536,6 @@ private:
   bool started_ = false;
   bool response_taken_ = false;
   bool read_request_pending_ = false;
-  bool read_reserved_ = false;
   bool complete_ = false;
   bool transport_terminal_ = false;
   bool terminal_consumed_ = false;
@@ -582,7 +577,8 @@ private:
 
 class HttpReadAwaiter final {
 public:
-  explicit HttpReadAwaiter(std::shared_ptr<HttpOperationState> state) : state_(std::move(state)) {}
+  HttpReadAwaiter(std::shared_ptr<HttpOperationState> state, std::size_t maximum_bytes)
+      : state_(std::move(state)), maximum_bytes_(maximum_bytes) {}
 
   [[nodiscard]] bool await_ready() const noexcept {
     return false;
@@ -592,24 +588,25 @@ public:
     state_->SuspendRead(TaskExecutionFor(continuation), continuation);
   }
 
-  HttpStreamReadResult await_resume() {
-    return state_->TakeReadEvent();
+  IoResult<Bytes> await_resume() {
+    return state_->TakeReadEvent(maximum_bytes_);
   }
 
 private:
   std::shared_ptr<HttpOperationState> state_;
+  std::size_t maximum_bytes_ = 0;
 };
 
-class HttpReadReservation final {
+class HttpReadCancellation final {
 public:
-  explicit HttpReadReservation(std::shared_ptr<HttpOperationState> state) : state_(std::move(state)) {}
+  explicit HttpReadCancellation(std::shared_ptr<HttpOperationState> state) : state_(std::move(state)) {}
 
-  HttpReadReservation(const HttpReadReservation&) = delete;
-  HttpReadReservation& operator=(const HttpReadReservation&) = delete;
-  HttpReadReservation(HttpReadReservation&& other) noexcept : state_(std::exchange(other.state_, {})) {}
-  HttpReadReservation& operator=(HttpReadReservation&&) = delete;
+  HttpReadCancellation(const HttpReadCancellation&) = delete;
+  HttpReadCancellation& operator=(const HttpReadCancellation&) = delete;
+  HttpReadCancellation(HttpReadCancellation&& other) noexcept : state_(std::exchange(other.state_, {})) {}
+  HttpReadCancellation& operator=(HttpReadCancellation&&) = delete;
 
-  ~HttpReadReservation() {
+  ~HttpReadCancellation() {
     if (state_) {
       state_->Cancel();
     }
@@ -628,22 +625,18 @@ private:
   std::shared_ptr<HttpOperationState> state_;
 };
 
-Task<HttpStreamResult> OpenHttpStream(
-    std::shared_ptr<HttpTransport> transport,
-    HttpRequest request,
-    bool require_incremental_response,
-    std::function<void(HttpProgress)> progress
-) {
+Task<HttpResult<HttpResponseStream>> OpenHttpStream(std::shared_ptr<HttpTransport> transport, HttpRequest request,
+                                                    bool require_incremental_response,
+                                                    std::function<void(HttpProgress)> progress) {
   if (!transport) {
-    co_return HttpStreamResult(HttpError{
+    co_return HttpResult<HttpResponseStream>(HttpError{
         HttpErrorCode::Unsupported,
         "HuxerUI HTTP is not supported by the current platform adapter",
     });
   }
 
-  auto state = std::make_shared<HttpOperationState>(
-      std::move(transport), std::move(request), require_incremental_response, std::move(progress)
-  );
+  auto state = std::make_shared<HttpOperationState>(std::move(transport), std::move(request),
+                                                    require_incremental_response, std::move(progress));
   while (true) {
     HttpOpenEvent event = co_await HttpOpenAwaiter(state);
     if (event.progress.has_value()) {
@@ -651,38 +644,35 @@ Task<HttpStreamResult> OpenHttpStream(
       continue;
     }
     if (event.error.has_value()) {
-      co_return HttpStreamResult(std::move(*event.error));
+      co_return HttpResult<HttpResponseStream>(std::move(*event.error));
     }
     if (event.response) {
-      co_return HttpStreamResult(state->MakeResponseStream());
+      co_return HttpResult<HttpResponseStream>(state->MakeResponseStream());
     }
   }
 }
 
-Task<HttpStreamReadResult> ReadHttpStream(HttpReadReservation reservation) {
-  HttpStreamReadResult result = co_await HttpReadAwaiter(reservation.State());
-  if (result.HasData()) {
-    auto progress = reservation.State()->MakeDownloadProgress(result.Data().size());
-    reservation.State()->ReportProgress(std::move(progress));
-    reservation.Finish(false);
-  } else {
-    reservation.Finish(true);
+Task<IoResult<Bytes>> ReadHttpStream(HttpReadCancellation cancellation, std::size_t maximum_bytes) {
+  auto data = co_await HttpReadAwaiter(cancellation.State(), maximum_bytes);
+  if (!data.Succeeded() || data.Value().empty()) {
+    cancellation.Finish(true);
+    co_return data;
   }
-  co_return std::move(result);
+  auto progress = cancellation.State()->MakeDownloadProgress(data.Value().size());
+  cancellation.State()->ReportProgress(std::move(progress));
+  cancellation.Finish(false);
+  co_return data;
 }
 
-Task<HttpResult> SendHttpRequest(
-    std::shared_ptr<HttpTransport> transport,
-    HttpRequest request,
-    std::function<void(HttpProgress)> progress
-) {
-  HttpStreamResult stream_result =
+Task<HttpResult<HttpResponse>> SendHttpRequest(std::shared_ptr<HttpTransport> transport, HttpRequest request,
+                                               std::function<void(HttpProgress)> progress) {
+  HttpResult<HttpResponseStream> stream_result =
       co_await OpenHttpStream(std::move(transport), std::move(request), false, std::move(progress));
-  if (!stream_result.HasResponse()) {
-    co_return HttpResult(std::move(stream_result.Error()));
+  if (!stream_result.Succeeded()) {
+    co_return HttpResult<HttpResponse>(std::move(stream_result.Error()));
   }
 
-  HttpResponseStream stream = std::move(stream_result).Response();
+  HttpResponseStream stream = std::move(stream_result).Value();
   HttpResponse response{
       .url = stream.Url(),
       .status_code = stream.StatusCode(),
@@ -690,101 +680,48 @@ Task<HttpResult> SendHttpRequest(
       .body = {},
   };
   while (true) {
-    HttpStreamReadResult read = co_await stream.Read();
-    if (read.HasData()) {
-      Bytes data = std::move(read).Data();
-      response.body.insert(response.body.end(), data.begin(), data.end());
-      continue;
+    auto result = co_await stream.Body().ReadAsync(64U * 1024U);
+    if (!result.Succeeded()) {
+      auto error = std::move(result).Error();
+      const auto code = error.code == IoErrorCode::Timeout       ? HttpErrorCode::Timeout
+                        : error.code == IoErrorCode::Unsupported ? HttpErrorCode::Unsupported
+                                                                 : HttpErrorCode::Transport;
+      co_return HttpResult<HttpResponse>(HttpError{code, std::move(error.message)});
     }
-    if (read.HasError()) {
-      co_return HttpResult(std::move(read.Error()));
+    const auto& data = result.Value();
+    if (data.empty()) {
+      co_return HttpResult<HttpResponse>(std::move(response));
     }
-    co_return HttpResult(std::move(response));
+    response.body.insert(response.body.end(), data.begin(), data.end());
   }
 }
 
 } // namespace
 
+Task<IoResult<Bytes>> HttpOperationState::ReadAsync(std::size_t maximum_bytes) {
+  RequireReadable();
+  return ReadHttpStream(HttpReadCancellation(shared_from_this()), maximum_bytes);
+}
+
 } // namespace huxerui::detail
 
 namespace huxerui {
 
-HttpStreamReadResult::HttpStreamReadResult(Bytes data) : value_(std::move(data)) {
-  const std::size_t size = std::get<Bytes>(value_).size();
-  if (size == 0 || size > detail::max_stream_chunk_size) {
-    throw std::invalid_argument("HuxerUI HTTP stream data must contain between 1 and 65536 bytes");
-  }
-}
+HttpResponseStream::HttpResponseStream(std::shared_ptr<detail::HttpOperationState> state)
+    : state_(std::move(state)), body_(detail::StreamAccess::MakeAsyncInputStream(state_)) {}
 
-HttpStreamReadResult::HttpStreamReadResult(HttpError error) : value_(std::move(error)) {}
-
-HttpStreamReadResult HttpStreamReadResult::Complete() {
-  return HttpStreamReadResult();
-}
-
-bool HttpStreamReadResult::HasData() const noexcept {
-  return std::holds_alternative<Bytes>(value_);
-}
-
-bool HttpStreamReadResult::IsComplete() const noexcept {
-  return std::holds_alternative<std::monostate>(value_);
-}
-
-bool HttpStreamReadResult::HasError() const noexcept {
-  return std::holds_alternative<HttpError>(value_);
-}
-
-Bytes& HttpStreamReadResult::Data() & {
-  if (auto* data = std::get_if<Bytes>(&value_)) {
-    return *data;
-  }
-  throw std::logic_error("HuxerUI HTTP stream read result does not contain data");
-}
-
-const Bytes& HttpStreamReadResult::Data() const& {
-  if (const auto* data = std::get_if<Bytes>(&value_)) {
-    return *data;
-  }
-  throw std::logic_error("HuxerUI HTTP stream read result does not contain data");
-}
-
-Bytes&& HttpStreamReadResult::Data() && {
-  return std::move(static_cast<HttpStreamReadResult&>(*this).Data());
-}
-
-HttpError& HttpStreamReadResult::Error() & {
-  if (auto* error = std::get_if<HttpError>(&value_)) {
-    return *error;
-  }
-  throw std::logic_error("HuxerUI HTTP stream read result does not contain an error");
-}
-
-const HttpError& HttpStreamReadResult::Error() const& {
-  if (const auto* error = std::get_if<HttpError>(&value_)) {
-    return *error;
-  }
-  throw std::logic_error("HuxerUI HTTP stream read result does not contain an error");
-}
-
-HttpResponseStream::HttpResponseStream(std::shared_ptr<detail::HttpOperationState> state) : state_(std::move(state)) {}
-
-HttpResponseStream::HttpResponseStream(HttpResponseStream&& other) noexcept : state_(std::move(other.state_)) {}
+HttpResponseStream::HttpResponseStream(HttpResponseStream&& other) noexcept
+    : state_(std::move(other.state_)), body_(std::move(other.body_)) {}
 
 HttpResponseStream& HttpResponseStream::operator=(HttpResponseStream&& other) noexcept {
   if (this != &other) {
-    if (state_) {
-      state_->Cancel();
-    }
     state_ = std::move(other.state_);
+    body_ = std::move(other.body_);
   }
   return *this;
 }
 
-HttpResponseStream::~HttpResponseStream() {
-  if (state_) {
-    state_->Cancel();
-  }
-}
+HttpResponseStream::~HttpResponseStream() = default;
 
 const std::string& HttpResponseStream::Url() const {
   if (!state_) {
@@ -807,105 +744,24 @@ std::span<const HttpHeader> HttpResponseStream::Headers() const {
   return state_->Headers();
 }
 
-Task<HttpStreamReadResult> HttpResponseStream::Read() {
+AsyncInputStream& HttpResponseStream::Body() {
   if (!state_) {
     throw std::logic_error("HuxerUI HTTP response stream has been moved from");
   }
-  state_->ReserveRead();
-  return detail::ReadHttpStream(detail::HttpReadReservation(state_));
-}
-
-HttpStreamResult::HttpStreamResult(HttpResponseStream response) : value_(std::move(response)) {}
-
-HttpStreamResult::HttpStreamResult(HttpError error) : value_(std::move(error)) {}
-
-bool HttpStreamResult::HasResponse() const noexcept {
-  return std::holds_alternative<HttpResponseStream>(value_);
-}
-
-HttpResponseStream& HttpStreamResult::Response() & {
-  if (auto* response = std::get_if<HttpResponseStream>(&value_)) {
-    return *response;
-  }
-  throw std::logic_error("HuxerUI HTTP stream result does not contain a response");
-}
-
-const HttpResponseStream& HttpStreamResult::Response() const& {
-  if (const auto* response = std::get_if<HttpResponseStream>(&value_)) {
-    return *response;
-  }
-  throw std::logic_error("HuxerUI HTTP stream result does not contain a response");
-}
-
-HttpResponseStream&& HttpStreamResult::Response() && {
-  return std::move(static_cast<HttpStreamResult&>(*this).Response());
-}
-
-HttpError& HttpStreamResult::Error() & {
-  if (auto* error = std::get_if<HttpError>(&value_)) {
-    return *error;
-  }
-  throw std::logic_error("HuxerUI HTTP stream result does not contain an error");
-}
-
-const HttpError& HttpStreamResult::Error() const& {
-  if (const auto* error = std::get_if<HttpError>(&value_)) {
-    return *error;
-  }
-  throw std::logic_error("HuxerUI HTTP stream result does not contain an error");
-}
-
-HttpResult::HttpResult(HttpResponse response) : value_(std::move(response)) {}
-
-HttpResult::HttpResult(HttpError error) : value_(std::move(error)) {}
-
-bool HttpResult::HasResponse() const noexcept {
-  return std::holds_alternative<HttpResponse>(value_);
-}
-
-HttpResponse& HttpResult::Response() & {
-  if (auto* response = std::get_if<HttpResponse>(&value_)) {
-    return *response;
-  }
-  throw std::logic_error("HuxerUI HTTP result does not contain a response");
-}
-
-const HttpResponse& HttpResult::Response() const& {
-  if (const auto* response = std::get_if<HttpResponse>(&value_)) {
-    return *response;
-  }
-  throw std::logic_error("HuxerUI HTTP result does not contain a response");
-}
-
-HttpResponse&& HttpResult::Response() && {
-  return std::move(static_cast<HttpResult&>(*this).Response());
-}
-
-HttpError& HttpResult::Error() & {
-  if (auto* error = std::get_if<HttpError>(&value_)) {
-    return *error;
-  }
-  throw std::logic_error("HuxerUI HTTP result does not contain an error");
-}
-
-const HttpError& HttpResult::Error() const& {
-  if (const auto* error = std::get_if<HttpError>(&value_)) {
-    return *error;
-  }
-  throw std::logic_error("HuxerUI HTTP result does not contain an error");
+  return body_;
 }
 
 HttpClient::HttpClient(std::shared_ptr<detail::HttpTransport> transport) : transport_(std::move(transport)) {}
 
 HttpClient::~HttpClient() = default;
 
-Task<HttpResult> HttpClient::Send(HttpRequest request, std::function<void(HttpProgress)> progress) const {
+Task<HttpResult<HttpResponse>> HttpClient::SendAsync(HttpRequest request, std::function<void(HttpProgress)> progress) const {
   detail::ValidateHttpRequest(request);
   return detail::SendHttpRequest(transport_, std::move(request), std::move(progress));
 }
 
-Task<HttpStreamResult>
-HttpClient::SendStream(HttpRequest request, std::function<void(HttpProgress)> progress) const {
+Task<HttpResult<HttpResponseStream>>
+HttpClient::SendStreamAsync(HttpRequest request, std::function<void(HttpProgress)> progress) const {
   detail::ValidateHttpRequest(request);
   return detail::OpenHttpStream(transport_, std::move(request), true, std::move(progress));
 }

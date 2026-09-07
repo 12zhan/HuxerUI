@@ -128,7 +128,7 @@ void UpdateTextFilePreview(
   const std::string file_name = file->Name();
   preview = {file_name, "Reading text content..."};
   tasks.Launch([file = std::move(*file), file_name, preview, generation, current_generation]() -> Task<void> {
-    FileResult<std::string> result = co_await file.ReadStringAsync();
+    IoResult<std::string> result = co_await file.ReadStringAsync();
     if (generation.Get() != current_generation) {
       co_return;
     }

@@ -22,6 +22,7 @@ add_executable(huxerui_tests
         unit/platform_payload.cpp
         unit/resource.cpp
         unit/semantics.cpp
+        unit/stream.cpp
         unit/text.cpp
         unit/text_input.cpp
         unit/text_selection.cpp
@@ -255,6 +256,7 @@ set(HUXERUI_PUBLIC_HEADERS
         scroll.h
         semantics.h
         state.h
+        stream.h
         task.h
         text.h
         text_input.h

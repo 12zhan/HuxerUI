@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <fstream>
@@ -11,9 +12,11 @@
 #include <stdexcept>
 
 #include <huxerui/paint.h>
+#include <huxerui/file.h>
 
 #include "resource_internal.h"
 #include "internal_access.h"
+#include "io/stream_internal.h"
 
 namespace huxerui {
 
@@ -212,11 +215,49 @@ std::uint64_t NextImageIdentity() noexcept {
 } // namespace
 
 struct RawAsset::Data {
+  Data(std::shared_ptr<const void> storage, const std::byte* data, std::size_t length, std::string mime)
+      : owner(std::move(storage)), bytes(data), size(length), mime_type(std::move(mime)) {}
+  Data(std::weak_ptr<detail::AppResources> source, std::string path, std::string mime)
+      : mime_type(std::move(mime)), resources(std::move(source)), package_path(std::move(path)) {}
+
   std::shared_ptr<const void> owner;
   const std::byte* bytes = nullptr;
   std::size_t size = 0;
   std::string mime_type;
+  std::weak_ptr<detail::AppResources> resources;
+  std::string package_path;
+  mutable std::mutex cache_mutex;
+  mutable std::shared_ptr<const huxerui::Bytes> cached;
 };
+
+namespace {
+
+class RawAssetInputStreamState final : public detail::InputStreamState {
+public:
+  RawAssetInputStreamState(std::shared_ptr<const void> owner, std::span<const std::byte> bytes)
+      : owner_(std::move(owner)), bytes_(bytes) {}
+
+  IoResult<std::size_t> Read(std::span<std::byte> buffer) override {
+    const std::size_t size = std::min(buffer.size(), bytes_.size() - offset_);
+    if (size != 0) {
+      std::copy_n(bytes_.begin() + static_cast<std::ptrdiff_t>(offset_), size, buffer.begin());
+    }
+    offset_ += size;
+    return IoResult<std::size_t>(size);
+  }
+
+  void Release() noexcept override {
+    bytes_ = {};
+    owner_.reset();
+  }
+
+private:
+  std::shared_ptr<const void> owner_;
+  std::span<const std::byte> bytes_;
+  std::size_t offset_ = 0;
+};
+
+} // namespace
 
 struct ImageAsset::Data {
   RawAsset encoded;
@@ -298,22 +339,101 @@ RawAsset RawAsset::FromSharedBytes(
   if (size != 0 && (!owner || data == nullptr)) {
     throw std::invalid_argument("HuxerUI shared raw asset bytes require a non-empty owner and data pointer");
   }
-  return RawAsset(std::make_shared<const Data>(Data{std::move(owner), data, size, std::move(mime_type)}));
+  return RawAsset(std::make_shared<const Data>(std::move(owner), data, size, std::move(mime_type)));
 }
 
-std::span<const std::byte> RawAsset::Bytes() const noexcept {
-  return data_ ? std::span<const std::byte>(data_->bytes, data_->size) : std::span<const std::byte>{};
-}
-
-std::string_view RawAsset::AsStringView() const noexcept {
-  if (!data_ || data_->size == 0) {
+std::shared_ptr<const huxerui::Bytes> RawAsset::CachedBytes() const {
+  if (!data_ || data_->package_path.empty()) {
     return {};
   }
-  return {reinterpret_cast<const char*>(data_->bytes), data_->size};
+  std::scoped_lock lock(data_->cache_mutex);
+  return data_->cached;
 }
 
-std::string RawAsset::ToString() const {
-  return std::string(AsStringView());
+std::shared_ptr<const huxerui::Bytes> RawAsset::EnsureCachedBytes() const {
+  if (auto bytes = CachedBytes()) {
+    return bytes;
+  }
+  auto bytes = std::make_shared<const huxerui::Bytes>(detail::ReadStreamBytes(OpenRead()));
+  std::scoped_lock lock(data_->cache_mutex);
+  if (!data_->cached) {
+    data_->cached = std::move(bytes);
+  }
+  return data_->cached;
+}
+
+huxerui::Bytes RawAsset::ReadBytes(bool cache) const {
+  if (!data_) {
+    return {};
+  }
+  if (data_->package_path.empty()) {
+    const auto bytes = detail::InternalAccess::RawBytes(*this);
+    return {bytes.begin(), bytes.end()};
+  }
+  if (auto bytes = cache ? EnsureCachedBytes() : CachedBytes()) {
+    return *bytes;
+  }
+  return detail::ReadStreamBytes(OpenRead());
+}
+
+InputStream RawAsset::OpenRead() const {
+  if (!data_) {
+    throw std::logic_error("HuxerUI cannot open a missing raw asset");
+  }
+  if (data_->package_path.empty()) {
+    return detail::StreamAccess::MakeInputStream(
+        std::make_shared<RawAssetInputStreamState>(data_->owner, detail::InternalAccess::RawBytes(*this)));
+  }
+  if (auto bytes = CachedBytes()) {
+    return detail::StreamAccess::MakeInputStream(std::make_shared<RawAssetInputStreamState>(bytes, *bytes));
+  }
+  const auto resources = data_->resources.lock();
+  if (!resources) {
+    throw std::logic_error("HuxerUI raw asset resource service has expired");
+  }
+  return resources->OpenRead(data_->package_path);
+}
+
+namespace {
+
+Task<AsyncInputStream> OpenMemoryAsync(RawAsset asset) {
+  co_return detail::MakeMemoryAsyncInput(asset.OpenRead());
+}
+
+} // namespace
+
+Task<AsyncInputStream> RawAsset::OpenReadAsync() const {
+  if (data_ && (data_->package_path.empty() || CachedBytes())) {
+    return OpenMemoryAsync(*this);
+  }
+  return detail::OpenWorkerInput([asset = *this] { return asset.OpenRead(); });
+}
+
+std::string RawAsset::ReadString(bool cache) const {
+  if (!data_) {
+    return {};
+  }
+  if (data_->package_path.empty()) {
+    const auto bytes = detail::InternalAccess::RawBytes(*this);
+    return bytes.empty() ? std::string{} : std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+  }
+  if (auto bytes = cache ? EnsureCachedBytes() : CachedBytes()) {
+    return bytes->empty() ? std::string{} : std::string(reinterpret_cast<const char*>(bytes->data()), bytes->size());
+  }
+  InputStream input = OpenRead();
+  std::array<std::byte, 16384> buffer;
+  std::string result;
+  while (true) {
+    auto read = input.Read(buffer);
+    if (!read.Succeeded()) {
+      throw std::runtime_error(read.Error().message);
+    }
+    if (read.Value() == 0) {
+      break;
+    }
+    result.append(reinterpret_cast<const char*>(buffer.data()), read.Value());
+  }
+  return result;
 }
 
 std::string_view RawAsset::MimeType() const noexcept {
@@ -325,7 +445,18 @@ bool RawAsset::HasValue() const noexcept {
 }
 
 bool RawAsset::operator==(const RawAsset& other) const noexcept {
-  return data_ == other.data_ || (MimeType() == other.MimeType() && std::ranges::equal(Bytes(), other.Bytes()));
+  if (data_ == other.data_) {
+    return true;
+  }
+  if (!data_ || !other.data_ || MimeType() != other.MimeType()) {
+    return false;
+  }
+  if (!data_->package_path.empty() || !other.data_->package_path.empty()) {
+    return data_->package_path == other.data_->package_path &&
+           !data_->resources.owner_before(other.data_->resources) &&
+           !other.data_->resources.owner_before(data_->resources);
+  }
+  return std::ranges::equal(detail::InternalAccess::RawBytes(*this), detail::InternalAccess::RawBytes(other));
 }
 
 ImageAsset ImageAsset::FromFile(const std::filesystem::path& path, float scale) {
@@ -356,18 +487,14 @@ ImageAsset ImageAsset::CopyEncoded(std::span<const std::byte> bytes, float scale
 
 ImageAsset ImageAsset::FromRawAsset(RawAsset asset, float scale) {
   ValidateScale(scale);
-  const ImageMetadata metadata = ReadImageMetadata(asset.Bytes());
+  const ImageMetadata metadata = ReadImageMetadata(detail::InternalAccess::RawBytes(asset));
   if (!std::isfinite(static_cast<float>(metadata.width) / scale) ||
       !std::isfinite(static_cast<float>(metadata.height) / scale)) {
     throw std::invalid_argument("HuxerUI image intrinsic dimensions must be finite");
   }
   if (asset.data_ && asset.data_->mime_type.empty()) {
-    auto raw_data = std::make_shared<const RawAsset::Data>(RawAsset::Data{
-        asset.data_->owner,
-        asset.data_->bytes,
-        asset.data_->size,
-        std::string(metadata.mime_type),
-    });
+    auto raw_data = std::make_shared<const RawAsset::Data>(asset.data_->owner, asset.data_->bytes, asset.data_->size,
+                                                           std::string(metadata.mime_type));
     asset = RawAsset(std::move(raw_data));
   }
   return ImageAsset(
@@ -383,7 +510,7 @@ ImageAsset ImageAsset::FromRawAsset(RawAsset asset, float scale) {
 }
 
 std::span<const std::byte> ImageAsset::EncodedBytes() const noexcept {
-  return data_ ? data_->encoded.Bytes() : std::span<const std::byte>{};
+  return data_ ? detail::InternalAccess::RawBytes(data_->encoded) : std::span<const std::byte>{};
 }
 
 ImageFormat ImageAsset::Format() const noexcept {
@@ -427,6 +554,34 @@ bool ImageAsset::operator==(const ImageAsset& other) const noexcept {
 
 namespace huxerui::detail {
 
+Bytes ReadStreamBytes(InputStream input) {
+  Bytes result;
+  std::array<std::byte, 16384> buffer;
+  while (true) {
+    auto read = input.Read(buffer);
+    if (!read.Succeeded()) {
+      throw std::runtime_error(read.Error().message);
+    }
+    const std::size_t count = read.Value();
+    if (count == 0) {
+      break;
+    }
+    result.insert(result.end(), buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(count));
+  }
+  return result;
+}
+
+std::optional<InputStream> OpenPackageFile(const std::filesystem::path& path) {
+  auto opened = File(std::u8string_view(path.u8string())).OpenRead();
+  if (opened.Succeeded()) {
+    return std::move(opened).Value();
+  }
+  if (opened.Error().code == IoErrorCode::NotFound) {
+    return std::nullopt;
+  }
+  throw std::runtime_error(opened.Error().message);
+}
+
 const std::variant<std::string, StringResource>& InternalAccess::StringValue(const StringVariant& value) noexcept {
   return value.value_;
 }
@@ -439,18 +594,15 @@ std::span<const std::string> InternalAccess::StringArguments(const StringVariant
   return value.arguments_;
 }
 
-RawAsset InternalAccess::WithMimeType(RawAsset asset, std::string mime_type) {
-  if (!asset.data_ || asset.data_->mime_type == mime_type) {
-    return asset;
+RawAsset InternalAccess::PackagedRaw(std::weak_ptr<AppResources> resources, std::string path, std::string mime_type) {
+  if (resources.expired()) {
+    throw std::logic_error("HuxerUI packaged raw assets require a shared resource service");
   }
-  return RawAsset(
-      std::make_shared<const RawAsset::Data>(RawAsset::Data{
-          asset.data_->owner,
-          asset.data_->bytes,
-          asset.data_->size,
-          std::move(mime_type),
-      })
-  );
+  return RawAsset(std::make_shared<const RawAsset::Data>(std::move(resources), std::move(path), std::move(mime_type)));
+}
+
+std::span<const std::byte> InternalAccess::RawBytes(const RawAsset& asset) noexcept {
+  return asset.data_ ? std::span<const std::byte>(asset.data_->bytes, asset.data_->size) : std::span<const std::byte>{};
 }
 
 ImageAsset InternalAccess::ImageFromRaw(RawAsset asset, float scale) {

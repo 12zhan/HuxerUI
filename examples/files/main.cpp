@@ -91,7 +91,7 @@ View DirectoryPath(std::string label, const File& directory) {
             .On<FileDropEvents::Dropped>([receive_files](const auto& selected, const auto&) {
               receive_files(selected);
             })
-            .On<FileDropEvents::Failed>([reception](const FileError& error, const auto&) {
+            .On<FileDropEvents::Failed>([reception](const IoError& error, const auto&) {
               reception.Update([&](FileReceptionState& value) {
                 value.status = "Could not receive files: " + error.message;
                 value.failed = true;
@@ -137,7 +137,7 @@ View DirectoryPath(std::string label, const File& directory) {
                 Button("Read into editor").With(Enabled(!operation->busy)).OnClick([=] {
                   operation = {true, "Reading external file", file.Name()};
                   tasks.Launch([=]() -> Task<void> {
-                    FileResult<std::string> result = co_await file.ReadStringAsync();
+                    IoResult<std::string> result = co_await file.ReadStringAsync();
                     if (!result.Succeeded()) {
                       operation = {false, "Read failed", result.Error().message};
                       co_return;
@@ -201,7 +201,7 @@ View DirectoryPath(std::string label, const File& directory) {
           Button("Read").With(Enabled(!operation->busy)).OnClick([=] {
             operation = {true, "Reading", "Reading the complete file as UTF-8..."};
             tasks.Launch([=]() -> Task<void> {
-              FileResult<std::string> result = co_await example_file.ReadStringAsync();
+              IoResult<std::string> result = co_await example_file.ReadStringAsync();
               if (result.Succeeded()) {
                 std::string value = std::move(result).Value();
                 content = TextEditingValue::FromText(value);

@@ -12,10 +12,12 @@
 #include <stdexcept>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "io/http_internal.h"
+#include "io/stream_internal.h"
 
 namespace huxerui::test {
 
@@ -143,12 +145,28 @@ protected:
   }
 };
 
+class PausedHttpCopyOutput final : public detail::AsyncOutputStreamState {
+public:
+  Task<IoResult<void>> WriteAsync(Bytes) override {
+    started = true;
+    co_await Delay(std::chrono::hours(1));
+    co_return IoResult<void>::Success();
+  }
+
+  Task<IoResult<void>> CloseAsync() override { co_return IoResult<void>::Success(); }
+  void Abort() noexcept override { aborted = true; }
+
+  bool started = false;
+  bool aborted = false;
+};
+
 std::shared_ptr<HttpClient> http_client;
 TaskScope http_tasks;
 std::optional<HttpResponse> http_response;
 std::optional<HttpErrorCode> http_error;
 std::optional<HttpResponseStream> http_stream;
-std::optional<HttpStreamReadResult> http_read;
+std::optional<Bytes> http_read;
+std::optional<IoErrorCode> http_read_error;
 std::vector<HttpProgress> http_progress;
 std::vector<std::thread::id> http_progress_threads;
 std::thread::id http_resume_thread;
@@ -168,6 +186,7 @@ void ResetHttpState() {
   http_error.reset();
   http_stream.reset();
   http_read.reset();
+  http_read_error.reset();
   http_progress.clear();
   http_progress_threads.clear();
   http_resume_thread = {};
@@ -175,14 +194,11 @@ void ResetHttpState() {
   http_progress_exception = false;
 }
 
-Task<void> CaptureHttpResult(
-    std::shared_ptr<HttpClient> client,
-    HttpRequest request,
-    std::function<void(HttpProgress)> progress = {}
-) {
-  HttpResult result = co_await client->Send(std::move(request), std::move(progress));
-  if (result.HasResponse()) {
-    http_response = std::move(result).Response();
+Task<void> CaptureHttpResult(std::shared_ptr<HttpClient> client, HttpRequest request,
+                             std::function<void(HttpProgress)> progress = {}) {
+  HttpResult<HttpResponse> result = co_await client->SendAsync(std::move(request), std::move(progress));
+  if (result.Succeeded()) {
+    http_response = std::move(result).Value();
   } else {
     http_error = result.Error().code;
   }
@@ -191,26 +207,49 @@ Task<void> CaptureHttpResult(
 }
 
 Task<void> CaptureHttpStream(std::shared_ptr<HttpClient> client, HttpRequest request) {
-  HttpStreamResult result = co_await client->SendStream(std::move(request));
-  if (result.HasResponse()) {
-    http_stream.emplace(std::move(result).Response());
+  HttpResult<HttpResponseStream> result = co_await client->SendStreamAsync(std::move(request));
+  if (result.Succeeded()) {
+    http_stream.emplace(std::move(result).Value());
   } else {
     http_error = result.Error().code;
   }
   ++http_completions;
 }
 
-Task<void> CaptureHttpRead() {
-  http_read = co_await http_stream->Read();
+Task<void> CaptureHttpRead(std::size_t maximum_bytes = 16U * 1024U) {
+  auto result = co_await http_stream->Body().ReadAsync(maximum_bytes);
+  if (result.Succeeded()) {
+    http_read = std::move(result).Value();
+  } else {
+    http_read_error = result.Error().code;
+  }
   ++http_completions;
 }
 
 Task<void> CaptureHttpProgressException(std::shared_ptr<HttpClient> client) {
   try {
-    static_cast<void>(co_await client->Send(
+    static_cast<void>(co_await client->SendAsync(
         {.url = "https://example.test/progress-error", .method = HttpMethod::Post, .body = BytesFromString("body")},
-        [](HttpProgress) { throw std::runtime_error("progress failed"); }
-    ));
+        [](HttpProgress) { throw std::runtime_error("progress failed"); }));
+  } catch (const std::runtime_error& error) {
+    http_progress_exception = std::string_view(error.what()) == "progress failed";
+  }
+}
+
+Task<void> CaptureHttpDownloadProgressException(std::shared_ptr<HttpClient> client) {
+  HttpResult<HttpResponseStream> opened = co_await client->SendStreamAsync(
+      {.url = "https://example.test/download-progress-error"},
+      [](HttpProgress progress) {
+        if (progress.kind == HttpProgressKind::Download) {
+          throw std::runtime_error("progress failed");
+        }
+      });
+  if (!opened.Succeeded()) {
+    co_return;
+  }
+  HttpResponseStream response = std::move(opened).Value();
+  try {
+    static_cast<void>(co_await response.Body().ReadAsync(16));
   } catch (const std::runtime_error& error) {
     http_progress_exception = std::string_view(error.what()) == "progress failed";
   }
@@ -219,23 +258,31 @@ Task<void> CaptureHttpProgressException(std::shared_ptr<HttpClient> client) {
 } // namespace
 
 TEST_CASE("HttpResultTypesDistinguishTheirAlternatives") {
-  HttpResult response_result(HttpResponse{.url = "https://example.test/unavailable", .status_code = 503});
-  REQUIRE(response_result.HasResponse());
-  REQUIRE(response_result.Response().status_code == 503);
+  STATIC_REQUIRE((std::is_same_v<HttpResult<HttpResponse>, Result<HttpResponse, HttpError>>));
+  STATIC_REQUIRE((std::is_same_v<HttpResult<HttpResponseStream>, Result<HttpResponseStream, HttpError>>));
+  STATIC_REQUIRE((std::is_same_v<decltype(std::declval<const HttpClient&>().SendAsync(HttpRequest{})),
+                                 Task<HttpResult<HttpResponse>>>));
+  STATIC_REQUIRE((std::is_same_v<decltype(std::declval<const HttpClient&>().SendStreamAsync(HttpRequest{})),
+                                 Task<HttpResult<HttpResponseStream>>>));
+  STATIC_REQUIRE(std::is_copy_constructible_v<HttpResult<HttpResponse>>);
+  STATIC_REQUIRE_FALSE(std::is_copy_constructible_v<HttpResult<HttpResponseStream>>);
+  STATIC_REQUIRE(std::is_nothrow_move_constructible_v<HttpResult<HttpResponseStream>>);
+
+  HttpResult<HttpResponse> response_result(HttpResponse{.url = "https://example.test/unavailable", .status_code = 503});
+  REQUIRE(response_result.Succeeded());
+  REQUIRE(response_result.Value().status_code == 503);
   REQUIRE_THROWS_AS(response_result.Error(), std::logic_error);
 
-  HttpResult error_result(HttpError{HttpErrorCode::Timeout, "HuxerUI HTTP request timed out"});
-  REQUIRE_FALSE(error_result.HasResponse());
+  HttpResult<HttpResponse> error_result(HttpError{HttpErrorCode::Timeout, "HuxerUI HTTP request timed out"});
+  REQUIRE_FALSE(error_result.Succeeded());
   REQUIRE(error_result.Error().code == HttpErrorCode::Timeout);
-  REQUIRE_THROWS_AS(error_result.Response(), std::logic_error);
+  REQUIRE_THROWS_AS(error_result.Value(), std::logic_error);
 
-  HttpStreamReadResult data(BytesFromString("data"));
-  REQUIRE(data.HasData());
-  REQUIRE_FALSE(data.IsComplete());
-  REQUIRE_THROWS_AS(data.Error(), std::logic_error);
-  REQUIRE(HttpStreamReadResult::Complete().IsComplete());
-  REQUIRE_THROWS_AS(HttpStreamReadResult(Bytes{}), std::invalid_argument);
-  REQUIRE_THROWS_AS(HttpStreamReadResult(Bytes(64U * 1024U + 1U)), std::invalid_argument);
+  const auto stream_error = HttpResult<HttpResponseStream>::Failure(
+      HttpError{HttpErrorCode::Unsupported, "HuxerUI HTTP streaming is unsupported"});
+  REQUIRE_FALSE(stream_error.Succeeded());
+  REQUIRE(stream_error.Error().code == HttpErrorCode::Unsupported);
+  REQUIRE_THROWS_AS(stream_error.Value(), std::logic_error);
 }
 
 TEST_CASE("HttpClientSendsOneTypedOperationAndAggregatesItsPullReads") {
@@ -254,8 +301,7 @@ TEST_CASE("HttpClientSendsOneTypedOperationAndAggregatesItsPullReads") {
           .headers = {{"Accept", "application/json"}, {"X-Trace", "first"}, {"X-Trace", "second"}},
           .body = request_body,
           .timeout = std::chrono::milliseconds{5000},
-      }
-  ));
+      }));
   platform.RunPlatformModuleTasks();
 
   REQUIRE(platform.transport->CallCount() == 1);
@@ -273,8 +319,7 @@ TEST_CASE("HttpClientSendsOneTypedOperationAndAggregatesItsPullReads") {
             .status_code = 201,
             .headers = {{"Content-Type", "application/json"}},
             .body_size = 4,
-        }
-    );
+        });
   });
   response.join();
   platform.RunPlatformModuleTasks();
@@ -365,8 +410,7 @@ TEST_CASE("HttpClientReturnsStreamingHeadersBeforeRequestingBodyData") {
           .url = "https://example.test/final",
           .status_code = 206,
           .headers = {{"Content-Type", "application/octet-stream"}},
-      }
-  );
+      });
   platform.RunPlatformModuleTasks();
 
   REQUIRE(http_stream.has_value());
@@ -382,10 +426,10 @@ TEST_CASE("HttpClientReturnsStreamingHeadersBeforeRequestingBodyData") {
   platform.transport->Body(0, BytesFromString("first"));
   platform.RunPlatformModuleTasks();
   REQUIRE(http_read.has_value());
-  REQUIRE(std::move(*http_read).Data() == BytesFromString("first"));
+  REQUIRE(*http_read == BytesFromString("first"));
 }
 
-TEST_CASE("HttpResponseStreamSplitsLargeTransportChunksWithoutExtraPlatformReads") {
+TEST_CASE("HttpResponseStreamHonorsRequestedReadSizesWithoutExtraPlatformReads") {
   ResetHttpState();
   HttpTestPlatform platform;
   Runtime runtime(HttpApp, platform);
@@ -396,17 +440,17 @@ TEST_CASE("HttpResponseStreamSplitsLargeTransportChunksWithoutExtraPlatformReads
   platform.transport->Respond(0, {.url = "https://example.test/large", .status_code = 200});
   platform.RunPlatformModuleTasks();
 
-  http_tasks.Launch(CaptureHttpRead());
+  http_tasks.Launch(CaptureHttpRead(7));
   platform.RunPlatformModuleTasks();
-  platform.transport->Body(0, Bytes(64U * 1024U + 17U, std::byte{7}));
+  platform.transport->Body(0, Bytes(23, std::byte{7}));
   platform.RunPlatformModuleTasks();
-  REQUIRE(http_read->Data().size() == 64U * 1024U);
+  REQUIRE(http_read->size() == 7);
   REQUIRE(platform.transport->ReadRequests(0) == 1);
 
   http_read.reset();
-  http_tasks.Launch(CaptureHttpRead());
+  http_tasks.Launch(CaptureHttpRead(100));
   platform.RunPlatformModuleTasks();
-  REQUIRE(http_read->Data().size() == 17);
+  REQUIRE(http_read->size() == 16);
   REQUIRE(platform.transport->ReadRequests(0) == 1);
 
   http_read.reset();
@@ -415,11 +459,16 @@ TEST_CASE("HttpResponseStreamSplitsLargeTransportChunksWithoutExtraPlatformReads
   REQUIRE(platform.transport->ReadRequests(0) == 2);
   platform.transport->Complete(0);
   platform.RunPlatformModuleTasks();
-  REQUIRE(http_read->IsComplete());
-  REQUIRE_THROWS_AS(static_cast<void>(http_stream->Read()), std::logic_error);
+  REQUIRE(http_read->empty());
+
+  http_read.reset();
+  http_tasks.Launch(CaptureHttpRead(1));
+  platform.RunPlatformModuleTasks();
+  REQUIRE(http_read->empty());
+  REQUIRE(platform.transport->ReadRequests(0) == 2);
 }
 
-TEST_CASE("HttpResponseStreamAllowsOneReadAndCancelsAnAbandonedRead") {
+TEST_CASE("HttpResponseStreamAllowsOnePendingReadTaskBeforeItStarts") {
   ResetHttpState();
   HttpTestPlatform platform;
   Runtime runtime(HttpApp, platform);
@@ -431,10 +480,90 @@ TEST_CASE("HttpResponseStreamAllowsOneReadAndCancelsAnAbandonedRead") {
   platform.RunPlatformModuleTasks();
 
   {
-    Task<HttpStreamReadResult> read = http_stream->Read();
-    REQUIRE_THROWS_AS(static_cast<void>(http_stream->Read()), std::logic_error);
+    Task<IoResult<Bytes>> read = http_stream->Body().ReadAsync(32);
+    REQUIRE_THROWS_AS(static_cast<void>(http_stream->Body().ReadAsync(32)), std::logic_error);
   }
+  REQUIRE_FALSE(platform.transport->Canceled(0));
+  REQUIRE(platform.transport->ReadRequests(0) == 0);
+}
+
+TEST_CASE("HttpSuspendedBodyReadCancellationStopsTransportAndDropsLateData") {
+  ResetHttpState();
+  HttpTestPlatform platform;
+  Runtime runtime(HttpApp, platform);
+  runtime.BuildFrame();
+  http_tasks.Launch(CaptureHttpStream(http_client, {.url = "https://example.test/canceled-read"}));
+  platform.RunPlatformModuleTasks();
+  platform.transport->Respond(0, {.url = "https://example.test/canceled-read", .status_code = 200});
+  platform.RunPlatformModuleTasks();
+  const auto read = http_tasks.Launch(CaptureHttpRead(1));
+  platform.RunPlatformModuleTasks();
+  REQUIRE(platform.transport->ReadRequests(0) == 1);
+  read.Cancel();
   REQUIRE(platform.transport->Canceled(0));
+  platform.transport->Body(0, BytesFromString("late"));
+  platform.transport->Complete(0);
+  platform.RunPlatformModuleTasks();
+  REQUIRE_FALSE(http_read.has_value());
+  REQUIRE_FALSE(http_read_error.has_value());
+  REQUIRE(http_completions == 1);
+}
+
+TEST_CASE("HttpCopyCancellationStopsTransportDuringEitherEndpointOperation") {
+  const bool waiting_for_output = GENERATE(false, true);
+  ResetHttpState();
+  HttpTestPlatform platform;
+  Runtime runtime(HttpApp, platform);
+  runtime.BuildFrame();
+  http_tasks.Launch(CaptureHttpStream(http_client, {.url = "https://example.test/canceled-copy"}));
+  platform.RunPlatformModuleTasks();
+  platform.transport->Respond(0, {.url = "https://example.test/canceled-copy", .status_code = 200});
+  platform.RunPlatformModuleTasks();
+  auto output_state = std::make_shared<PausedHttpCopyOutput>();
+  auto output = detail::StreamAccess::MakeAsyncOutputStream(output_state);
+  bool completed = false;
+  const auto copy = http_tasks.Launch([&]() -> Task<void> {
+    static_cast<void>(co_await http_stream->Body().CopyToAsync(output, 1));
+    completed = true;
+  });
+  platform.RunPlatformModuleTasks();
+  REQUIRE(platform.transport->ReadRequests(0) == 1);
+  if (waiting_for_output) {
+    platform.transport->Body(0, BytesFromString("a"));
+    platform.RunPlatformModuleTasks();
+  }
+  REQUIRE(output_state->started == waiting_for_output);
+  copy.Cancel();
+  REQUIRE(platform.transport->Canceled(0));
+  platform.transport->Body(0, BytesFromString("late"));
+  platform.RunPlatformModuleTasks();
+  REQUIRE_FALSE(completed);
+  http_stream.reset();
+}
+
+TEST_CASE("HttpUnstartedCopyReleasesBothEndpointsWithoutCancelingThem") {
+  ResetHttpState();
+  HttpTestPlatform platform;
+  Runtime runtime(HttpApp, platform);
+  runtime.BuildFrame();
+  http_tasks.Launch(CaptureHttpStream(http_client, {.url = "https://example.test/unstarted-copy"}));
+  platform.RunPlatformModuleTasks();
+  platform.transport->Respond(0, {.url = "https://example.test/unstarted-copy", .status_code = 200});
+  platform.RunPlatformModuleTasks();
+  auto output_state = std::make_shared<PausedHttpCopyOutput>();
+  auto output = detail::StreamAccess::MakeAsyncOutputStream(output_state);
+  {
+    auto pending = http_stream->Body().CopyToAsync(output, 1);
+    REQUIRE_THROWS_AS(http_stream->Body().ReadAsync(1), std::logic_error);
+    REQUIRE_THROWS_AS(output.CloseAsync(), std::logic_error);
+  }
+  REQUIRE_FALSE(platform.transport->Canceled(0));
+  REQUIRE_FALSE(output_state->aborted);
+  REQUIRE_FALSE(output_state->started);
+  REQUIRE(platform.transport->ReadRequests(0) == 0);
+  REQUIRE_NOTHROW(http_stream->Body().ReadAsync(1));
+  REQUIRE_NOTHROW(output.CloseAsync());
+  http_stream.reset();
 }
 
 TEST_CASE("HttpResponseStreamCancelsOnDestructionAndRejectsMovedFromAccess") {
@@ -469,18 +598,14 @@ TEST_CASE("HttpProgressIsMonotonicAndRunsOnTheRuntimeUIThread") {
       [](HttpProgress progress) {
         http_progress.push_back(std::move(progress));
         http_progress_threads.push_back(std::this_thread::get_id());
-      }
-  ));
+      }));
   platform.RunPlatformModuleTasks();
 
   std::thread transport([&platform] {
     platform.transport->Upload(0, 2);
     platform.transport->Upload(0, 1);
     platform.transport->Upload(0, 9);
-    platform.transport->Respond(
-        0,
-        {.url = "https://example.test/progress", .status_code = 200, .body_size = 3}
-    );
+    platform.transport->Respond(0, {.url = "https://example.test/progress", .status_code = 200, .body_size = 3});
   });
   transport.join();
   platform.RunPlatformModuleTasks();
@@ -497,8 +622,7 @@ TEST_CASE("HttpProgressIsMonotonicAndRunsOnTheRuntimeUIThread") {
           {HttpProgressKind::Upload, 4, 4},
           {HttpProgressKind::Download, 3, 3},
           {HttpProgressKind::Download, 4, std::nullopt},
-      }
-  );
+      });
   REQUIRE(std::all_of(http_progress_threads.begin(), http_progress_threads.end(), [ui_thread](std::thread::id thread) {
     return thread == ui_thread;
   }));
@@ -517,9 +641,23 @@ TEST_CASE("HttpProgressExceptionsCancelAndRethrowFromTheTask") {
 
   REQUIRE(http_progress_exception);
   REQUIRE(platform.transport->Canceled(0));
+
+  http_progress_exception = false;
+  http_tasks.Launch(CaptureHttpDownloadProgressException(http_client));
+  platform.RunPlatformModuleTasks();
+  platform.transport->Respond(1, {.url = "https://example.test/download-progress-error", .status_code = 200});
+  platform.RunPlatformModuleTasks();
+  platform.transport->Body(1, BytesFromString("data"));
+  platform.RunPlatformModuleTasks();
+
+  REQUIRE(http_progress_exception);
+  REQUIRE(platform.transport->Canceled(1));
 }
 
 TEST_CASE("HttpErrorsRemainOnTheSideOfTheResponseBoundaryWhereTheyOccur") {
+  const auto code = GENERATE(HttpErrorCode::Transport, HttpErrorCode::Timeout, HttpErrorCode::Unsupported);
+  const auto expected = code == HttpErrorCode::Timeout ? IoErrorCode::Timeout
+                      : code == HttpErrorCode::Unsupported ? IoErrorCode::Unsupported : IoErrorCode::Io;
   ResetHttpState();
   HttpTestPlatform platform;
   Runtime runtime(HttpApp, platform);
@@ -540,10 +678,11 @@ TEST_CASE("HttpErrorsRemainOnTheSideOfTheResponseBoundaryWhereTheyOccur") {
 
   http_tasks.Launch(CaptureHttpRead());
   platform.RunPlatformModuleTasks();
-  platform.transport->Error(1, {HttpErrorCode::Transport, "HuxerUI HTTP stream failed"});
+  platform.transport->Error(1, {code, "HuxerUI HTTP stream failed"});
   platform.RunPlatformModuleTasks();
-  REQUIRE(http_read->HasError());
-  REQUIRE(http_read->Error().code == HttpErrorCode::Transport);
+  REQUIRE_FALSE(http_read.has_value());
+  REQUIRE(http_read_error == expected);
+  REQUIRE_THROWS_AS(http_stream->Body().ReadAsync(1), std::logic_error);
 }
 
 TEST_CASE("HttpClientCancellationStopsTheSinglePlatformOperationAndDropsLateEvents") {
@@ -570,33 +709,29 @@ TEST_CASE("HttpClientValidatesPortableRequestConfigurationBeforeLaunch") {
   Runtime runtime(HttpApp, platform);
   runtime.BuildFrame();
 
-  REQUIRE_NOTHROW(static_cast<void>(http_client->Send({.url = "HTTPS://example.test"})));
-  REQUIRE_THROWS_AS(static_cast<void>(http_client->Send({.url = "file:///tmp/value"})), std::invalid_argument);
+  REQUIRE_NOTHROW(static_cast<void>(http_client->SendAsync({.url = "HTTPS://example.test"})));
+  REQUIRE_THROWS_AS(static_cast<void>(http_client->SendAsync({.url = "file:///tmp/value"})), std::invalid_argument);
   REQUIRE_THROWS_AS(
-      static_cast<void>(http_client->Send({.url = "https://example.test", .body = BytesFromString("body")})),
-      std::invalid_argument
-  );
+      static_cast<void>(http_client->SendAsync({.url = "https://example.test", .body = BytesFromString("body")})),
+      std::invalid_argument);
   REQUIRE_THROWS_AS(
-      static_cast<void>(http_client->Send({
+      static_cast<void>(http_client->SendAsync({
           .url = "https://example.test",
           .timeout = std::chrono::milliseconds::zero(),
       })),
-      std::invalid_argument
-  );
+      std::invalid_argument);
   REQUIRE_THROWS_AS(
-      static_cast<void>(http_client->Send({
+      static_cast<void>(http_client->SendAsync({
           .url = "https://example.test",
           .headers = {{"Invalid Header", "value"}},
       })),
-      std::invalid_argument
-  );
+      std::invalid_argument);
   REQUIRE_THROWS_AS(
-      static_cast<void>(http_client->SendStream({
+      static_cast<void>(http_client->SendStreamAsync({
           .url = "https://example.test",
           .headers = {{"X-Test", "first\r\nsecond"}},
       })),
-      std::invalid_argument
-  );
+      std::invalid_argument);
   REQUIRE(platform.transport->CallCount() == 0);
 }
 

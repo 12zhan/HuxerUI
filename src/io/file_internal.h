@@ -23,7 +23,7 @@ struct FileReferenceMetadata {
   FileType type = FileType::File;
 };
 
-using FileReferenceBytesCompletion = std::function<void(FileResult<Bytes>)>;
+using FileReferenceBytesCompletion = std::function<void(IoResult<Bytes>)>;
 using FileReferenceBoolCompletion = std::function<void(bool)>;
 using FileReferenceSource = std::variant<File, std::shared_ptr<FileReferenceState>>;
 
@@ -35,15 +35,27 @@ struct FileReferenceWriteResult {
   bool created = false;
 };
 
-template <class T> using FileReferenceCompletion = std::function<void(FileResult<T>)>;
+template <class T> using FileReferenceCompletion = std::function<void(IoResult<T>)>;
+using FileReferenceInputStreamCompletion = FileReferenceCompletion<std::shared_ptr<AsyncInputStreamState>>;
+using FileReferenceOutputStreamCompletion = FileReferenceCompletion<std::shared_ptr<AsyncOutputStreamState>>;
+using FileReferenceBytesOperation =
+    std::function<std::function<void()>(FileReferenceBytesCompletion)>;
+using FileReferenceResultBoolCompletion = FileReferenceCompletion<bool>;
+using FileReferenceResultBoolOperation =
+    std::function<std::function<void()>(FileReferenceResultBoolCompletion)>;
+
+[[nodiscard]] Task<IoResult<Bytes>> RunFileReferenceBytesOperation(FileReferenceBytesOperation operation);
+[[nodiscard]] Task<IoResult<bool>> RunFileReferenceBoolOperation(FileReferenceResultBoolOperation operation);
 
 // Retains access independently of the picker and public reference values. Operations deliver through
 // callbacks and return best-effort cancellation; the shared Task bridge suppresses late delivery.
-// Platforms keep streaming I/O here so file blocks do not have to cross JNI or resume shared coroutines.
+// Platforms keep provider-native whole-file transfers here; public incremental streams use the shared stream state.
 class FileReferenceState {
 public:
   virtual ~FileReferenceState() = default;
 
+  virtual std::function<void()> OpenRead(FileReferenceInputStreamCompletion completion);
+  virtual std::function<void()> OpenWrite(FileReferenceOutputStreamCompletion completion);
   virtual std::function<void()> ReadBytes(FileReferenceBytesCompletion completion) = 0;
   virtual std::function<void()> ImportTo(File destination, bool overwrite,
                                          FileReferenceCompletion<std::uint64_t> completion) = 0;
@@ -106,14 +118,14 @@ struct FileSystemPaths {
 [[nodiscard]] std::shared_ptr<FileSystem> MakeFileSystem(FileSystemPaths paths);
 [[nodiscard]] FileReference
 MakeFileReference(FileReferenceMetadata metadata, std::shared_ptr<FileReferenceState> state);
-[[nodiscard]] FileResult<std::string> DecodeFileUtf8(FileResult<Bytes> bytes);
+[[nodiscard]] IoResult<std::string> DecodeFileUtf8(IoResult<Bytes> bytes);
 [[nodiscard]] bool IsValidFileUtf8(std::string_view text) noexcept;
 void ValidateFileTypeFilter(const std::vector<std::string>& extensions, const std::vector<std::string>& content_types);
 [[nodiscard]] bool IsValidReferenceChildName(std::string_view name) noexcept;
 [[nodiscard]] FileReference MakeLocalFileReference(File file, bool writable,
                                                    std::optional<std::string> content_type = {},
                                                    FileReferenceCoordination coordination = {});
-[[nodiscard]] Task<FileResult<std::shared_ptr<FileReferenceState>>> MakeLocalDirectoryState(File directory);
+[[nodiscard]] Task<IoResult<std::shared_ptr<FileReferenceState>>> MakeLocalDirectoryState(File directory);
 
 #if defined(__EMSCRIPTEN__)
 [[nodiscard]] bool IsWebPersistentFilePath(std::string_view path) noexcept;

@@ -14,13 +14,8 @@ View App() {
       Image(logo).Fit(ImageFit::Contain).With(Frame{.width = 180.0F, .height = 140.0F}),
       Image(mark).Tint(Color::Rgb(132, 78, 255)).With(Frame{.width = 96.0F, .height = 96.0F}),
     }.With(Spacing(24.0F), CrossAlign(CrossAxisAlignment::Center)),
-    Text::Format(
-        image_example::strings::selected_variant,
-        logo.Scale(),
-        logo.PixelWidth(),
-        logo.PixelHeight()
-    ),
-    Text(about.AsStringView()),
+    Text::Format(image_example::strings::selected_variant, logo.Scale(), logo.PixelWidth(), logo.PixelHeight()),
+    Text(about.ReadString(true)),
   }.With(Padding(24.0F), Spacing(16.0F), CrossAlign(CrossAxisAlignment::Center));
 }
 

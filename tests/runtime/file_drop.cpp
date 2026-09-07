@@ -17,7 +17,7 @@ namespace {
 std::vector<std::string> file_drop_events;
 std::vector<FileReference> received_files;
 std::optional<FileDropEvent> received_position;
-std::optional<FileError> received_error;
+std::optional<IoError> received_error;
 State<bool> file_drop_present;
 State<bool> file_drop_enabled;
 State<FileDropOptions> file_drop_options;
@@ -33,11 +33,11 @@ class DroppedFileState final : public detail::FileReferenceState {
 public:
   std::function<void()> ReadBytes(detail::FileReferenceBytesCompletion completion) override {
     ++reads;
-    completion(FileResult<Bytes>(Bytes{}));
+    completion(IoResult<Bytes>(Bytes{}));
     return {};
   }
   std::function<void()> ImportTo(File, bool, detail::FileReferenceCompletion<std::uint64_t> completion) override {
-    completion(FileResult<std::uint64_t>(0));
+    completion(IoResult<std::uint64_t>(0));
     return {};
   }
   std::function<void()> ReplaceWith(File, detail::FileReferenceBoolCompletion completion) override {
@@ -68,7 +68,7 @@ struct ManualFileDrop {
   }
 
   void Complete(std::vector<FileReference> files = {DroppedFile()}) {
-    completion(FileResult<std::vector<FileReference>>(std::move(files)));
+    completion(IoResult<std::vector<FileReference>>(std::move(files)));
   }
 };
 
@@ -107,7 +107,7 @@ View FileDropApp() {
           received_files.insert(received_files.end(), files.begin(), files.end());
           received_position = event;
         })
-        .On<FileDropEvents::Failed>([](const FileError& error, const FileDropEvent& event) {
+        .On<FileDropEvents::Failed>([](const IoError& error, const FileDropEvent& event) {
           file_drop_events.emplace_back("failed");
           received_error = error;
           received_position = event;
@@ -160,40 +160,40 @@ TEST_CASE("File drop validates extension and MIME configuration before mounting"
 TEST_CASE_METHOD(FileDropFixture, "File drop final filters use suffix or MIME matching and reject whole batches") {
   FileDropOptions options{.extensions = {"tar.gz"}, .content_types = {"image/*"}};
   std::vector<FileReference> files;
-  std::optional<FileErrorCode> error;
+  std::optional<IoErrorCode> error;
   SECTION("compound suffix ignores case") { files = {DroppedFile("ARCHIVE.TAR.GZ", {})}; }
   SECTION("long file names retain their storage") { files = {DroppedFile(std::string(256, 'a') + ".TAR.GZ", {})}; }
   SECTION("MIME matching ignores case") { files = {DroppedFile("image", "IMAGE/PNG")}; }
   SECTION("mixed eligibility rejects the complete batch") {
     files = {DroppedFile(), DroppedFile("notes.txt", "text/plain")};
-    error = FileErrorCode::Unsupported;
+    error = IoErrorCode::Unsupported;
   }
   SECTION("a suffix needs its leading separator") {
     files = {DroppedFile("tar.gz", {})};
-    error = FileErrorCode::Unsupported;
+    error = IoErrorCode::Unsupported;
   }
   SECTION("unknown metadata cannot satisfy a specific filter") {
     files = {DroppedFile("unknown", {})};
-    error = FileErrorCode::Unsupported;
+    error = IoErrorCode::Unsupported;
   }
   SECTION("empty batch is rejected without filters") {
     options = {};
-    error = FileErrorCode::Unsupported;
+    error = IoErrorCode::Unsupported;
   }
   SECTION("directories are not ordinary files") {
     options = {};
     files = {DroppedFile("folder", {}, FileType::Directory)};
-    error = FileErrorCode::IsDirectory;
+    error = IoErrorCode::IsDirectory;
   }
   SECTION("other item kinds are rejected") {
     options = {};
     files = {DroppedFile("pipe", {}, FileType::Other)};
-    error = FileErrorCode::Unsupported;
+    error = IoErrorCode::Unsupported;
   }
   SECTION("single-file policy rejects the complete multiple-file batch") {
     options = {.allows_multiple = false};
     files = {DroppedFile(), DroppedFile()};
-    error = FileErrorCode::Unsupported;
+    error = IoErrorCode::Unsupported;
   }
   SECTION("unrestricted MIME wildcard accepts unknown metadata") {
     options = {.content_types = {"*/*"}};
@@ -248,7 +248,7 @@ TEST_CASE_METHOD(FileDropFixture, "File drop separates hover from deferred succe
   auto access = std::make_shared<DroppedFileState>();
   REQUIRE(runtime.CoreRuntime().HandleFileDragEntered(1, {}, drop_point));
   const detail::FileDropPreparation source{[access](detail::FileDropCompletion completion) {
-    completion(FileResult<std::vector<FileReference>>({DroppedFile("photo.png", "image/png", FileType::File, access)}));
+    completion(IoResult<std::vector<FileReference>>({DroppedFile("photo.png", "image/png", FileType::File, access)}));
     return std::function<void()>{};
   }};
   REQUIRE(runtime.CoreRuntime().HandleFileDrop(1, {}, drop_point, source));
@@ -275,7 +275,7 @@ TEST_CASE_METHOD(FileDropFixture, "File drop final rejection delivers failure wi
   source.Complete({DroppedFile(), DroppedFile("notes.txt", "text/plain")});
   platform.RunPlatformModuleTasks();
   REQUIRE(received_files.empty());
-  REQUIRE(received_error->code == FileErrorCode::Unsupported);
+  REQUIRE(received_error->code == IoErrorCode::Unsupported);
   REQUIRE(file_drop_events.back() == "failed");
   source.Complete();
   platform.RunPlatformModuleTasks();
@@ -455,7 +455,7 @@ TEST_CASE_METHOD(FileDropFixture, "File drop reports preparation exceptions and 
   }));
   REQUIRE_FALSE(received_error.has_value());
   platform.RunPlatformModuleTasks();
-  REQUIRE(received_error->code == FileErrorCode::Io);
+  REQUIRE(received_error->code == IoErrorCode::Io);
   REQUIRE(runtime.CoreRuntime().HandleFileDragEntered(2, {}, drop_point));
   REQUIRE(runtime.CoreRuntime().HandleFileDrop(2, {}, drop_point, next.Source()));
   next.Complete();

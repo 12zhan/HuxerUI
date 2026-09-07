@@ -1,6 +1,15 @@
 #include "runtime_test_support.h"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <functional>
+#include <future>
+#include <mutex>
+#include <thread>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
@@ -17,6 +26,7 @@
 #include "image_test_support.h"
 #include "resources/resource_internal.h"
 #include "components/text_field_internal.h"
+#include "io/stream_internal.h"
 
 namespace huxerui::test {
 
@@ -122,16 +132,22 @@ public:
     return configuration;
   }
 
-  RawAsset Read(std::string_view package_path) override {
+  std::optional<InputStream> OpenRead(std::string_view package_path) override {
+    std::scoped_lock lock(mutex);
     const std::string path(package_path);
     ++read_counts[path];
+    if (open_payload && package_path != detail::resource_index_path) {
+      return open_payload();
+    }
     const auto found = assets.find(path);
-    return found == assets.end() ? RawAsset{} : found->second;
+    return found == assets.end() ? std::nullopt : std::optional<InputStream>(found->second.OpenRead());
   }
 
   ResourceConfiguration configuration{Locale::FromLanguageTag("zh-Hans-CN"), 1.5F};
   std::unordered_map<std::string, RawAsset> assets;
   std::unordered_map<std::string, std::size_t> read_counts;
+  std::function<InputStream()> open_payload;
+  std::mutex mutex;
 };
 
 class TestClipboard final : public PlatformClipboard {
@@ -405,7 +421,9 @@ View ResourceTooltipDependencyApp() {
 } // namespace
 
 TEST_CASE("BuiltinStringCatalogsContainEveryDefaultKeyWithoutFallback") {
-  const auto entries = detail::ParseResourceIndex(BuiltinTestResources()->Read(detail::resource_index_path));
+  auto index = BuiltinTestResources()->OpenRead(detail::resource_index_path);
+  REQUIRE(index.has_value());
+  const auto entries = detail::ParseResourceIndex(RawAsset::FromBytes(detail::ReadStreamBytes(std::move(*index))));
   std::map<std::string, std::set<std::string>> catalogs;
   for (const auto& entry : entries) {
     if (entry.kind != detail::ResourceEntryKind::String || entry.id.Domain() != "huxerui") {
@@ -442,7 +460,7 @@ TEST_CASE("AppResourcesResolveLocaleScaleAndRawPayloads") {
            1.0F,
            0,
            0,
-           Hash(config.Bytes())},
+           Hash(config.ReadBytes())},
           {detail::ResourceEntryKind::Image,
            "images/logo",
            "huxerui/test/images/logo.png",
@@ -452,7 +470,7 @@ TEST_CASE("AppResourcesResolveLocaleScaleAndRawPayloads") {
            1.0F,
            20,
            10,
-           Hash(logo.Bytes())},
+           Hash(logo.ReadBytes())},
           {detail::ResourceEntryKind::Image,
            "images/logo",
            "huxerui/test/images/logo@2x.png",
@@ -462,16 +480,16 @@ TEST_CASE("AppResourcesResolveLocaleScaleAndRawPayloads") {
            2.0F,
            40,
            20,
-           Hash(logo_2x.Bytes())},
-      })
-  );
+           Hash(logo_2x.ReadBytes())},
+      }));
   resources.assets.emplace("huxerui/test/raw/config.txt", config);
   resources.assets.emplace("huxerui/test/images/logo.png", logo);
   resources.assets.emplace("huxerui/test/images/logo@2x.png", logo_2x);
 
-  detail::AppResources service(&resources);
+  auto service_owner = std::make_shared<detail::AppResources>(&resources);
+  auto& service = *service_owner;
   const RawAsset resolved_config = service.Resolve(RawResource("test", "raw/config.txt"));
-  REQUIRE(resolved_config.Bytes().size() == 7);
+  REQUIRE(resolved_config.ReadBytes().size() == 7);
   REQUIRE(resolved_config.MimeType() == "text/plain");
   const ImageAsset image = service.Resolve(ImageResource("test", "images/logo"), Locale::Default());
   REQUIRE(image.Scale() == 2.0F);
@@ -485,11 +503,11 @@ TEST_CASE("AppResourcesResolveShuffledResourceIdentities") {
   std::vector<IndexEntry> entries{
       {.kind = detail::ResourceEntryKind::String, .key = "shared/value", .value = "Other", .domain = "other"},
       {.kind = detail::ResourceEntryKind::Image, .key = "shared/value", .path = "huxerui/test/value.png",
-       .mime_type = "image/png", .width = 20, .height = 10, .content_hash = Hash(image.Bytes())},
+       .mime_type = "image/png", .width = 20, .height = 10, .content_hash = Hash(image.ReadBytes())},
       {.kind = detail::ResourceEntryKind::String, .key = "shared/value", .locale = "fr", .value = "French {0}",
        .argument_count = 1},
       {.kind = detail::ResourceEntryKind::Raw, .key = "shared/value", .path = "huxerui/test/value.bin",
-       .content_hash = Hash(raw.Bytes())},
+       .content_hash = Hash(raw.ReadBytes())},
       {.kind = detail::ResourceEntryKind::String, .key = "shared/value/child", .value = "Child"},
       {.kind = detail::ResourceEntryKind::String, .key = "shared/value", .value = "Default {0}", .argument_count = 1},
   };
@@ -502,7 +520,8 @@ TEST_CASE("AppResourcesResolveShuffledResourceIdentities") {
   resources.assets.emplace("huxerui/test/value.bin", raw);
   resources.assets.emplace("huxerui/test/value.png", image);
 
-  detail::AppResources service(&resources);
+  auto service_owner = std::make_shared<detail::AppResources>(&resources);
+  auto& service = *service_owner;
   const Locale locale = Locale::FromLanguageTag("fr-CA");
   const StringResource text("test", "shared/value");
   REQUIRE(service.Resolve(text, locale).value == "French {0}");
@@ -512,7 +531,7 @@ TEST_CASE("AppResourcesResolveShuffledResourceIdentities") {
   REQUIRE(service.Resolve(StringResource("test", "shared/value/child"), locale).value == "Child");
   REQUIRE(service.Resolve(StringResource("test", "noise/0"), locale).value == "0");
   REQUIRE(service.Resolve(StringResource("test", "noise/127"), locale).value == "127");
-  REQUIRE(service.Resolve(RawResource("test", "shared/value")).Bytes().front() == std::byte{42});
+  REQUIRE(service.Resolve(RawResource("test", "shared/value")).ReadBytes().front() == std::byte{42});
   REQUIRE(service.Resolve(ImageResource("test", "shared/value"), locale).IntrinsicSize() == Size{20.0F, 10.0F});
   REQUIRE_THROWS_AS(service.Resolve(RawResource("other", "shared/value")), std::logic_error);
   REQUIRE_THROWS_AS(service.Resolve(ImageResource("other", "shared/value"), locale), std::logic_error);
@@ -520,7 +539,8 @@ TEST_CASE("AppResourcesResolveShuffledResourceIdentities") {
     REQUIRE_THROWS_AS(service.Resolve(StringResource("test", key), locale), std::logic_error);
   }
 
-  detail::AppResources empty(nullptr);
+  auto empty_owner = std::make_shared<detail::AppResources>(nullptr);
+  auto& empty = *empty_owner;
   REQUIRE_THROWS_AS(empty.Resolve(RawResource("test", "shared/value")), std::logic_error);
   REQUIRE_THROWS_AS(empty.Resolve(ImageResource("test", "shared/value"), locale), std::logic_error);
   REQUIRE_THROWS_AS(empty.Resolve(text, locale), std::logic_error);
@@ -536,7 +556,7 @@ TEST_CASE("AppResourcesSelectLocaleBeforeDensityAndReuseAssets") {
     const std::string path = "huxerui/test/" + locale + std::to_string(scale) + ".png";
     entries.push_back({.kind = detail::ResourceEntryKind::Image, .key = "images/logo", .path = path,
                       .mime_type = "image/png", .locale = std::move(locale), .scale = scale, .width = width,
-                      .height = height, .content_hash = Hash(image.Bytes())});
+                      .height = height, .content_hash = Hash(image.ReadBytes())});
     resources.assets.emplace(path, image);
   };
   add_image("zh-TW", 3.0F);
@@ -548,7 +568,8 @@ TEST_CASE("AppResourcesSelectLocaleBeforeDensityAndReuseAssets") {
   add_image("", 2.0F);
   resources.assets.emplace(detail::resource_index_path, EncodeIndex(entries));
 
-  detail::AppResources service(&resources);
+  auto service_owner = std::make_shared<detail::AppResources>(&resources);
+  auto& service = *service_owner;
   const ImageResource logo("test", "images/logo");
   const Locale locale = Locale::FromLanguageTag("zh-Hant-TW");
   const ImageAsset original = service.Resolve(logo, locale);
@@ -593,7 +614,7 @@ TEST_CASE("ImageResourceScopesObserveDisplayScalePrecisely") {
            1.0F,
            20,
            10,
-           Hash(image.Bytes())},
+           Hash(image.ReadBytes())},
           {detail::ResourceEntryKind::Image,
            "images/density",
            "huxerui/test/images/density@2x.png",
@@ -603,9 +624,8 @@ TEST_CASE("ImageResourceScopesObserveDisplayScalePrecisely") {
            2.0F,
            40,
            20,
-           Hash(image_2x.Bytes())},
-      })
-  );
+           Hash(image_2x.ReadBytes())},
+      }));
   resources.assets.emplace("huxerui/test/images/density.png", image);
   resources.assets.emplace("huxerui/test/images/density@2x.png", image_2x);
   TestPlatform platform;
@@ -995,7 +1015,7 @@ TEST_CASE("VirtualItemsRetainResourceDependenciesOnTheirDeclaringScope") {
            1.0F,
            20,
            10,
-           Hash(image.Bytes())},
+           Hash(image.ReadBytes())},
           {detail::ResourceEntryKind::Image,
            "images/density",
            "huxerui/test/images/density@2x.png",
@@ -1005,9 +1025,8 @@ TEST_CASE("VirtualItemsRetainResourceDependenciesOnTheirDeclaringScope") {
            2.0F,
            40,
            20,
-           Hash(image_2x.Bytes())},
-      })
-  );
+           Hash(image_2x.ReadBytes())},
+      }));
   resources.assets.emplace("huxerui/test/images/density.png", image);
   resources.assets.emplace("huxerui/test/images/density@2x.png", image_2x);
   TestPlatform platform;
@@ -1057,10 +1076,10 @@ TEST_CASE("AppResourcesPrefersRegionBeforeScriptDuringLocaleFallback") {
               .locale = "zh-TW",
               .value = "Region",
           },
-      })
-  );
+      }));
 
-  detail::AppResources service(&resources);
+  auto service_owner = std::make_shared<detail::AppResources>(&resources);
+  auto& service = *service_owner;
   const StringResource greeting("test", "strings/greeting");
   REQUIRE(service.Resolve(greeting, Locale::FromLanguageTag("zh-Hant-TW")).value == "Region");
   REQUIRE(service.Resolve(greeting, Locale::FromLanguageTag("zh-Hant")).value == "Script");
@@ -1428,7 +1447,7 @@ TEST_CASE("MenuItemsResolveStringAndImageResources") {
               .mime_type = "image/png",
               .width = 16,
               .height = 16,
-              .content_hash = Hash(icon.Bytes()),
+              .content_hash = Hash(icon.ReadBytes()),
           },
       })
   );
@@ -1621,7 +1640,7 @@ TEST_CASE("LocalizedResourcesRequireTheDefaultArgumentSchema") {
   REQUIRE_THROWS_AS(extra.BuildFrame(), std::invalid_argument);
 }
 
-TEST_CASE("AppResourcesRejectPayloadsThatDoNotMatchTheIndex") {
+TEST_CASE("AppResourcesDoNotValidatePayloadContentHashes") {
   TestResources resources;
   resources.assets.emplace(
       detail::resource_index_path,
@@ -1640,11 +1659,433 @@ TEST_CASE("AppResourcesRejectPayloadsThatDoNotMatchTheIndex") {
   );
   resources.assets.emplace(
       "huxerui/test/raw/config.txt",
-      RawAsset::CopyBytes(std::as_bytes(std::span("enabled", std::size("enabled") - 1)), "text/plain")
-  );
+      RawAsset::CopyBytes(std::as_bytes(std::span("enabled", std::size("enabled") - 1)), "text/plain"));
 
-  detail::AppResources service(&resources);
-  REQUIRE_THROWS_AS(service.Resolve(RawResource("test", "raw/config.txt")), std::logic_error);
+  auto service_owner = std::make_shared<detail::AppResources>(&resources);
+  auto& service = *service_owner;
+  REQUIRE(service.Resolve(RawResource("test", "raw/config.txt")).ReadString() == "enabled");
+}
+
+namespace {
+
+constexpr std::string_view lazy_path = "huxerui/test/lazy.bin";
+const RawResource lazy_resource("test", "raw/lazy");
+
+std::function<View()> resource_test_root;
+View ResourceTestRoot() { return resource_test_root(); }
+
+void InstallLazyResource(TestResources& resources, Bytes bytes = {std::byte{1}, std::byte{0}, std::byte{255}}) {
+  resources.assets.emplace(detail::resource_index_path, EncodeIndex({
+      {.kind = detail::ResourceEntryKind::Raw, .key = "raw/lazy", .path = std::string(lazy_path),
+       .mime_type = "application/test"},
+  }));
+  resources.assets.emplace(lazy_path, RawAsset::FromBytes(std::move(bytes)));
+}
+
+struct ResourceProbe {
+  std::atomic<int> reads = 0;
+  std::atomic<int> released = 0;
+  std::atomic<bool> fail = false;
+  std::function<void()> before_read;
+};
+
+class ProbedResourceInput final : public detail::InputStreamState {
+public:
+  explicit ProbedResourceInput(std::shared_ptr<ResourceProbe> probe) : probe_(std::move(probe)) {}
+
+  IoResult<std::size_t> Read(std::span<std::byte> buffer) override {
+    if (probe_->before_read) {
+      probe_->before_read();
+    }
+    ++probe_->reads;
+    if (offset_ == 3) {
+      if (probe_->fail) {
+        return IoResult<std::size_t>(IoError{IoErrorCode::Io, "HuxerUI test resource read failed"});
+      }
+      return IoResult<std::size_t>(std::size_t{0});
+    }
+    const std::size_t count = std::min(buffer.size(), 3 - offset_);
+    for (std::size_t i = 0; i < count; ++i) {
+      buffer[i] = static_cast<std::byte>(++offset_);
+    }
+    return IoResult<std::size_t>(count);
+  }
+
+  void Release() noexcept override { ++probe_->released; }
+
+private:
+  std::shared_ptr<ResourceProbe> probe_;
+  std::size_t offset_ = 0;
+};
+
+struct ResourceTaskQueue {
+  UIThreadDispatcher Dispatcher() {
+    return [this](std::function<void()> task) {
+      {
+        std::scoped_lock lock(mutex);
+        tasks.push_back(std::move(task));
+      }
+      condition.notify_one();
+    };
+  }
+
+  void RunUntil(const std::function<bool()>& complete) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!complete()) {
+      std::function<void()> task;
+      {
+        std::unique_lock lock(mutex);
+        REQUIRE(condition.wait_until(lock, deadline, [&] { return !tasks.empty(); }));
+        task = std::move(tasks.front());
+        tasks.pop_front();
+      }
+      task();
+    }
+  }
+
+  std::mutex mutex;
+  std::condition_variable condition;
+  std::deque<std::function<void()>> tasks;
+};
+
+} // namespace
+
+TEST_CASE("RawResourceLookupAndRecompositionDoNotOpenThePayload") {
+  TestResources resources;
+  InstallLazyResource(resources);
+  TestPlatform platform(&resources);
+  RawAsset first;
+  RawAsset current;
+  State<int> revision;
+  int compositions = 0;
+  resource_test_root = [&] {
+    revision = UseState(0);
+    current = UseRawResource(lazy_resource);
+    ++compositions;
+    return Text(std::to_string(revision.Get()));
+  };
+  Runtime runtime{ResourceTestRoot, platform};
+  runtime.SetWindowMetrics({.viewport = {200.0F, 60.0F}});
+  runtime.BuildFrame();
+  first = current;
+  revision = 1;
+  runtime.BuildFrame();
+  REQUIRE(compositions == 2);
+  REQUIRE(current == first);
+  REQUIRE(current.HasValue());
+  REQUIRE(current.MimeType() == "application/test");
+  REQUIRE(resources.read_counts[std::string(lazy_path)] == 0);
+  REQUIRE(current.ReadBytes().size() == 3);
+  REQUIRE(resources.read_counts[std::string(lazy_path)] == 1);
+}
+
+TEST_CASE("RawResourceCacheIsExplicitSharedAndIndependentOfReturnedCopies") {
+  TestResources resources;
+  InstallLazyResource(resources, {std::byte{0xEF}, std::byte{0xBB}, std::byte{0xBF}, std::byte{0}, std::byte{255}});
+  auto service = std::make_shared<detail::AppResources>(&resources);
+  RawAsset asset = service->Resolve(lazy_resource);
+  RawAsset copy = asset;
+  auto initial = asset.ReadBytes();
+  REQUIRE(copy.ReadBytes() == initial);
+  REQUIRE(resources.read_counts[std::string(lazy_path)] == 2);
+  REQUIRE(copy.ReadString(true).size() == initial.size());
+  auto returned = asset.ReadBytes();
+  returned[0] = std::byte{0};
+  REQUIRE(service->Resolve(lazy_resource).ReadBytes() == initial);
+  REQUIRE(resources.read_counts[std::string(lazy_path)] == 3);
+  REQUIRE(copy == asset);
+  service->Disconnect();
+  service.reset();
+  REQUIRE(asset.ReadBytes() == initial);
+  auto cached_stream = copy.OpenRead();
+  asset = {};
+  copy = {};
+  REQUIRE(detail::ReadStreamBytes(std::move(cached_stream)) == initial);
+}
+
+TEST_CASE("RawResourceStreamsAreIncrementalIndependentAndOutliveTheirService") {
+  TestResources resources;
+  InstallLazyResource(resources);
+  auto probe = std::make_shared<ResourceProbe>();
+  resources.open_payload = [probe] {
+    return detail::StreamAccess::MakeInputStream(std::make_shared<ProbedResourceInput>(probe));
+  };
+  auto service = std::make_shared<detail::AppResources>(&resources);
+  RawAsset asset = service->Resolve(lazy_resource);
+  auto first = asset.OpenRead();
+  auto second = asset.OpenRead();
+  REQUIRE(probe->reads == 0);
+  std::array<std::byte, 1> buffer;
+  REQUIRE(first.Read(buffer).Value() == 1);
+  REQUIRE(buffer[0] == std::byte{1});
+  REQUIRE(second.Read(buffer).Value() == 1);
+  REQUIRE(buffer[0] == std::byte{1});
+  service->Disconnect();
+  REQUIRE_THROWS_AS(asset.OpenRead(), std::logic_error);
+  service.reset();
+  REQUIRE_THROWS_AS(asset.ReadBytes(), std::logic_error);
+  REQUIRE(first.Read(buffer).Value() == 1);
+  REQUIRE(buffer[0] == std::byte{2});
+}
+
+TEST_CASE("RawResourceFailedReadsDoNotPublishPartialCaches") {
+  const bool read_string = GENERATE(false, true);
+  TestResources resources;
+  InstallLazyResource(resources);
+  auto probe = std::make_shared<ResourceProbe>();
+  probe->fail = true;
+  resources.open_payload = [probe] {
+    return detail::StreamAccess::MakeInputStream(std::make_shared<ProbedResourceInput>(probe));
+  };
+  auto service = std::make_shared<detail::AppResources>(&resources);
+  RawAsset asset = service->Resolve(lazy_resource);
+  if (read_string) {
+    REQUIRE_THROWS_AS(asset.ReadString(true), std::runtime_error);
+  } else {
+    REQUIRE_THROWS_AS(asset.ReadBytes(true), std::runtime_error);
+  }
+  REQUIRE(probe->released == 1);
+  probe->fail = false;
+  REQUIRE((asset.ReadBytes(true) == Bytes{std::byte{1}, std::byte{2}, std::byte{3}}));
+  REQUIRE(resources.read_counts[std::string(lazy_path)] == 2);
+  REQUIRE(asset.ReadBytes().size() == 3);
+  REQUIRE(resources.read_counts[std::string(lazy_path)] == 2);
+}
+
+TEST_CASE("RawResourceMissingAndEmptyPayloadsRemainDistinct") {
+  TestResources resources;
+  InstallLazyResource(resources, {});
+  auto service = std::make_shared<detail::AppResources>(&resources);
+  RawAsset asset = service->Resolve(lazy_resource);
+  REQUIRE(asset.ReadBytes(true).empty());
+  REQUIRE(asset.HasValue());
+  auto empty = asset.OpenRead();
+  std::array<std::byte, 1> buffer;
+  REQUIRE(empty.Read(buffer).Value() == 0);
+  resources.assets.erase(std::string(lazy_path));
+  auto other_service = std::make_shared<detail::AppResources>(&resources);
+  RawAsset missing = other_service->Resolve(lazy_resource);
+  REQUIRE(missing.HasValue());
+  REQUIRE_THROWS_AS(missing.OpenRead(), std::logic_error);
+  REQUIRE(asset != missing);
+  REQUIRE(asset.ReadBytes().empty());
+}
+
+TEST_CASE("RawResourceAsyncOpenRetainsAssetAndDeliversCallerSizedReads") {
+  ResourceTaskQueue queue;
+  TestResources resources;
+  InstallLazyResource(resources);
+  TestPlatform platform(queue.Dispatcher());
+  platform.platform_resources = &resources;
+  TaskScope tasks;
+  RawAsset asset;
+  resource_test_root = [&] {
+    tasks = UseTaskScope();
+    asset = UseRawResource(lazy_resource);
+    return Text("resources");
+  };
+  Runtime runtime{ResourceTestRoot, platform};
+  runtime.SetWindowMetrics({.viewport = {200.0F, 60.0F}});
+  runtime.BuildFrame();
+  auto opened = asset.OpenReadAsync();
+  asset = {};
+  REQUIRE(resources.read_counts[std::string(lazy_path)] == 0);
+  bool complete = false;
+  Bytes result;
+  std::thread::id resumed;
+  tasks.Launch([&, opened = std::move(opened)]() mutable -> Task<void> {
+    auto input = co_await std::move(opened);
+    while (true) {
+      Bytes bytes = (co_await input.ReadAsync(1)).Value();
+      if (bytes.empty()) {
+        break;
+      }
+      REQUIRE(bytes.size() == 1);
+      result.insert(result.end(), bytes.begin(), bytes.end());
+    }
+    resumed = std::this_thread::get_id();
+    complete = true;
+  });
+  queue.RunUntil([&] { return complete; });
+  REQUIRE((result == Bytes{std::byte{1}, std::byte{0}, std::byte{255}}));
+  REQUIRE(resumed == std::this_thread::get_id());
+  REQUIRE(resources.read_counts[std::string(lazy_path)] == 1);
+}
+
+TEST_CASE("RawResourceAsyncFailuresAndRetainedMemoryUseTheSameContract") {
+  ResourceTaskQueue queue;
+  TestResources resources;
+  InstallLazyResource(resources);
+  auto service = std::make_shared<detail::AppResources>(&resources);
+  RawAsset asset = service->Resolve(lazy_resource);
+  bool failure = false;
+  SECTION("Disconnected service fails while awaiting open") {
+    service->Disconnect();
+    failure = true;
+  }
+  SECTION("Cached bytes remain readable after disconnect") {
+    static_cast<void>(asset.ReadBytes(true));
+    service->Disconnect();
+  }
+  SECTION("Memory storage does not depend on a service") {
+    asset = RawAsset::FromBytes({std::byte{1}, std::byte{0}, std::byte{255}});
+  }
+  SECTION("Read failure propagates after successful open") {
+    auto probe = std::make_shared<ResourceProbe>();
+    probe->fail = true;
+    resources.open_payload = [probe] {
+      return detail::StreamAccess::MakeInputStream(std::make_shared<ProbedResourceInput>(probe));
+    };
+    failure = true;
+  }
+  TestPlatform platform(queue.Dispatcher());
+  TaskScope tasks;
+  resource_test_root = [&] {
+    tasks = UseTaskScope();
+    return Text("resources");
+  };
+  Runtime runtime{ResourceTestRoot, platform};
+  runtime.SetWindowMetrics({.viewport = {200.0F, 60.0F}});
+  runtime.BuildFrame();
+  bool complete = false;
+  bool caught = false;
+  tasks.Launch([&]() -> Task<void> {
+    std::optional<AsyncInputStream> input;
+    try {
+      input.emplace(co_await asset.OpenReadAsync());
+    } catch (const std::logic_error&) {
+      caught = true;
+    }
+    if (input) {
+      const auto first = co_await input->ReadAsync(3);
+      REQUIRE(first.Succeeded());
+      REQUIRE(first.Value().size() == 3);
+      const auto end = co_await input->ReadAsync(3);
+      if (end.Succeeded()) {
+        REQUIRE(end.Value().empty());
+      } else {
+        REQUIRE(end.Error().code == IoErrorCode::Io);
+        caught = true;
+      }
+    }
+    complete = true;
+  });
+  queue.RunUntil([&] { return complete; });
+  REQUIRE(caught == failure);
+}
+
+TEST_CASE("RawResourceConcurrentCachePublicationPreservesImmutableContents") {
+  TestResources resources;
+  InstallLazyResource(resources);
+  auto service = std::make_shared<detail::AppResources>(&resources);
+  RawAsset asset = service->Resolve(lazy_resource);
+  auto first = std::async(std::launch::async, [asset] { return asset.ReadBytes(true); });
+  auto second = std::async(std::launch::async, [asset] { return asset.ReadString(true); });
+  const auto bytes = first.get();
+  const auto text = second.get();
+  REQUIRE(bytes == asset.ReadBytes());
+  REQUIRE(text == asset.ReadString());
+  const auto reads = resources.read_counts[std::string(lazy_path)];
+  REQUIRE(reads >= 1);
+  REQUIRE(reads <= 2);
+  REQUIRE(asset.ReadBytes(false) == bytes);
+  REQUIRE(resources.read_counts[std::string(lazy_path)] == reads);
+}
+
+TEST_CASE("RawResourceCancellationReleasesAnInFlightOpenOrReadWithoutDelivery") {
+  const bool opening = GENERATE(true, false);
+  struct Gate {
+    void Block() {
+      std::unique_lock lock(mutex);
+      entered = true;
+      condition.notify_all();
+      condition.wait_for(lock, std::chrono::seconds(5), [&] { return released; });
+    }
+    std::mutex mutex;
+    std::condition_variable condition;
+    bool entered = false;
+    bool released = false;
+  };
+  auto gate = std::make_shared<Gate>();
+  auto probe = std::make_shared<ResourceProbe>();
+  if (!opening) {
+    probe->before_read = [gate] { gate->Block(); };
+  }
+  ResourceTaskQueue queue;
+  TestResources resources;
+  InstallLazyResource(resources);
+  resources.open_payload = [gate, probe, opening] {
+    if (opening) {
+      gate->Block();
+    }
+    return detail::StreamAccess::MakeInputStream(std::make_shared<ProbedResourceInput>(probe));
+  };
+  TestPlatform platform(queue.Dispatcher());
+  platform.platform_resources = &resources;
+  TaskScope tasks;
+  RawAsset asset;
+  resource_test_root = [&] {
+    tasks = UseTaskScope();
+    asset = UseRawResource(lazy_resource);
+    return Text("resources");
+  };
+  Runtime runtime{ResourceTestRoot, platform};
+  runtime.SetWindowMetrics({.viewport = {200.0F, 60.0F}});
+  runtime.BuildFrame();
+  bool delivered = false;
+  bool started = false;
+  bool opened = false;
+  auto task = tasks.Launch([&]() -> Task<void> {
+    started = true;
+    auto input = co_await asset.OpenReadAsync();
+    opened = true;
+    const auto bytes = co_await input.ReadAsync(1);
+    delivered = true;
+  });
+  queue.RunUntil([&] { return opening ? started : opened; });
+  {
+    std::unique_lock lock(gate->mutex);
+    REQUIRE(gate->condition.wait_for(lock, std::chrono::seconds(5), [&] { return gate->entered; }));
+  }
+  task.Cancel();
+  {
+    std::scoped_lock lock(gate->mutex);
+    gate->released = true;
+  }
+  gate->condition.notify_all();
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (probe->released == 0 && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  REQUIRE(probe->released == 1);
+  REQUIRE_FALSE(delivered);
+  if (opening) {
+    REQUIRE_FALSE(opened);
+    REQUIRE(probe->reads == 0);
+  }
+}
+
+TEST_CASE("RawResourceRuntimeDestructionDisconnectsEvenRetainedServices") {
+  TestResources resources;
+  InstallLazyResource(resources);
+  TestPlatform platform(&resources);
+  RawAsset asset;
+  std::shared_ptr<detail::AppResources> retained_service;
+  std::optional<InputStream> opened;
+  {
+    resource_test_root = [&] {
+      asset = UseRawResource(lazy_resource);
+      retained_service = UseService<detail::AppResources>();
+      return Text("resources");
+    };
+    Runtime runtime{ResourceTestRoot, platform};
+    runtime.SetWindowMetrics({.viewport = {200.0F, 60.0F}});
+    runtime.BuildFrame();
+    opened.emplace(asset.OpenRead());
+  }
+  REQUIRE(retained_service != nullptr);
+  REQUIRE_THROWS_AS(asset.OpenRead(), std::logic_error);
+  REQUIRE(detail::ReadStreamBytes(std::move(*opened)).size() == 3);
 }
 
 } // namespace huxerui::test

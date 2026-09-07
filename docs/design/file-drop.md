@@ -39,7 +39,7 @@ Applications drive hover feedback exclusively from Entered and Exited.
 Physical drop freezes the selected extension identity, target-local and window coordinates, and acceptance options before ending hover and auto-scroll.
 The adapter captures native access within the host callback's permitted lifetime, then prepares the file references asynchronously when required.
 Successful preparation and whole-batch validation emit Dropped with `std::vector<FileReference>` on the UI thread.
-Preparation or final validation failure emits Failed with FileError, without also emitting Dropped.
+Preparation or final validation failure emits Failed with IoError, without also emitting Dropped.
 Neither event reports the success of subsequent application I/O.
 Completion is deferred even when native preparation finishes synchronously, keeping callback order independent of the host.
 

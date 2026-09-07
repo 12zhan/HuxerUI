@@ -65,12 +65,12 @@ struct FileDropEvents {
   /// Delivery is deferred until after Exited. No callback is made after the receiving modifier is unmounted.
   struct Dropped : Event<void(const std::vector<FileReference>&, const FileDropEvent&)> {};
   /// An accepted drop could not produce an eligible complete batch. No partial Dropped event follows this failure.
-  struct Failed : Event<void(const FileError&, const FileDropEvent&)> {};
+  struct Failed : Event<void(const IoError&, const FileDropEvent&)> {};
 };
 
 namespace detail {
 class FileDropTargetExtension;
-using FileDropCompletion = std::function<void(FileResult<std::vector<FileReference>>)>;
+using FileDropCompletion = std::function<void(IoResult<std::vector<FileReference>>)>;
 // Captures host access before the native callback ends. Preparation may complete on any thread;
 // Runtime defers delivery and owns best-effort cancellation until completion or unmount.
 using FileDropPreparation = std::function<std::function<void()>(FileDropCompletion)>;

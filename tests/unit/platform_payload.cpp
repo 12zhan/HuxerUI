@@ -33,12 +33,12 @@ Bytes WireBytes(std::initializer_list<std::uint8_t> values) {
 class PayloadFileReferenceState final : public detail::FileReferenceState {
 public:
   std::function<void()> ReadBytes(detail::FileReferenceBytesCompletion completion) override {
-    completion(FileResult<Bytes>(Bytes{}));
+    completion(IoResult<Bytes>(Bytes{}));
     return {};
   }
 
   std::function<void()> ImportTo(File, bool, detail::FileReferenceCompletion<std::uint64_t> completion) override {
-    completion(FileResult<std::uint64_t>(0));
+    completion(IoResult<std::uint64_t>(0));
     return {};
   }
 
