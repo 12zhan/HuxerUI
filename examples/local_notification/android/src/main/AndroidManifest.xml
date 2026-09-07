@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application android:name="org.huxerui.examples.NotificationApplication">
+        <meta-data
+            android:name="org.huxerui.local_notification.channel_id"
+            android:value="huxerui.local-notification.downloads" />
+        <meta-data
+            android:name="org.huxerui.local_notification.small_icon"
+            android:resource="@drawable/ic_notification" />
+        <receiver
+            android:name="org.huxerui.HuxerUILocalNotificationReceiver"
+            android:exported="false" />
+    </application>
+</manifest>

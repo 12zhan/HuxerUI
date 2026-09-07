@@ -7,6 +7,7 @@
 NS_ASSUME_NONNULL_BEGIN
 
 @class HUXExternalTexture;
+@class UNNotificationContent;
 
 /// Retains a C++ FileReference while exposing its native file URL to UIKit libraries.
 NS_SWIFT_NAME(FileReference)
@@ -63,6 +64,12 @@ NS_SWIFT_NAME(PlatformPayload)
 - (void)validateFields:(NSSet<NSString*>*)fields NS_SWIFT_NAME(validate(fields:));
 
 @end
+
+/// Reads the submitted application data snapshot in a Notification Content Extension.
+/// @param content The notification content delivered to the extension.
+/// @return The decoded value, Null when absent, or nil for malformed or oversized data.
+FOUNDATION_EXPORT HUXPlatformPayload* _Nullable HUXGetLocalNotificationData(UNNotificationContent* content)
+    NS_SWIFT_NAME(localNotificationData(_:));
 
 NS_SWIFT_NAME(PlatformEventEmitter)
 @protocol HUXPlatformEventEmitter <NSObject>

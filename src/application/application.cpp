@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "application_internal.h"
+#include "platform_registry_internal.h"
 #include "runtime/runtime_internal.h"
 #include "system_tray_internal.h"
 #include "runtime/task_internal.h"
@@ -21,6 +22,16 @@ void ValidateApplicationActivation(const ApplicationActivation& activation) {
   const auto* files = std::get_if<FileActivation>(&activation);
   if (files != nullptr && files->files.empty()) {
     throw std::invalid_argument("HuxerUI file activation must contain at least one file");
+  }
+  const auto* notification = std::get_if<NotificationActivation>(&activation);
+  if (notification != nullptr) {
+    static_cast<void>(EncodeLocalNotificationData(notification->data));
+  }
+  if (notification != nullptr &&
+      (notification->identifier.empty() || notification->identifier.find('\0') != std::string::npos ||
+       !IsValidUtf8(notification->identifier))) {
+    throw std::invalid_argument(
+        "HuxerUI notification activation identifier must contain non-empty valid UTF-8 without null characters");
   }
 }
 
@@ -378,17 +389,20 @@ void PermissionController::Disconnect() noexcept {
   state_->Disconnect();
 }
 
-ApplicationService::ApplicationService(
-    Runtime& runtime,
-    ApplicationActivation startup_activation,
-    std::shared_ptr<PermissionController> permissions,
-    std::shared_ptr<SystemTrayService> system_tray)
+ApplicationService::ApplicationService(Runtime& runtime, ApplicationActivation startup_activation,
+                                       std::shared_ptr<PermissionController> permissions,
+                                       std::shared_ptr<LocalNotificationService> local_notifications,
+                                       std::shared_ptr<SystemTrayService> system_tray)
     : runtime_(&runtime), startup_activation_(std::move(startup_activation)),
       lifecycle_state_(std::make_shared<StateCell<ApplicationLifecycleState>>(ApplicationLifecycleState::Active)),
-      permissions_(std::move(permissions)), system_tray_(std::move(system_tray)) {
+      permissions_(std::move(permissions)), local_notifications_(std::move(local_notifications)),
+      system_tray_(std::move(system_tray)) {
   ValidateApplicationActivation(startup_activation_);
   if (!permissions_) {
     throw std::invalid_argument("HuxerUI application permission controller must not be empty");
+  }
+  if (!local_notifications_) {
+    throw std::invalid_argument("HuxerUI application local notification service must not be empty");
   }
   if (!system_tray_) {
     throw std::invalid_argument("HuxerUI application system tray service must not be empty");
@@ -458,6 +472,10 @@ const std::shared_ptr<SystemTrayService>& ApplicationService::SystemTray() const
   return system_tray_;
 }
 
+const std::shared_ptr<LocalNotificationService>& ApplicationService::LocalNotifications() const noexcept {
+  return local_notifications_;
+}
+
 Task<PermissionStatus> ApplicationService::CheckPermission(Permission permission) const {
   return permissions_->Check(permission);
 }
@@ -521,6 +539,7 @@ void ApplicationService::DispatchPending() {
 
 void ApplicationService::Disconnect() noexcept {
   permissions_->Disconnect();
+  local_notifications_->Disconnect();
   system_tray_->Disconnect();
   runtime_ = nullptr;
   pending_activations_.clear();
@@ -567,6 +586,10 @@ SystemTrayHandle ApplicationHandle::SystemTray() const {
       detail::CurrentEnvironment(),
       detail::Composer::RequireCurrent().ScopeId(),
   };
+}
+
+LocalNotificationHandle ApplicationHandle::LocalNotifications() const {
+  return LocalNotificationHandle{service_->LocalNotifications(), detail::CurrentEnvironment()};
 }
 
 Task<PermissionStatus> ApplicationHandle::CheckPermissionAsync(Permission permission) const {

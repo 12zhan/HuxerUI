@@ -4,7 +4,7 @@ This document defines the application-facing contract for querying and requestin
 
 ## Public model
 
-Permissions are application capabilities exposed directly by `ApplicationHandle`:
+`<huxerui/system.h>` declares `Permission` and the shared `PermissionStatus`. Permission operations remain application capabilities exposed directly by `ApplicationHandle` in `<huxerui/app.h>`:
 
 ```cpp
 enum class Permission {
@@ -19,6 +19,7 @@ enum class PermissionStatus {
   PermanentlyDenied,
   Restricted,
   Unavailable,
+  Provisional,
 };
 
 Task<PermissionStatus> ApplicationHandle::CheckPermissionAsync(Permission permission) const;
@@ -32,6 +33,8 @@ Task<bool> ApplicationHandle::OpenPermissionSettingsAsync(Permission permission)
 
 `Unavailable` is the explicit outcome for an unsupported permission, missing native declaration, unavailable platform API, or host that cannot provide the capability.
 An invalid enum value remains caller input and throws `std::invalid_argument` before a Task is launched.
+
+`Granted` describes current access rather than a guarantee of indefinite authorization. `Provisional` describes explicitly reported trial authorization with reduced native behavior, such as quiet notification delivery; it does not encode an expiration time. Camera and microphone operations do not return `Provisional`.
 
 ## Ownership and execution
 
@@ -58,6 +61,7 @@ A late platform completion cannot resume retired application code.
 
 Permission is not a Root Service and does not introduce `PermissionHandle`, `UsePermissions()`, a registry, or a second callback convention.
 The private transport uses the same callback-to-Task bridge pattern as other asynchronous platform capabilities.
+The [Local Notifications](local-notifications.md) capability shares `PermissionStatus` and this Task delivery pattern, but owns its authorization operations without adding notifications to `Permission` or depending on `PermissionController`.
 
 ## Native declarations and policy
 
@@ -85,6 +89,8 @@ The permission must appear in the application manifest.
 A missing declaration reports `Unavailable`; a granted permission reports `Granted`; other query results report `Denied` because Android does not expose a durable first-request versus permanently-denied distinction without adding framework-owned history.
 Requests use the Activity-owned launcher installed on `HuxerUIView`, and application settings use `ACTION_APPLICATION_DETAILS_SETTINGS`.
 An embedded View whose owner does not install that launcher reports interactive operations as unavailable.
+The Android local-notification service may reuse this Activity launcher for `POST_NOTIFICATIONS`, but it owns its authorization state and request operation independently of `PermissionController`.
+See [Local Notifications](local-notifications.md#android) for its separate manifest, channel, and status contract.
 
 ### iOS and macOS
 

@@ -11,7 +11,7 @@ import android.text.TextPaint;
 import java.lang.reflect.Method;
 
 /** Android-runtime regression checks; no native HuxerUI library is required. */
-public final class HuxerUITextLayoutTest extends Instrumentation {
+public final class HuxerUIRuntimeTest extends Instrumentation {
     @Override
     public void onCreate(Bundle arguments) {
         super.onCreate(arguments);
@@ -22,15 +22,17 @@ public final class HuxerUITextLayoutTest extends Instrumentation {
     public void onStart() {
         Bundle status = new Bundle();
         status.putString("class", getClass().getName());
-        status.putString("test", "paragraphGeometry");
+        status.putString("test", "androidRuntime");
         status.putInt("numtests", 1);
         status.putInt("current", 1);
         sendStatus(1, status);
         Bundle result = new Bundle();
         try {
             verifyGeometry();
+            int notificationAssertions = HuxerUILocalNotificationTest.verify(getTargetContext());
             sendStatus(0, status);
-            result.putString("stream", "HuxerUI Android text layout: " + assertions + " assertions passed\n");
+            result.putString("stream",
+                    "HuxerUI Android runtime: " + (assertions + notificationAssertions) + " assertions passed\n");
         } catch (Throwable error) {
             String stack = android.util.Log.getStackTraceString(error);
             status.putString("stack", stack);
@@ -50,7 +52,7 @@ public final class HuxerUITextLayoutTest extends Instrumentation {
     }
 
     private static HuxerUITextLayout layout(String text, float width, Layout.Alignment alignment, boolean wrap,
-            int direction) {
+                                            int direction) {
         Typeface typeface = Typeface.MONOSPACE;
         TextPaint paint = new TextPaint(Paint.ANTI_ALIAS_FLAG);
         paint.setTypeface(typeface);
@@ -80,8 +82,9 @@ public final class HuxerUITextLayoutTest extends Instrumentation {
         assertions = 0;
         for (int direction : new int[] {1, 2}) {
             String text = direction == 1 ? "abcdefghijklm" : "אבגדהוזחטיכלמ";
-            for (Layout.Alignment alignment : new Layout.Alignment[] {
-                    Layout.Alignment.ALIGN_NORMAL, Layout.Alignment.ALIGN_CENTER, Layout.Alignment.ALIGN_OPPOSITE}) {
+            for (Layout.Alignment alignment :
+                 new Layout.Alignment[] {Layout.Alignment.ALIGN_NORMAL, Layout.Alignment.ALIGN_CENTER,
+                                         Layout.Alignment.ALIGN_OPPOSITE}) {
                 HuxerUITextLayout layout = layout(text, 62.0F, alignment, true, direction);
                 int boundary = 1;
                 while (boundary < text.length() && caret(layout, boundary, false)[1] == caret(layout, 0, false)[1]) {
@@ -92,13 +95,14 @@ public final class HuxerUITextLayoutTest extends Instrumentation {
                 float[] after = caret(layout, boundary, false);
                 check(before[1] < after[1], "Upstream must stay on the preceding visual line");
                 long encoded = hit(layout, before);
-                check(encoded == -(long) boundary - 1L, "Soft-wrap hit must preserve upstream affinity: "
-                        + direction + " / " + boundary + " / " + encoded + " / " + before[0]);
+                check(encoded == -(long) boundary - 1L,
+                      "Soft-wrap hit must preserve upstream affinity: " + direction + " / " + boundary + " / " + encoded
+                              + " / " + before[0]);
             }
         }
         for (String separator : new String[] {"\n", "\r\n"}) {
-            HuxerUITextLayout layout = layout("abc" + separator + "xyz", 200.0F,
-                    Layout.Alignment.ALIGN_NORMAL, true, 1);
+            HuxerUITextLayout layout =
+                    layout("abc" + separator + "xyz", 200.0F, Layout.Alignment.ALIGN_NORMAL, true, 1);
             int offset = 3 + separator.length();
             float[] before = caret(layout, offset, true);
             float[] after = caret(layout, offset, false);
@@ -106,7 +110,7 @@ public final class HuxerUITextLayoutTest extends Instrumentation {
         }
         String bidi = "abc אבג xyz";
         for (Layout.Alignment alignment : new Layout.Alignment[] {
-                Layout.Alignment.ALIGN_NORMAL, Layout.Alignment.ALIGN_CENTER, Layout.Alignment.ALIGN_OPPOSITE}) {
+                     Layout.Alignment.ALIGN_NORMAL, Layout.Alignment.ALIGN_CENTER, Layout.Alignment.ALIGN_OPPOSITE}) {
             HuxerUITextLayout layout = layout(bidi, 300.0F, alignment, false, 1);
             for (int offset = 0; offset <= bidi.length(); ++offset) {
                 for (boolean upstream : new boolean[] {false, true}) {
@@ -114,7 +118,7 @@ public final class HuxerUITextLayoutTest extends Instrumentation {
                     long encoded = hit(layout, position);
                     float[] resolved = caret(layout, (int) (encoded < 0 ? -encoded - 1 : encoded), encoded < 0);
                     check(Math.abs(position[0] - resolved[0]) < 0.1F && position[1] == resolved[1],
-                            "Bidi caret geometry must round-trip at offset " + offset + " / " + alignment);
+                          "Bidi caret geometry must round-trip at offset " + offset + " / " + alignment);
                 }
             }
             check(range(layout, 2, 5).length >= 8, "Disjoint bidi selection fragments must remain separate");
@@ -127,8 +131,8 @@ public final class HuxerUITextLayoutTest extends Instrumentation {
         float[] leading = caret(fractional, 0, false);
         float[] trailing = caret(fractional, 1, true);
         check(fragment.length == 4 && Math.abs(fragment[0] - leading[0]) <= 1.0F / 64.0F
-                && Math.abs(fragment[0] + fragment[2] - trailing[0]) <= 1.0F / 64.0F,
-                "Region conversion must preserve subpixel selection edges");
+                      && Math.abs(fragment[0] + fragment[2] - trailing[0]) <= 1.0F / 64.0F,
+              "Region conversion must preserve subpixel selection edges");
         StringBuilder longText = new StringBuilder();
         for (int line = 0; line < 1000; ++line) {
             longText.append("abc\n");

@@ -28,5 +28,6 @@ set(HUXERUI_PLATFORM_LINK_LIBRARIES
         "-framework Metal"
         "-framework MetalPerformanceShaders"
         "-framework QuartzCore"
+        "-framework UserNotifications"
         "-weak_framework UniformTypeIdentifiers"
 )

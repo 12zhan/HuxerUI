@@ -115,6 +115,43 @@ TEST_CASE("Application exposes its immutable startup activation") {
   REQUIRE(received_activations.empty());
 }
 
+TEST_CASE("Application delivers notification startup and subsequent activations") {
+  ResetActivationState();
+  TestPlatform platform;
+  Runtime runtime(ActivationApp, platform, {.show_debug_overlay = false},
+                  NotificationActivation{"startup-notification", PlatformPayload::Object{{"id", 42}}});
+  runtime.SetWindowMetrics({.viewport = {320.0F, 240.0F}});
+  runtime.BuildFrame();
+
+  REQUIRE(std::get<NotificationActivation>(startup_activation).identifier == "startup-notification");
+  REQUIRE(std::get<NotificationActivation>(startup_activation).data.AsObject().at("id").AsInteger() == 42);
+  REQUIRE(received_activations.empty());
+
+  runtime.HandleApplicationActivation(NotificationActivation{"later-notification", PlatformPayload::Object{{"id", 43}}});
+  runtime.BuildFrame();
+  REQUIRE(received_activations.size() == 1);
+  REQUIRE(std::get<NotificationActivation>(received_activations.front()).identifier == "later-notification");
+  REQUIRE(std::get<NotificationActivation>(received_activations.front()).data.AsObject().at("id").AsInteger() == 43);
+  REQUIRE(std::get<NotificationActivation>(startup_activation).data.AsObject().at("id").AsInteger() == 42);
+  REQUIRE_THROWS_AS(runtime.HandleApplicationActivation(NotificationActivation{"oversized", Bytes(65536)}),
+                    std::invalid_argument);
+}
+
+TEST_CASE("Application activation rejects invalid notification identifiers") {
+  ResetActivationState();
+  TestPlatform platform;
+
+  REQUIRE_THROWS_AS(Runtime(ActivationApp, platform, {.show_debug_overlay = false}, NotificationActivation{}),
+                    std::invalid_argument);
+
+  Runtime runtime(ActivationApp, platform);
+  REQUIRE_THROWS_AS(runtime.HandleApplicationActivation(NotificationActivation{std::string("id\0x", 4)}),
+                    std::invalid_argument);
+  REQUIRE_THROWS_AS(
+      runtime.HandleApplicationActivation(NotificationActivation{std::string(1, static_cast<char>(0xC3))}),
+      std::invalid_argument);
+}
+
 TEST_CASE("Application activation rejects empty file payloads") {
   ResetActivationState();
   TestPlatform platform;

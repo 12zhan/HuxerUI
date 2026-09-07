@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+#import <UserNotifications/UserNotifications.h>
 #import <dispatch/dispatch.h>
 #import <mach/mach.h>
 #import <sys/resource.h>
@@ -36,7 +37,7 @@ namespace huxerui::detail {
 class IosPlatformAdapter;
 }
 
-@interface HuxerUIIOSApplicationDelegate : UIResponder <UIApplicationDelegate> {
+@interface HuxerUIIOSApplicationDelegate : UIResponder <UIApplicationDelegate, UNUserNotificationCenterDelegate> {
 @public
   huxerui::detail::IosPlatformAdapter* huxeruiAdapter;
 }
@@ -424,6 +425,10 @@ public:
       [view_controller_.view layoutIfNeeded];
 
       runtime_ = std::make_unique<Runtime>(application_, *this, std::move(startup_activation));
+      for (NotificationActivation& activation : pending_notification_activations_) {
+        runtime_->HandleApplicationActivation(std::move(activation));
+      }
+      pending_notification_activations_.clear();
       runtime_->UpdateApplicationLifecycleState(ApplicationLifecycleState::Inactive);
       view_->huxeruiRuntime = runtime_.get();
       platform_views_ = std::make_unique<UIKitPlatformViews>(renderer_, PlatformRegistry(), *runtime_);
@@ -482,6 +487,7 @@ public:
     view_controller_ = nil;
     window_ = nil;
     runtime_.reset();
+    pending_notification_activations_.clear();
   }
 
   static IosPlatformAdapter* Active() noexcept {
@@ -605,6 +611,17 @@ public:
     }
   }
 
+  void HandleNotificationActivation(NotificationActivation activation) noexcept {
+    try {
+      if (runtime_ == nullptr) {
+        pending_notification_activations_.push_back(std::move(activation));
+      } else {
+        runtime_->HandleApplicationActivation(std::move(activation));
+      }
+    } catch (...) {
+    }
+  }
+
   UIView* HitTestPlatformView(Point point, UIEvent* event) const {
     if (runtime_ == nullptr || platform_views_ == nullptr) {
       return nil;
@@ -663,6 +680,10 @@ public:
 
   std::shared_ptr<HttpTransport> CreateHttpTransport() override {
     return CreateIosHttpTransport();
+  }
+
+  std::shared_ptr<LocalNotificationTransport> CreateLocalNotificationTransport() override {
+    return CreateIosLocalNotificationTransport();
   }
 
   std::shared_ptr<PermissionTransport> CreatePermissionTransport() override {
@@ -832,6 +853,7 @@ private:
   CGSize viewport_size_ = CGSizeZero;
   std::optional<CGRect> keyboard_frame_;
   std::optional<double> scheduled_frame_deadline_;
+  std::vector<NotificationActivation> pending_notification_activations_;
 };
 
 int RunPlatformApplication(const Application& application) {
@@ -1101,10 +1123,56 @@ UIViewController* GetUIKitViewController(PlatformAdapter& adapter) {
 
 @implementation HuxerUIIOSApplicationDelegate
 
+- (BOOL)application:(UIApplication*)application willFinishLaunchingWithOptions:(NSDictionary*)launchOptions {
+  static_cast<void>(application);
+  static_cast<void>(launchOptions);
+  huxeruiAdapter = huxerui::detail::IosPlatformAdapter::Active();
+  if (huxeruiAdapter == nullptr) {
+    return NO;
+  }
+  UNUserNotificationCenter.currentNotificationCenter.delegate = self;
+  return YES;
+}
+
 - (BOOL)application:(UIApplication*)application didFinishLaunchingWithOptions:(NSDictionary*)launchOptions {
   static_cast<void>(application);
-  huxeruiAdapter = huxerui::detail::IosPlatformAdapter::Active();
   return huxeruiAdapter != nullptr && huxeruiAdapter->FinishLaunching(launchOptions);
+}
+
+- (void)userNotificationCenter:(UNUserNotificationCenter*)center
+       willPresentNotification:(UNNotification*)notification
+         withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler {
+  static_cast<void>(center);
+  completionHandler(huxerui::detail::IosLocalNotificationPresentationOptions(notification.request));
+}
+
+- (void)userNotificationCenter:(UNUserNotificationCenter*)center
+    didReceiveNotificationResponse:(UNNotificationResponse*)response
+             withCompletionHandler:(void (^)(void))completionHandler {
+  static_cast<void>(center);
+  std::optional<huxerui::NotificationActivation> activation =
+      huxerui::detail::DecodeIosLocalNotificationActivation(response.notification.request, response.actionIdentifier);
+  if (!activation.has_value()) {
+    completionHandler();
+    return;
+  }
+
+  if ([NSThread isMainThread]) {
+    if (huxeruiAdapter != nullptr) {
+      huxeruiAdapter->HandleNotificationActivation(std::move(*activation));
+    }
+    completionHandler();
+    return;
+  }
+
+  // Retain the complete snapshot across the dispatch boundary, including application data.
+  const huxerui::NotificationActivation notification_activation = std::move(*activation);
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (huxeruiAdapter != nullptr) {
+      huxeruiAdapter->HandleNotificationActivation(notification_activation);
+    }
+    completionHandler();
+  });
 }
 
 - (BOOL)application:(UIApplication*)application
@@ -1116,6 +1184,9 @@ UIViewController* GetUIKitViewController(PlatformAdapter& adapter) {
 
 - (void)applicationWillTerminate:(UIApplication*)application {
   static_cast<void>(application);
+  if (UNUserNotificationCenter.currentNotificationCenter.delegate == self) {
+    UNUserNotificationCenter.currentNotificationCenter.delegate = nil;
+  }
   if (huxeruiAdapter != nullptr) {
     huxeruiAdapter->Shutdown();
     huxeruiAdapter = nullptr;

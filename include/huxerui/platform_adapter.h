@@ -28,6 +28,7 @@ namespace detail {
 class ExternalTextureFrameRequester;
 class FilePickerTransport;
 class HttpTransport;
+class LocalNotificationTransport;
 class PlatformChannelEndpoint;
 class PlatformRegistry;
 class PermissionTransport;
@@ -112,6 +113,7 @@ protected:
   virtual std::shared_ptr<FileSystem> CreateFileSystem();
   virtual std::shared_ptr<detail::FilePickerTransport> CreateFilePickerTransport();
   virtual std::shared_ptr<detail::HttpTransport> CreateHttpTransport();
+  virtual std::shared_ptr<detail::LocalNotificationTransport> CreateLocalNotificationTransport();
   virtual std::shared_ptr<detail::PermissionTransport> CreatePermissionTransport();
   virtual std::shared_ptr<detail::SystemTrayTransport> CreateSystemTrayTransport();
 

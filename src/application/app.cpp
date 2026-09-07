@@ -73,6 +73,10 @@ std::shared_ptr<detail::HttpTransport> PlatformAdapter::CreateHttpTransport() {
   return {};
 }
 
+std::shared_ptr<detail::LocalNotificationTransport> PlatformAdapter::CreateLocalNotificationTransport() {
+  return {};
+}
+
 std::shared_ptr<detail::PermissionTransport> PlatformAdapter::CreatePermissionTransport() {
   return {};
 }

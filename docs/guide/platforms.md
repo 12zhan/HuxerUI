@@ -5,17 +5,21 @@ Each backend uses platform lifecycle, input, text, accessibility, file, network,
 
 ## Capability overview
 
-| Platform | Rendering and text | HTTP and files | Accessibility | PlatformView | ExternalTexture | Permissions | System tray |
-|---|---|---:|---:|---:|---:|---:|---:|
-| Windows | Direct2D and DirectWrite | Yes | UI Automation | Yes | Yes | AppCapability | Yes |
-| macOS | Core Graphics and Core Text | Yes | AppKit accessibility | Yes | Yes | Camera and microphone | Yes |
-| Linux | GSK, Cairo, and Pango | Yes | Not supported | No | Yes | Unavailable | StatusNotifierItem host |
-| Web | Canvas 2D and browser text metrics | Yes | Not supported | Yes | Yes | Query only | No |
-| Android | Android Canvas and StaticLayout | Yes | AccessibilityNodeInfo | Yes | Yes | Camera and microphone | No |
-| iOS | Core Graphics and Core Text | Yes | UIKit accessibility | Yes | Yes | Camera and microphone | No |
+| Platform | Rendering and text | HTTP and files | Accessibility | PlatformView | ExternalTexture | Permissions | Local notifications | System tray |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| Windows | Direct2D and DirectWrite | Yes | UI Automation | Yes | Yes | AppCapability | Unavailable | Yes |
+| macOS | Core Graphics and Core Text | Yes | AppKit accessibility | Yes | Yes | Camera and microphone | User Notifications | Yes |
+| Linux | GSK, Cairo, and Pango | Yes | Not supported | No | Yes | Unavailable | Unavailable | StatusNotifierItem host |
+| Web | Canvas 2D and browser text metrics | Yes | Not supported | Yes | Yes | Query only | Unavailable | No |
+| Android | Android Canvas and StaticLayout | Yes | AccessibilityNodeInfo | Yes | Yes | Camera and microphone | Configured NotificationManager | No |
+| iOS | Core Graphics and Core Text | Yes | UIKit accessibility | Yes | Yes | Camera and microphone | User Notifications | No |
 
 Capabilities not listed as implemented are not implied by the shared API.
 OHOS does not currently have a repository-owned backend.
+
+The shared local-notification API is available on every listed platform.
+Configured Android hosts and the iOS and macOS adapters install native transports; Windows, Linux, and Web currently report unavailable capabilities and operations.
+See [Local Notifications](../design/local-notifications.md) for authorization, activation, and platform mapping details.
 
 ## Windows
 
@@ -60,6 +64,9 @@ Custom chrome extends application content into the title bar while preserving Ap
 External file references preserve security-scoped access when required.
 System tray presentation uses an AppKit status item and platform menu.
 Camera and microphone permissions use AVFoundation and require the corresponding bundle usage descriptions.
+Local notifications use User Notifications for authorization, immediate presentation, durable one-shot scheduling, cancellation, and primary-action activation.
+Notification interactions enter `OnActivation()` even when they launched the process.
+macOS supports only `DefaultNotificationPresentation`; template requests return `Unavailable`.
 The installed SDK exposes AppKit PlatformModule, PlatformView, PlatformPayload, FileReference, and ExternalTexture contracts to Objective-C and Swift through `HuxerUIPlatform`.
 FileReference payloads retain the shared grant and expose its path-backed `NSURL` as `fileURL` for native libraries.
 
@@ -158,6 +165,16 @@ The generated Gradle project links the SDK-provided Android shared library and a
 Build and run require an Android SDK, NDK, Java, Gradle wrapper dependencies, and a compatible emulator or device.
 Insets, system-bar appearance, lifecycle, activation, file pickers, HTTP, PlatformView, FileReference payloads, and ExternalTexture are translated at the Android host boundary.
 Camera and microphone requests use the Activity launcher and require manifest declarations owned by the application.
+Local notifications use `NotificationManager`, an application-created channel on Android 8 or later, and `POST_NOTIFICATIONS` on Android 13 or later.
+The application manifest supplies `org.huxerui.local_notification.channel_id`, `org.huxerui.local_notification.small_icon`, and an explicit non-exported `org.huxerui.HuxerUILocalNotificationReceiver` declaration when durable scheduling is required.
+Create the configured channel before constructing `HuxerUIView`; HuxerUI does not inject declarations or create channels from C++ options.
+Immediate presentation replaces a pending schedule and delivered notification with the same stable identifier, while durable one-shot scheduling uses an inexact alarm and does not survive device restart by contract.
+A tap delivered to a new Activity becomes `StartupActivation()`; `onNewIntent()` delivers it through `OnActivation()`.
+On API 24 or later, an application's `Application` class may implement `HuxerUILocalNotificationLayoutProvider` to map stable template identifiers to fresh compact, expanded, and heads-up `RemoteViews`.
+HuxerUI retains the builder, channel, icon, tag, and activation `PendingIntent`, and scheduled alarms resolve the provider again after process restart.
+Android still owns the surrounding notification chrome and may constrain the custom area.
+`can_use_templates` is false on API 23 and when no provider is installed; an unsupported identifier returns `Unavailable` without system-layout fallback.
+See [Local Notifications](../design/local-notifications.md#android) for the complete configuration and capability rules.
 
 Generated applications keep the same Activity, `HuxerUIView`, and Runtime across orientation and window-size changes.
 An application that hosts `HuxerUIView` in a custom Activity must declare the same handled changes on that Activity:
@@ -224,6 +241,10 @@ huxerui run ios --device <id>
 Physical-device builds use Xcode signing settings owned by the generated project and local developer configuration.
 External files preserve security-scoped access when required.
 Camera and microphone permissions use AVFoundation, require native usage descriptions, and can open the application settings page through UIKit.
+Local notifications use User Notifications for authorization, immediate presentation, durable one-shot scheduling, cancellation, and primary-action activation.
+Notification interactions enter `OnActivation()` even when they launched the process.
+Embedded Notification Content Extensions declare stable `UNNotificationExtensionCategory` values; discovered categories enable template presentation and receive matching requests through `categoryIdentifier`.
+The extension owns the expanded interface, while the ordinary banner/list UI remains system-controlled and HuxerUI retains notification identity, scheduling, cancellation, and activation semantics.
 The iOS XCFramework exposes UIKit PlatformModule, PlatformView, PlatformPayload, FileReference, and ExternalTexture contracts to Objective-C and Swift through `HuxerUIPlatform`.
 FileReference payloads retain the shared grant and expose its path-backed `NSURL` as `fileURL` for native libraries.
 

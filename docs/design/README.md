@@ -27,6 +27,7 @@ They explain the current implementation and deliberately unsupported behavior; t
 - [Window Chrome](window-chrome.md): system and custom desktop chrome.
 - [System Tray and Window Visibility](system-tray.md): tray presentation, window request handling, visibility, and application termination.
 - [Application Permissions](permissions.md): typed authorization, Task delivery, native policy, and platform mapping.
+- [Local Notifications](local-notifications.md): shared authorization, presentation, scheduling, activation, and target platform boundaries.
 - [Task and Structured Concurrency](tasks.md): task ownership, cancellation, and UI-thread resumption.
 
 ## Content and services

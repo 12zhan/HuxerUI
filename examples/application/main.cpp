@@ -44,7 +44,7 @@ std::string PlatformActivationSummary() {
 #if defined(_WIN32)
   return "Windows accepts one URL or a command line containing only existing files.";
 #elif defined(__ANDROID__)
-  return "Android maps ACTION_VIEW and ACTION_EDIT URLs or document URIs into the current Activity Runtime.";
+  return "Android maps supported URLs, document URIs, and local-notification Intents into an Activity Runtime.";
 #elif defined(__APPLE__)
   return "Apple application callbacks map registered URL schemes and text documents into the current Runtime.";
 #else
@@ -60,12 +60,14 @@ std::string DescribeActivation(const ApplicationActivation& activation) {
           return std::string{"ordinary launch"};
         } else if constexpr (std::is_same_v<Value, UrlActivation>) {
           return "URL: " + value.url.ToString();
-        } else {
+        } else if constexpr (std::is_same_v<Value, FileActivation>) {
           std::string result = "files:";
           for (const FileReference& file : value.files) {
             result += " " + file.Name();
           }
           return result;
+        } else {
+          return "notification: " + value.identifier;
         }
       },
       activation
@@ -96,6 +98,8 @@ std::string DescribePermissionStatus(PermissionStatus status) {
     return "permanently denied";
   case PermissionStatus::Restricted:
     return "restricted";
+  case PermissionStatus::Provisional:
+    return "provisional";
   case PermissionStatus::Unavailable:
     return "unavailable";
   }

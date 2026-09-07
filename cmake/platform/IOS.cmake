@@ -29,5 +29,6 @@ set(HUXERUI_PLATFORM_LINK_LIBRARIES
         "-framework AVFoundation"
         "-framework QuartzCore"
         "-framework UIKit"
+        "-framework UserNotifications"
         "-weak_framework UniformTypeIdentifiers"
 )

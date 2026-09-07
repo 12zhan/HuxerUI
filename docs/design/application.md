@@ -4,7 +4,7 @@ This document defines the application-facing boundary for startup activation, su
 
 ## Goals
 
-- Describe ordinary launch, URL activation, and file activation with platform-neutral typed values.
+- Describe ordinary launch, URL activation, file activation, and local-notification activation with platform-neutral typed values.
 - Make the startup activation available during the first root composition.
 - Deliver subsequent activations in FIFO order on the target Runtime's UI thread.
 - Keep application routing, document policy, and window selection application-owned.
@@ -17,7 +17,7 @@ Application activation does not define a route registry, string routes, a proces
 
 ## Public model
 
-The shared activation values are declared in `<huxerui/app.h>`:
+The shared activation values are declared across `<huxerui/app.h>` and `<huxerui/system.h>`:
 
 ```cpp
 struct LaunchActivation {
@@ -34,18 +34,21 @@ struct FileActivation {
   std::vector<FileReference> files;
 };
 
-using ApplicationActivation = std::variant<
-    LaunchActivation,
-    UrlActivation,
-    FileActivation
->;
+struct NotificationActivation {
+  std::string identifier;
+  PlatformPayload data;
+
+  bool operator==(const NotificationActivation&) const = default;
+};
+
+using ApplicationActivation = std::variant<LaunchActivation, UrlActivation, FileActivation, NotificationActivation>;
 ```
 
-`LaunchActivation` represents an ordinary launch without an external payload. `UrlActivation` contains a validated immutable `Uri` that application code interprets. `FileActivation` contains one or more `FileReference` capability values and never converts platform-granted files into assumed local paths.
+`LaunchActivation` represents an ordinary launch without an external payload. `UrlActivation` contains a validated immutable `Uri` that application code interprets. `FileActivation` contains one or more `FileReference` capability values and never converts platform-granted files into assumed local paths. `NotificationActivation` contains the validated stable application identifier and the submitted resource-free `PlatformPayload` data snapshot of the local notification that received primary interaction. Its data may be stale or externally supplied; application code validates business fields and current authorization independently.
 
 The generic syntax and serialization contract belongs to [URI and Local File URI](uri.md). Runtime does not parse the value again or apply route, network, or normalization policy.
 
-The closed variant prevents invalid combinations of unrelated optional fields. Future share or notification inputs require separate reviewed alternatives rather than a generic `PlatformPayload` escape hatch.
+The closed variant prevents invalid combinations of unrelated optional fields. Future share inputs require a separately reviewed alternative rather than a generic `PlatformPayload` escape hatch. [Local Notifications](local-notifications.md) follows that rule with one typed notification activation alternative.
 
 ## ApplicationHandle
 
@@ -103,7 +106,11 @@ platform launch input
     -> commit the first correct frame
 ```
 
-Runtime defaults to `LaunchActivation` when a platform host does not supply another value. A non-empty URL or file collection is validated before the first composition. The startup value never changes after construction.
+Runtime defaults to `LaunchActivation` when a platform host does not supply another value. A URL, file collection, or notification identifier selected as startup input is validated before the first composition. The startup value never changes after construction.
+
+Some native systems expose a launch-causing input only through a delegate callback after application launch.
+Such input does not retroactively replace `StartupActivation()`; the platform shell queues it and submits it through the subsequent activation path after Runtime construction.
+iOS and macOS User Notifications follow this rule, so a notification interaction is observed through `OnActivation()` even when it launched the process.
 
 ## Subsequent activation
 
@@ -214,11 +221,24 @@ Android document activations keep the provider URI inside `FileReference`. Displ
 
 The full-screen host installs both timing paths automatically. An embedded owner calls `HuxerUIView.setStartupApplicationIntent()` before attachment and forwards later values through `dispatchApplicationIntent()` on the View's UI thread. Recognized values received before attachment are retained until that View creates its Runtime. This queue exists only at the pre-Runtime platform boundary; once the Runtime exists, the shared application service remains the sole delivery source.
 
-The Android `example_runner` uses `singleTop`. When Gradle selects `example_application`, it enables a dedicated Activity alias that declares the `huxerui-example` scheme plus `content://` and `file://` `ACTION_VIEW` values with any MIME type. This allows cold and subsequent URL activation through a browser or `adb` and makes the example available in another application's system Open with chooser without registering other example runner builds as URL or file handlers. The example attempts to preview the first activated file as UTF-8 and reports the existing invalid-encoding error when its contents are not valid UTF-8.
+A HuxerUI local-notification content Intent carries a HuxerUI-namespaced action, a package-scoped identifier URI, and the matching stable application identifier.
+The platform boundary accepts it only when all three agree.
+An Intent used to create a new Activity becomes that Runtime's `NotificationActivation` startup value, while `onNewIntent()` submits the same alternative to the existing Runtime.
+The notification PendingIntent requests `singleTop` behavior when the launch Activity is already at the top; broader task and launch-mode policy remains application-owned.
+As with URL activation, this shape validation does not authenticate the caller of an exported Activity; applications use the identifier for routing and apply their normal authorization before any privileged action.
+
+The Android `example_runner` uses `singleTop`. When Gradle selects `example_application`, it enables a dedicated Activity alias that declares the `huxerui-example` scheme plus `content://` and `file://` `ACTION_VIEW` values with any MIME type. This allows cold and subsequent URL activation and makes the example available in another application's system Open with chooser without registering other example runner builds as URL or file handlers. The example attempts to preview the first activated file as UTF-8 and reports the existing invalid-encoding error when its contents are not valid UTF-8.
+
+The separate `example_local_notification` owns notification channel creation, the template provider, small icon, and non-exported alarm receiver through its example-specific Android sources and manifest. It demonstrates default reminders and a download-progress template, including the identifier and data returned through cold or subsequent notification activation.
 
 ## macOS mapping
 
 The AppKit shell installs its application delegate before finishing native launch. `application:openURLs:` input received during `finishLaunching` is fully normalized before Runtime construction: the first activation becomes `StartupActivation()`, while any remaining ordered activations enter the Runtime queue after construction. The same callback submits later input directly to the current Runtime. Consecutive file URLs form one `FileActivation`; non-file URLs remain separate `UrlActivation` values in their native order. A batch containing an invalid value, directory, or failed capability conversion is rejected without submitting a partial prefix.
+
+The same shell installs its User Notifications delegate before finishing native launch.
+Only a primary interaction with a HuxerUI-created local notification becomes `NotificationActivation`.
+If the delegate responds before Runtime construction, the shell retains that value as a subsequent-only entry in the ordered platform activation queue and submits it through `Runtime::HandleApplicationActivation()` after construction instead of consuming it as `StartupActivation()`.
+Warm and cold notification interactions therefore share the `OnActivation()` path.
 
 File activations reuse the security-scoped macOS `FileReference` implementation. The platform decoder retains capabilities and validated `Uri` values only; it does not inspect routes or copy documents into application storage.
 
@@ -227,6 +247,11 @@ The `example_application` bundle declares the `huxerui-example` custom URL schem
 ## iOS mapping
 
 The current UIKit shell is application-delegate based and does not declare scenes. When `UIApplicationLaunchOptionsURLKey` indicates a URL launch, `didFinishLaunchingWithOptions` defers Runtime construction until the corresponding `application:openURL:options:` callback supplies the complete open options. The decoded value then becomes the immutable startup activation before first composition. A later callback submits through the same decoder to the existing Runtime. An open-in-place file URL becomes a one-element `FileActivation` backed by the existing security-scoped iOS `FileReference`; when UIKit requires copying before use, the adapter establishes a private read-only temporary snapshot before the callback returns and retains that snapshot through the same `FileReference` contract. Another URL becomes `UrlActivation`.
+
+UIKit installs its User Notifications delegate during `willFinishLaunchingWithOptions`.
+Only a primary interaction with a HuxerUI-created local notification becomes `NotificationActivation`.
+User Notifications delivers that response after host launch; if Runtime does not yet exist, the adapter retains the value and submits it through `Runtime::HandleApplicationActivation()` immediately after construction.
+The immutable startup value remains `LaunchActivation` or the independently decoded URL/file activation, while both warm and cold notification interactions are observed through `OnActivation()`.
 
 The launch-options URL alone does not contain `UIApplicationOpenURLOptionsOpenInPlaceKey`, so it is never used to guess document ownership or suppress the callback that carries that information. Equal URLs opened later remain distinct activations as required by the shared queue.
 
@@ -264,9 +289,10 @@ The implementation does not add Runtime subclasses, an Access type, a public ser
 - Platform types never enter the shared activation value.
 - Runtime never interprets application URLs, files, routes, or window policy.
 - Windows forwards only external URL and file payloads; ordinary launches remain independent.
-- Android maps only supported Activity Intents and preserves URI permission boundaries inside `FileReference`.
+- Android maps only supported Activity Intents, validates notification identifier identity, and preserves URI permission boundaries inside `FileReference`.
 - macOS rejects an incomplete native URL batch before submitting any activation from it.
 - iOS uses the complete open-URL options before constructing a URL-launched Runtime and never deduplicates later equal URLs.
+- iOS and macOS notification delegate responses always use the subsequent activation queue and never replace immutable startup input.
 - Lifecycle updates use one validated current value and invalidate only scopes that observe it.
 - A mounted lifecycle handler preserves distinct transitions independently of current-value coalescing.
 - NavigationPath remains the only route-history source of truth.

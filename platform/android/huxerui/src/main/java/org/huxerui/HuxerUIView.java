@@ -185,6 +185,7 @@ public final class HuxerUIView extends ViewGroup {
     private final HuxerUIAccessibilityProvider accessibilityProvider;
     private final HuxerUIFilePicker filePicker;
     private final HuxerUIPermission permission;
+    private final HuxerUILocalNotification localNotification;
     private final LongSparseArray<PlatformViewContainer> platformViews = new LongSparseArray<>();
     private final LongSparseArray<HuxerUITextureLayer> textureLayers = new LongSparseArray<>();
     private final SparseIntArray pointerButtons = new SparseIntArray();
@@ -266,6 +267,7 @@ public final class HuxerUIView extends ViewGroup {
         accessibilityProvider = new HuxerUIAccessibilityProvider(this);
         filePicker = new HuxerUIFilePicker(this);
         permission = new HuxerUIPermission(this);
+        localNotification = new HuxerUILocalNotification(this);
         density = getResources().getDisplayMetrics().density;
         setFocusable(true);
         setFocusableInTouchMode(true);
@@ -387,9 +389,13 @@ public final class HuxerUIView extends ViewGroup {
         }
         permissionLauncher = launcher;
         permission.launcherChanged();
+        localNotification.launcherChanged();
     }
 
     public boolean dispatchPermissionResult(int requestCode, String[] permissions, int[] grantResults) {
+        if (localNotification.dispatchPermissionResult(requestCode)) {
+            return true;
+        }
         return permission.dispatchResult(requestCode, permissions, grantResults);
     }
 
@@ -442,6 +448,31 @@ public final class HuxerUIView extends ViewGroup {
 
     boolean openPermissionSettings(int permissionKind) {
         return permission.openSettings(permissionKind);
+    }
+
+    int localNotificationCapabilities() {
+        return localNotification.capabilities();
+    }
+
+    int checkLocalNotificationAuthorization() {
+        return localNotification.checkAuthorization();
+    }
+
+    void requestLocalNotificationAuthorization(long nativeHandle) {
+        localNotification.requestAuthorization(nativeHandle);
+    }
+
+    int showLocalNotification(String identifier, String title, String body, String templateIdentifier, byte[] data) {
+        return localNotification.show(identifier, title, body, templateIdentifier, data);
+    }
+
+    int scheduleLocalNotification(String identifier, String title, String body, String templateIdentifier,
+                                  byte[] data, long deliveryTimeMillis) {
+        return localNotification.schedule(identifier, title, body, templateIdentifier, data, deliveryTimeMillis);
+    }
+
+    int cancelLocalNotification(String identifier) {
+        return localNotification.cancel(identifier);
     }
 
     HuxerUIFilePicker.Operation prepareOpenDirectory(long nativeHandle, boolean writable) {
@@ -2294,22 +2325,22 @@ public final class HuxerUIView extends ViewGroup {
 
     private long createNativeRuntime(HuxerUIApplicationActivation activation) {
         if (activation == null) {
-            return nativeCreate(this, 0, null, null, -1L, null, false);
+            return nativeCreate(this, 0, null, null, -1L, null, false, null);
         }
         return nativeCreate(this, activation.kind, activation.value, activation.name, activation.size,
-                activation.contentType, activation.writable);
+                activation.contentType, activation.writable, activation.data);
     }
 
     private void handleNativeApplicationActivation(HuxerUIApplicationActivation activation) {
         nativeHandleApplicationActivation(nativeHandle, activation.kind, activation.value, activation.name,
-                activation.size, activation.contentType, activation.writable);
+                activation.size, activation.contentType, activation.writable, activation.data);
     }
 
     private static native long nativeCreate(HuxerUIView view, int activationKind, String activationValue,
-            String fileName, long fileSize, String contentType, boolean writable);
+            String fileName, long fileSize, String contentType, boolean writable, byte[] data);
 
     private static native void nativeHandleApplicationActivation(long handle, int activationKind,
-            String activationValue, String fileName, long fileSize, String contentType, boolean writable);
+            String activationValue, String fileName, long fileSize, String contentType, boolean writable, byte[] data);
 
     private static native void nativeUpdateApplicationLifecycleState(long handle, int lifecycleState);
 

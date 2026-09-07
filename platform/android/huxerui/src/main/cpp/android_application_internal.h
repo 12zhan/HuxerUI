@@ -9,6 +9,7 @@
 
 namespace huxerui::detail {
 
+class LocalNotificationTransport;
 class PermissionTransport;
 
 // JNI object references are borrowed from the current native call and are decoded synchronously.
@@ -19,6 +20,7 @@ struct AndroidApplicationActivationInput {
   jlong file_size = -1;
   jstring content_type = nullptr;
   jboolean writable = JNI_FALSE;
+  jbyteArray data = nullptr;
 };
 
 [[nodiscard]] std::optional<ApplicationActivation> DecodeAndroidApplicationActivation(
@@ -30,5 +32,8 @@ struct AndroidApplicationActivationInput {
 
 [[nodiscard]] std::shared_ptr<PermissionTransport>
 CreateAndroidPermissionTransport(JavaVM* virtual_machine, JNIEnv* environment, jobject view);
+
+[[nodiscard]] std::shared_ptr<LocalNotificationTransport>
+CreateAndroidLocalNotificationTransport(JavaVM* virtual_machine, JNIEnv* environment, jobject view);
 
 } // namespace huxerui::detail

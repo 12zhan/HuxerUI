@@ -28,6 +28,7 @@
 #include <huxerui/render_scene.h>
 #include <huxerui/root.h>
 #include <huxerui/semantics.h>
+#include <huxerui/system.h>
 #include <huxerui/task.h>
 #include <huxerui/text_input.h>
 #include <huxerui/view.h>
@@ -71,11 +72,13 @@ struct FileActivation {
 ///   ShowHome();
 /// } else if (const auto* url = std::get_if<UrlActivation>(&activation)) {
 ///   OpenUrl(url->url);
+/// } else if (const auto* files = std::get_if<FileActivation>(&activation)) {
+///   OpenFiles(files->files);
 /// } else {
-///   OpenFiles(std::get<FileActivation>(activation).files);
+///   OpenNotification(std::get<NotificationActivation>(activation).identifier);
 /// }
 /// @endcode
-using ApplicationActivation = std::variant<LaunchActivation, UrlActivation, FileActivation>;
+using ApplicationActivation = std::variant<LaunchActivation, UrlActivation, FileActivation, NotificationActivation>;
 
 /// Identifies the platform-owned lifecycle state of one Runtime.
 enum class ApplicationLifecycleState {
@@ -85,30 +88,6 @@ enum class ApplicationLifecycleState {
   Inactive,
   /// The application is no longer presented as an active foreground experience.
   Background,
-};
-
-/// Identifies an application-level runtime permission with shared cross-platform semantics.
-enum class Permission {
-  /// Access to cameras used for still-image or video capture.
-  Camera,
-  /// Access to microphones used for audio capture.
-  Microphone,
-};
-
-/// Describes the current authorization state of an application-level runtime permission.
-enum class PermissionStatus {
-  /// The platform has not yet asked the user to decide.
-  NotDetermined,
-  /// The application currently has access.
-  Granted,
-  /// Access is currently denied, but the platform does not reliably expose whether another prompt is possible.
-  Denied,
-  /// Access is denied and the platform explicitly reports that an in-application request cannot prompt again.
-  PermanentlyDenied,
-  /// Access is blocked by system, parental, or administrative policy.
-  Restricted,
-  /// The host, platform API, or native application declaration cannot provide this permission capability.
-  Unavailable,
 };
 
 namespace detail {
@@ -244,7 +223,7 @@ public:
   const AppOptions options;
 };
 
-/// Provides composition-bound access to application activation, lifecycle, tray, and termination capabilities.
+/// Provides composition-bound access to application activation, lifecycle, notifications, tray, and termination.
 ///
 /// `StartupActivation()` is immutable, while `OnActivation()` receives only later platform activations.
 /// `LifecycleState()` exposes the coalesced current value, while `OnLifecycleChange()` preserves distinct mounted
@@ -270,6 +249,8 @@ public:
   [[nodiscard]] ApplicationLifecycleState LifecycleState() const;
   /// Returns the system tray handle owned by the current composition scope.
   [[nodiscard]] SystemTrayHandle SystemTray() const;
+  /// Returns the local-notification handle bound to the current composition Environment.
+  [[nodiscard]] LocalNotificationHandle LocalNotifications() const;
   /// Queries the current platform permission state without presenting system UI.
   [[nodiscard]] Task<PermissionStatus> CheckPermissionAsync(Permission permission) const;
   /// Requests a platform permission, presenting system UI when the platform permits it.

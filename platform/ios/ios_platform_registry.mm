@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "ios_external_texture_internal.h"
+#include "ios_application_internal.h"
 #include "application/platform_registry_internal.h"
 
 using huxerui::Bytes;
@@ -105,6 +106,18 @@ static PlatformPayload DecodePayload(HUXPlatformPayload* payload) {
 
 static HUXPlatformPayload* EncodePayload(PlatformPayload payload) {
   return [[HUXPlatformPayload alloc] initForHuxerUIWithEnvelope:payload.Encode()];
+}
+
+HUXPlatformPayload* HUXGetLocalNotificationData(UNNotificationContent* content) {
+  try {
+    @try {
+      return EncodePayload(huxerui::detail::DecodeIosLocalNotificationData(content));
+    } @catch (NSException*) {
+      return nil;
+    }
+  } catch (...) {
+    return nil;
+  }
 }
 
 static HUXPlatformPayloadKind ToObjectiveCKind(PlatformPayloadKind kind) {

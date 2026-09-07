@@ -47,6 +47,7 @@ add_executable(huxerui_tests
         runtime/lifecycle.cpp
         runtime/navigation.cpp
         runtime/navigation_ui.cpp
+        runtime/local_notification.cpp
         runtime/permission.cpp
         runtime/platform_module.cpp
         runtime/platform_view.cpp
@@ -91,6 +92,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     target_sources(huxerui_tests PRIVATE
             "${HUXERUI_PROJECT_DIR}/examples/platform_module/timer.cpp"
             "${HUXERUI_PROJECT_DIR}/examples/platform_module/apple_timer.mm"
+            platform/macos_local_notification.mm
             platform/macos_application.mm
             platform/macos_platform_module.mm
             platform/macos_platform_bridge.mm
@@ -107,6 +109,7 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     )
     target_include_directories(huxerui_tests PRIVATE
             "${HUXERUI_PROJECT_DIR}/examples/platform_module"
+            "${HUXERUI_PROJECT_DIR}/platform/macos"
     )
     if (TARGET ${HUXERUI_STATIC_LIB_NAME})
         add_test(NAME HuxerUIMacStaticPlatformBridgeImport
@@ -257,6 +260,7 @@ set(HUXERUI_PUBLIC_HEADERS
         semantics.h
         state.h
         stream.h
+        system.h
         task.h
         text.h
         text_input.h

@@ -28,6 +28,7 @@ User guides describe the current public SDK, development guides cover this repos
 [Scrolling](design/scrolling.md) defines input normalization, nested consumption, offset ownership, momentum, and overscroll.
 [External File Drop](design/file-drop.md) defines host file reception, hover lifecycle, and asynchronous reference delivery.
 [Date and Time Pickers](design/date-time-pickers.md) defines localized chrono-based calendar and clock controls.
+[Local Notifications](design/local-notifications.md) defines the shared authorization, scheduling, cancellation, and activation contract plus the Android, iOS, and macOS transports and remaining native boundaries.
 Design documents are implementation references, not a public API stability guarantee.
 
 ## Scope

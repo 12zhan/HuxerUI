@@ -5,7 +5,8 @@ plugins {
 def huxeruiRoot = rootProject.projectDir.parentFile.parentFile
 def huxeruiExample = providers.gradleProperty("huxeruiExample").orElse("ui_gallery").get()
 def huxeruiApplicationActivationEnabled = huxeruiExample == "application"
-def huxeruiExampleJava = new File(huxeruiRoot, "examples/${huxeruiExample}/android/src/main/java")
+def huxeruiExampleAndroid = new File(huxeruiRoot, "examples/${huxeruiExample}/android/src/main")
+def huxeruiExampleManifest = new File(huxeruiExampleAndroid, "AndroidManifest.xml")
 def huxeruiCompileSdk = providers.gradleProperty("huxeruiCompileSdk").map { it.toInteger() }.get()
 def huxeruiMinSdk = providers.gradleProperty("huxeruiMinSdk").map { it.toInteger() }.get()
 def huxeruiTargetSdk = providers.gradleProperty("huxeruiTargetSdk").map { it.toInteger() }.get()
@@ -70,13 +71,20 @@ android {
 
     sourceSets {
         main {
-            java.srcDir huxeruiExampleJava
+            java.srcDir new File(huxeruiExampleAndroid, "java")
+            res.srcDir new File(huxeruiExampleAndroid, "res")
         }
         debug {
             assets.srcDir huxeruiDebugAssets
+            if (huxeruiExampleManifest.isFile()) {
+                manifest.srcFile huxeruiExampleManifest
+            }
         }
         release {
             assets.srcDir huxeruiReleaseAssets
+            if (huxeruiExampleManifest.isFile()) {
+                manifest.srcFile huxeruiExampleManifest
+            }
         }
     }
 

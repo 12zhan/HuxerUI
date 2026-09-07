@@ -181,12 +181,13 @@ None of these APIs requests or guarantees platform background execution.
 ## Application state
 
 `Application` declares the process-level root and options.
-The root can observe application lifecycle state and receive cold-start or later activation containing URLs or external files.
+The root can observe application lifecycle state and receive cold-start or later activation containing URLs, external files, or stable local-notification identifiers.
 Navigation and file handling remain application policy; the platform shell only normalizes and delivers activation data.
 
 `UrlActivation::url` is an immutable validated `Uri` from `<huxerui/data.h>`.
 Inspect its typed components directly rather than parsing the serialized string again.
 `FileActivation` carries `FileReference` capabilities instead of assuming that every platform-opened document has a local path.
+`NotificationActivation` carries the stable identifier of the local notification that received primary interaction; application code maps that identifier to its own route or domain state.
 
 `UseApplication()` returns the application-level handle.
 Its permission methods query or request typed runtime capabilities and resume through the owning Task execution, so the continuation may update `State` directly.
@@ -198,11 +199,23 @@ tasks.Launch([=]() -> Task<void> {
 });
 ```
 
+`ApplicationHandle::LocalNotifications()` returns the focused local-notification handle.
+`LocalNotification::data` supplies a resource-free `PlatformPayload` snapshot to native templates and returns through `NotificationActivation::data`. It defaults to Null, is limited to 64 KiB of HUXP encoding, and rejects nested `ExternalTexture` and `FileReference` values. Treat notification data as potentially stale or externally supplied, not as authorization or protected storage.
+It exposes independent capability snapshots, notification authorization returning `PermissionStatus`, immediate presentation, durable one-shot scheduling, and idempotent cancellation through stable application-owned identifiers. The shared permission types and notification API live in `<huxerui/system.h>`; `Granted` and `Provisional` permit notification submission, with provisional authorization retaining native presentation limits such as quiet delivery.
+The shared API is available on every host.
+Configured Android hosts use `NotificationManager` and an inexact alarm, while iOS and macOS use User Notifications; Windows, Linux, and Web currently report unavailable capabilities and operations.
+Android notification interaction may become `StartupActivation()` or `OnActivation()` according to Activity creation, while the independent iOS and macOS delegates always use `OnActivation()` because their native responses arrive after host launch.
+`LocalNotification::presentation` defaults to the system UI.
+Use `TemplateNotificationPresentation{.identifier = "application.reminder"}` only when the native application shell declares the same stable identifier, and check `capabilities.can_use_templates` before offering that UI.
+Android maps templates to application-provided `RemoteViews` on API 24 or later, iOS maps them to embedded Notification Content Extension categories, and macOS returns `Unavailable` for template requests.
+An unknown template returns `Unavailable` rather than silently using the system layout.
+
 On desktop, its `SystemTray()` sub-handle presents one tray item and `Quit()` requests orderly application termination.
 Tray declarations reuse `MenuItem`, `MenuEntry`, and `MenuSection`; their `ImageVariant` icons must resolve to raster `ImageAsset` values.
 `UseWindow()` supplies independent visibility commands and lifecycle-bound minimize and close request handlers, allowing an application to compose minimize-to-tray behavior while preserving the normal window action when no tray host is available.
 
 See [Application Permissions](../design/permissions.md) for status meanings, native declarations, and platform limitations.
+See [Local Notifications](../design/local-notifications.md) for notification authorization, identifiers, ordering, scheduling, and target platform mappings.
 
 ## Runtime model
 

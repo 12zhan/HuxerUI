@@ -1152,6 +1152,10 @@ private:
     return CreateAndroidHttpTransport(virtual_machine_, Environment());
   }
 
+  std::shared_ptr<LocalNotificationTransport> CreateLocalNotificationTransport() override {
+    return CreateAndroidLocalNotificationTransport(virtual_machine_, Environment(), view_);
+  }
+
   std::shared_ptr<PermissionTransport> CreatePermissionTransport() override {
     return CreateAndroidPermissionTransport(virtual_machine_, Environment(), view_);
   }
@@ -1569,8 +1573,7 @@ PlatformEnv GetPlatformEnv(PlatformAdapter& adapter) {
 
 extern "C" JNIEXPORT jlong JNICALL Java_org_huxerui_HuxerUIView_nativeCreate(
     JNIEnv* environment, jclass, jobject view, jint kind, jstring value, jstring name, jlong size,
-    jstring content_type, jboolean writable
-) {
+    jstring content_type, jboolean writable, jbyteArray data) {
   try {
     const huxerui::detail::AndroidApplicationActivationInput startup_activation{
         .kind = kind,
@@ -1579,10 +1582,10 @@ extern "C" JNIEXPORT jlong JNICALL Java_org_huxerui_HuxerUIView_nativeCreate(
         .file_size = size,
         .content_type = content_type,
         .writable = writable,
+        .data = data,
     };
     auto session = std::make_unique<huxerui::detail::AndroidSession>(
-        environment, view, huxerui::detail::CurrentApplication(), startup_activation
-    );
+        environment, view, huxerui::detail::CurrentApplication(), startup_activation);
     return static_cast<jlong>(reinterpret_cast<std::uintptr_t>(session.release()));
   } catch (const std::exception& exception) {
     huxerui::detail::ThrowJavaException(environment, exception.what());
@@ -1592,8 +1595,7 @@ extern "C" JNIEXPORT jlong JNICALL Java_org_huxerui_HuxerUIView_nativeCreate(
 
 extern "C" JNIEXPORT void JNICALL Java_org_huxerui_HuxerUIView_nativeHandleApplicationActivation(
     JNIEnv* environment, jclass, jlong handle, jint kind, jstring value, jstring name, jlong size,
-    jstring content_type, jboolean writable
-) {
+    jstring content_type, jboolean writable, jbyteArray data) {
   try {
     if (auto* session = huxerui::detail::Session(handle)) {
       const huxerui::detail::AndroidApplicationActivationInput activation{
@@ -1603,6 +1605,7 @@ extern "C" JNIEXPORT void JNICALL Java_org_huxerui_HuxerUIView_nativeHandleAppli
           .file_size = size,
           .content_type = content_type,
           .writable = writable,
+          .data = data,
       };
       session->HandleApplicationActivation(environment, activation);
     }

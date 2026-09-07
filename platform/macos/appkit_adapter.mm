@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <QuartzCore/CADisplayLink.h>
+#import <UserNotifications/UserNotifications.h>
 #import <dispatch/dispatch.h>
 #import <mach/mach.h>
 #import <sys/resource.h>
@@ -131,7 +132,8 @@ NSCursor* MacPointerCursor(huxerui::PointerCursorKind kind) {
 - (void)commitHuxerUIFrame;
 @end
 
-@interface HuxerUIApplicationDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate> {
+@interface HuxerUIApplicationDelegate : NSObject <NSApplicationDelegate, NSWindowDelegate,
+                                                  UNUserNotificationCenterDelegate> {
 @public
   huxerui::detail::MacPlatformAdapter* huxeruiAdapter;
 }
@@ -255,12 +257,17 @@ public:
       delegate_ = [[HuxerUIApplicationDelegate alloc] init];
       delegate_->huxeruiAdapter = this;
       application.delegate = delegate_;
+      UNUserNotificationCenter.currentNotificationCenter.delegate = delegate_;
 
       [application finishLaunching];
       ApplicationActivation startup_activation = LaunchActivation{};
-      if (!pending_activations_.empty()) {
-        startup_activation = std::move(pending_activations_.front());
-        pending_activations_.erase(pending_activations_.begin());
+      // Notification responses always enter OnActivation, even if they arrive before Runtime construction.
+      const auto startup = std::find_if(pending_activations_.begin(), pending_activations_.end(), [](const auto& item) {
+        return !std::holds_alternative<NotificationActivation>(item);
+      });
+      if (startup != pending_activations_.end()) {
+        startup_activation = std::move(*startup);
+        pending_activations_.erase(startup);
       }
       const Size initial_size = ResolveInitialWindowSize(options);
       const NSRect frame = NSMakeRect(0.0, 0.0, initial_size.width, initial_size.height);
@@ -328,6 +335,9 @@ public:
       [view_ draggingExited:nil];
       view_->huxeruiRuntime = nullptr;
       view_->huxeruiAdapter = nullptr;
+      if (UNUserNotificationCenter.currentNotificationCenter.delegate == delegate_) {
+        UNUserNotificationCenter.currentNotificationCenter.delegate = nil;
+      }
       delegate_->huxeruiAdapter = nullptr;
       window_->huxeruiAdapter = nullptr;
       [frame_scheduler_ shutdown];
@@ -619,6 +629,17 @@ public:
     }
   }
 
+  void HandleNotificationActivation(NotificationActivation activation) noexcept {
+    try {
+      if (runtime_ == nullptr) {
+        pending_activations_.push_back(std::move(activation));
+      } else {
+        runtime_->HandleApplicationActivation(std::move(activation));
+      }
+    } catch (...) {
+    }
+  }
+
   void InvalidateTextInputGeometry() {
     if (text_input_) {
       text_input_->InvalidateGeometry();
@@ -643,6 +664,10 @@ public:
 
   std::shared_ptr<HttpTransport> CreateHttpTransport() override {
     return CreateMacHttpTransport();
+  }
+
+  std::shared_ptr<LocalNotificationTransport> CreateLocalNotificationTransport() override {
+    return CreateMacLocalNotificationTransport();
   }
 
   std::shared_ptr<PermissionTransport> CreatePermissionTransport() override {
@@ -1379,6 +1404,42 @@ NSWindow* GetAppKitWindow(PlatformAdapter& adapter) {
 @end
 
 @implementation HuxerUIApplicationDelegate
+
+- (void)userNotificationCenter:(UNUserNotificationCenter*)center
+       willPresentNotification:(UNNotification*)notification
+         withCompletionHandler:(void (^)(UNNotificationPresentationOptions options))completionHandler {
+  static_cast<void>(center);
+  completionHandler(huxerui::detail::MacLocalNotificationPresentationOptions(notification.request));
+}
+
+- (void)userNotificationCenter:(UNUserNotificationCenter*)center
+    didReceiveNotificationResponse:(UNNotificationResponse*)response
+             withCompletionHandler:(void (^)(void))completionHandler {
+  static_cast<void>(center);
+  std::optional<huxerui::NotificationActivation> activation =
+      huxerui::detail::DecodeMacLocalNotificationActivation(response.notification.request, response.actionIdentifier);
+  if (!activation.has_value()) {
+    completionHandler();
+    return;
+  }
+
+  if ([NSThread isMainThread]) {
+    if (huxeruiAdapter != nullptr) {
+      huxeruiAdapter->HandleNotificationActivation(std::move(*activation));
+    }
+    completionHandler();
+    return;
+  }
+
+  // Retain the complete snapshot across the dispatch boundary, including application data.
+  const huxerui::NotificationActivation notification_activation = std::move(*activation);
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (huxeruiAdapter != nullptr) {
+      huxeruiAdapter->HandleNotificationActivation(notification_activation);
+    }
+    completionHandler();
+  });
+}
 
 - (BOOL)windowShouldClose:(NSWindow*)sender {
   static_cast<void>(sender);

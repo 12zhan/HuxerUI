@@ -61,9 +61,9 @@ Code-generation changes also require the codegen tests and updated required host
 CI maintains all checked-in host packages through [Host-tool updates](sdk-packaging.md#host-tool-updates).
 When changing that workflow or its support script, run `python -B tests/scripts/host_tools_test.py`; it uses temporary Git repositories and requires only Python 3.12 or later and Git.
 
-Android paragraph geometry tests run on a device or emulator with `./gradlew :HuxerUI:connectedDebugAndroidTest` from `platform/android` (`gradlew.bat` on Windows).
-The library's `androidTest` source set includes `tests/platform/HuxerUITextLayoutTest.java`; its platform Instrumentation runner needs no AndroidX/JUnit dependency or native HuxerUI library.
-It covers soft-wrap affinity, bidirectional hit testing, explicit line breaks, and disjoint selection geometry, and installs only the separate test package rather than replacing an example application.
+Android Runtime tests run on a device or emulator with `./gradlew :HuxerUI:connectedDebugAndroidTest` from `platform/android` (`gradlew.bat` on Windows).
+The library's `androidTest` source set uses `tests/platform/HuxerUIRuntimeTest.java` as its platform Instrumentation runner and needs no AndroidX/JUnit dependency or native HuxerUI library.
+It covers paragraph geometry and local-notification Intent identity and activation normalization, and installs only the separate test package rather than replacing an example application.
 
 ## Runtime profiling
 
@@ -122,6 +122,20 @@ cmake --build build --target example_ui_gallery
 
 Desktop binaries or application bundles are emitted under the configured build output.
 Android examples use `platform/android/example_runner`, and iOS examples use the repository platform runner.
+
+`example_application` demonstrates lifecycle, general activation, activated-file reading, and runtime permissions. The separate [`example_local_notification`](../../examples/local_notification/main.cpp) demonstrates notification authorization, default and template presentation, one-shot scheduling, cancellation, and activation data.
+
+For Android, select it with `-PhuxeruiExample=local_notification` when building `platform/android/example_runner`. The runner loads the selected example's Java sources and resources from `examples/<name>/android/src/main/{java,res}` and merges its optional `AndroidManifest.xml` over the shared manifest for debug and release. Notification channel setup, permission, receiver, and RemoteViews belong to this example; other examples do not package that configuration. For example, from `platform/android`:
+
+```bash
+./gradlew :example_runner:assembleDebug -PhuxeruiExample=local_notification
+```
+
+The notification example supplies an Android template provider and an iOS Content Extension. In the iOS runner, select the dedicated `HuxerUINotifications` scheme; changing the generic runner's C++ example target alone does not embed an extension. The [iOS runner instructions](../../platform/ios/example_runner/README.md#download-notification-example) cover signing and device validation. macOS can exercise default notifications, and unsupported hosts display capability results instead of simulating notifications.
+
+The shared download example retrieves the fixed HuxerUI v0.2.0 Windows SDK ZIP (54,836,850 bytes) only after the user presses Download. It streams into an attempt-specific cache directory, updates the same notification at most about once per second during transfer, and publishes a terminal complete, failed, or canceled snapshot. Only successfully closed downloads are renamed from `.part` to `.zip`; files are not extracted or installed. Failed or canceled partial files and completed downloads remain in app cache, and retries use separate directories. Downloading depends on the running application's Task lifetime, not a platform background download service or restartable download manager; process termination can leave the last progress notification visible.
+
+The Android example's channel uses low importance so progress updates do not request sound or heads-up interruptions, subject to user settings. Compact and optional expanded RemoteViews read `file_name`, `downloaded_bytes`, nullable `total_bytes`, `status`, and `expanded` from `data`. Clicking returns the submitted snapshot through startup or subsequent activation and displays its fields without treating them as file-access authority. Unknown totals use indeterminate progress; the release's advertised size is not substituted for a transport-provided total. Default reminders retain their own identifier and remain available alongside the download.
 
 `example_streaming_text` is a local Agent repair simulation. Edit the message at the bottom and press Enter or Send: the first response follows a compact inspection, failure, patch, and verification sequence. Its 15 blocks retain a scripted analysis summary, numbered steps, nested bullets, four tool calls, attributed text, code, file actions, a result table, three concept images, and a controlled question form. Every later message, including a form submission or revision request, uses a four-block interaction-review continuation instead of replaying the investigation. It carries the user's follow-up into a fixed scripted review, not a model-generated answer; earlier messages and proposals remain unchanged. Analysis summaries are fictional, not private model reasoning; no model is contacted, no command is executed, and no project file is read or changed.
 

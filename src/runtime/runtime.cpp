@@ -1151,11 +1151,11 @@ Runtime::Runtime(const Application& application, PlatformAdapter& platform, Appl
   }
 #endif
   state_->application_service_ = std::make_shared<ApplicationService>(
-      *this,
-      std::move(startup_activation),
+      *this, std::move(startup_activation),
       std::make_shared<PermissionController>(platform.CreatePermissionTransport(), platform.ui_thread_dispatcher_),
-      SystemTrayService::Create(platform.CreateSystemTrayTransport(), state_->app_resources_)
-  );
+      LocalNotificationService::Create(platform.CreateLocalNotificationTransport(), platform.ui_thread_dispatcher_,
+                                       state_->app_resources_),
+      SystemTrayService::Create(platform.CreateSystemTrayTransport(), state_->app_resources_));
   root.Provide(state_->application_service_);
   root.Provide(std::make_shared<TextMeasurerService>(TextMeasurerService{&platform}));
   state_->window_service_ = std::make_shared<WindowService>(platform);
