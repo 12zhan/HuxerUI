@@ -222,7 +222,7 @@ LocalNotificationOperationStatus SubmissionStatus(PermissionStatus status) noexc
 }
 
 template <typename Completion>
-void QueryAuthorization(UNUserNotificationCenter* center, const std::shared_ptr<Completion>& completion) {
+void QueryAuthorization(UNUserNotificationCenter* center, std::shared_ptr<Completion> completion) {
   [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings* settings) {
     const PermissionStatus status =
         settings == nil ? PermissionStatus::Unavailable
@@ -242,8 +242,6 @@ UNNotificationRequest* MakeRequest(const ResolvedLocalNotification& notification
 
 class MacLocalNotificationTransport final : public LocalNotificationTransport {
 public:
-  MacLocalNotificationTransport() : center_([UNUserNotificationCenter currentNotificationCenter]) {}
-
   LocalNotificationCapabilities Capabilities() const noexcept override {
     return {
         .can_show = true,
@@ -257,7 +255,7 @@ public:
   std::function<void()> CheckAuthorization(PermissionStatusCompletion completion) override {
     auto retained = std::make_shared<PermissionStatusCompletion>(std::move(completion));
     @try {
-      QueryAuthorization(center_, retained);
+      QueryAuthorization([UNUserNotificationCenter currentNotificationCenter], retained);
     } @catch (NSException*) {
       Complete(retained, PermissionStatus::Unavailable);
     }
@@ -266,8 +264,8 @@ public:
 
   std::function<void()> RequestAuthorization(PermissionStatusCompletion completion) override {
     auto retained = std::make_shared<PermissionStatusCompletion>(std::move(completion));
-    UNUserNotificationCenter* center = center_;
     @try {
+      UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
       [center requestAuthorizationWithOptions:UNAuthorizationOptionAlert
                             completionHandler:^(BOOL granted, NSError* error) {
                               static_cast<void>(granted);
@@ -314,8 +312,9 @@ public:
         return {};
       }
       NSArray<NSString*>* identifiers = @[ native_identifier ];
-      [center_ removePendingNotificationRequestsWithIdentifiers:identifiers];
-      [center_ removeDeliveredNotificationsWithIdentifiers:identifiers];
+      UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
+      [center removePendingNotificationRequestsWithIdentifiers:identifiers];
+      [center removeDeliveredNotificationsWithIdentifiers:identifiers];
       Complete(retained, LocalNotificationOperationStatus::Accepted);
     } @catch (NSException*) {
       Complete(retained, LocalNotificationOperationStatus::Failed);
@@ -327,7 +326,6 @@ private:
   std::function<void()> Submit(ResolvedLocalNotification notification, UNNotificationTrigger* trigger,
                                bool replace_delivered, LocalNotificationOperationCompletion completion) {
     auto retained = std::make_shared<LocalNotificationOperationCompletion>(std::move(completion));
-    UNUserNotificationCenter* center = center_;
     if (std::holds_alternative<TemplateNotificationPresentation>(notification.presentation)) {
       Complete(retained, LocalNotificationOperationStatus::Unavailable);
       return {};
@@ -338,6 +336,7 @@ private:
         Complete(retained, LocalNotificationOperationStatus::Failed);
         return {};
       }
+      UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
       [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings* settings) {
         const PermissionStatus authorization =
             settings == nil ? PermissionStatus::Unavailable
@@ -366,8 +365,6 @@ private:
     }
     return {};
   }
-
-  __strong UNUserNotificationCenter* center_;
 };
 
 } // namespace

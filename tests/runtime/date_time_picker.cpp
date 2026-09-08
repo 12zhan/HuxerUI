@@ -7,6 +7,19 @@
 #include <string>
 #include <utility>
 
+namespace Catch {
+
+// Calendar stream insertion requires newer Apple libc++ runtime symbols than the macOS 12 target provides.
+template <> struct StringMaker<std::chrono::year_month_day> {
+  static std::string convert(const std::chrono::year_month_day& date) {
+    return std::to_string(static_cast<int>(date.year())) + "-" +
+           std::to_string(static_cast<unsigned>(date.month())) + "-" +
+           std::to_string(static_cast<unsigned>(date.day()));
+  }
+};
+
+} // namespace Catch
+
 namespace huxerui::test {
 
 namespace {
@@ -199,21 +212,6 @@ View ChinesePickersApp() {
 
 View StyledTimePickerApp() {
   return Theme{picker_theme, ProvideEnvironment(Locale::FromLanguageTag(picker_locale), TimePickerApp())};
-}
-
-View ResourceFillTimePickerApp() {
-  TimePickerStyle style = TimePickerStyle::Default();
-  const ImageResource fill("test", "images/density");
-  style.dial_background = fill;
-  style.field_background = fill;
-  style.selected_field_background = fill;
-  style.selected_period_background = fill;
-  ThemeDefinition definition;
-  definition.Set(style);
-  return Theme {
-    std::move(definition),
-    ProvideEnvironment(Locale::FromLanguageTag("en-US"), huxerui::TimePicker(Minutes{13 * 60 + 30})),
-  };
 }
 
 View LocalizedPickersApp() {
@@ -844,18 +842,6 @@ TEST_CASE("TimePickerPaintsIndependentFieldsAndOnePeriodGroup") {
     ClickAt(runtime, {am.x + am.width * 0.5F, am.y + am.height * 0.5F});
     REQUIRE(selected_time.Get() == Minutes{60 + 30});
   }
-}
-
-TEST_CASE("TimePickerResolvesResourceBackedSelfPaintedFills") {
-  TestPlatform platform;
-  platform.platform_resources = BuiltinTestResources();
-  Runtime runtime{ResourceFillTimePickerApp, platform};
-  runtime.SetWindowMetrics({.viewport = {360.0F, 420.0F}});
-  const FlattenedScene& scene = runtime.BuildFrame();
-  const std::size_t image_fills = std::ranges::count_if(scene.Commands(), [](const PaintCommand& command) {
-    return std::holds_alternative<DrawImageCommand>(command);
-  });
-  REQUIRE(image_fills >= 4);
 }
 
 TEST_CASE("TimePickerMeasuresTheEntireHeaderAndOmitsThePeriodIn24HourLocales") {

@@ -40,6 +40,7 @@ xcrun --sdk macosx swiftc \
   -framework Metal \
   -framework MetalPerformanceShaders \
   -framework QuartzCore \
+  -framework UserNotifications \
   -Xlinker -weak_framework \
   -Xlinker UniformTypeIdentifiers \
   -o "$build_directory/huxerui_macos_swift_link_test"

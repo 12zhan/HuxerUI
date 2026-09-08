@@ -256,7 +256,7 @@ LocalNotificationOperationStatus SubmissionStatus(PermissionStatus status) noexc
 }
 
 template <typename Completion>
-void QueryAuthorization(UNUserNotificationCenter* center, const std::shared_ptr<Completion>& completion) {
+void QueryAuthorization(UNUserNotificationCenter* center, std::shared_ptr<Completion> completion) {
   [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings* settings) {
     const PermissionStatus status =
         settings == nil ? PermissionStatus::Unavailable

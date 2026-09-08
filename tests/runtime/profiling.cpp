@@ -183,12 +183,12 @@ TEST_CASE("A failed frame is discarded and profiling can continue", "[profiling]
     ProfileFrame frame{&recorder};
     HUXERUI_PROFILE_COUNT(Mounts);
   }
-  REQUIRE_THROWS_AS([&] {
+  REQUIRE_THROWS_AS(([&] {
     ProfileFrame frame{&recorder};
     HUXERUI_PROFILE_SCOPE(scope, Scope, 2);
     HUXERUI_PROFILE_COUNT(Mounts);
     throw std::runtime_error("frame failed");
-  }(), std::runtime_error);
+  }()), std::runtime_error);
   REQUIRE(recorder.IsRecording());
   REQUIRE(detail::CurrentProfileRecorder() == nullptr);
   {

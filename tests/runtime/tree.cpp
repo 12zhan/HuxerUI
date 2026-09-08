@@ -410,7 +410,9 @@ TEST_CASE("TreeView qualifies sibling keys by parent and validates configuration
   REQUIRE_THROWS_AS(TreeView<int>({}, factory, info).CacheExtent(-1.0F), std::invalid_argument);
   const ImageVariant empty_icon = ImageAsset{};
   REQUIRE_THROWS_AS(TreeView<int>({}, factory, info).DisclosureIcon(empty_icon), std::invalid_argument);
-  Runtime empty{[factory, info]() -> View { return TreeView<int>({}, factory, info); }, platform};
+  Runtime empty{[]() -> View {
+    return TreeView<int>({}, [](int) { return View{}; }, [](int) { return TreeItemInfo{.label = "row"}; });
+  }, platform};
   REQUIRE_NOTHROW(empty.BuildFrame());
 }
 

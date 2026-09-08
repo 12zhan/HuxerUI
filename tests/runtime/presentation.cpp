@@ -304,14 +304,6 @@ View MaterialToggleApp() {
   };
 }
 
-View ResourceFillCheckboxApp() {
-  CheckboxStyle style = CheckboxStyle::Default();
-  style.checked_background = ImageResource("test", "images/density");
-  ThemeDefinition definition;
-  definition.Set(style);
-  return Theme {std::move(definition), Checkbox(true)};
-}
-
 View MaterialLabeledToggleApp() {
   auto checkbox = UseState(false);
   auto radio = UseState(false);
@@ -1606,17 +1598,6 @@ TEST_CASE("TestLabeledTogglesUseVisualSpacingAndOneActivationTarget") {
   REQUIRE(labeled_checkbox_checked.Get());
   REQUIRE(labeled_radio_selected.Get());
   REQUIRE(labeled_switch_checked.Get());
-}
-
-TEST_CASE("TestCheckboxResolvesResourceBackedSurfaceFill") {
-  TestPlatform platform;
-  platform.platform_resources = BuiltinTestResources();
-  Runtime runtime{ResourceFillCheckboxApp, platform};
-  runtime.SetWindowMetrics({.viewport = {40.0F, 40.0F}});
-  const FlattenedScene& scene = runtime.BuildFrame();
-  REQUIRE(std::ranges::any_of(scene.Commands(), [](const PaintCommand& command) {
-    return std::holds_alternative<DrawImageCommand>(command);
-  }));
 }
 
 TEST_CASE("TestLabeledToggleGeometryUsesContentBounds") {

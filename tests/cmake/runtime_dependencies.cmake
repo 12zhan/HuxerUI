@@ -231,9 +231,10 @@ if (NOT result STREQUAL "0")
     message(FATAL_ERROR "Relocated runtime failed without build outputs (${result}): ${output}${error}")
 endif ()
 
-file(RENAME "${module_leaf}" "${module_leaf}.hidden")
+get_filename_component(module_leaf_directory "${module_leaf}" DIRECTORY)
+file(RENAME "${module_leaf_directory}" "${module_leaf_directory}.hidden")
 install_fixture("${root}/missing-transitive" "unresolved runtime dependencies")
-file(RENAME "${module_leaf}.hidden" "${module_leaf}")
+file(RENAME "${module_leaf_directory}.hidden" "${module_leaf_directory}")
 run(${configure} "-DEXTRA_FILE=${root}/missing-library")
 install_fixture("${root}/missing-explicit" "runtime dependency is missing")
 

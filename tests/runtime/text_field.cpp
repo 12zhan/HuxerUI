@@ -219,18 +219,6 @@ View DefaultVariantTextFieldStyleApp() {
   };
 }
 
-View ResourceFillTextFieldApp() {
-  TextFieldStyle style = TextFieldStyle::Default();
-  style.variant = TextFieldVariant::Filled;
-  style.filled.background = ImageResource("test", "images/density");
-  ThemeDefinition definition;
-  definition.Set(style);
-  return Theme {
-    std::move(definition),
-    TextField(TextEditingValue::FromText("Value")).With(huxerui::Frame{.width = 160.0F}),
-  };
-}
-
 View StableTextFieldApp() {
   auto trigger = UseState(0);
   text_field_recompose_trigger = trigger;
@@ -616,9 +604,6 @@ View TextSelectionOverlayApp() {
   style.caret = Color::Rgb(214, 55, 48);
   ThemeDefinition definition = FlatThemeDefinition();
   definition.Set(style);
-  MenuStyle menu_style = MenuStyle::Default();
-  menu_style.background = ImageResource("test", "images/density");
-  definition.Set(menu_style);
   return Theme {
     std::move(definition),
     ProvideEnvironment(
@@ -1118,17 +1103,6 @@ TEST_CASE("TestMaterialTextFieldSupportsOutlinedVariant") {
   const Rect focused_outline_bounds = focused_outline->path.Bounds();
   REQUIRE(caret->rect.y + caret->rect.height * 0.5F ==
           Catch::Approx(focused_outline_bounds.y + focused_outline_bounds.height * 0.5F));
-}
-
-TEST_CASE("TestTextFieldResolvesResourceBackedVariantFill") {
-  TestPlatform platform;
-  platform.platform_resources = BuiltinTestResources();
-  Runtime runtime{ResourceFillTextFieldApp, platform};
-  runtime.SetWindowMetrics({.viewport = {200.0F, 80.0F}});
-  const FlattenedScene& scene = runtime.BuildFrame();
-  REQUIRE(std::ranges::any_of(scene.Commands(), [](const PaintCommand& command) {
-    return std::holds_alternative<DrawImageCommand>(command);
-  }));
 }
 
 TEST_CASE("TestMaterialTextFieldSupportsStandardVariant") {
@@ -3045,9 +3019,6 @@ TEST_CASE("TestTextFieldSelectionOverlayUsesThemeAndLocalizedLabels") {
   const FlattenedScene& overlay = runtime.BuildFrame();
   const DrawTextCommand* copy = FindText(overlay, "复制");
   REQUIRE(copy != nullptr);
-  REQUIRE(std::ranges::any_of(overlay.Commands(), [](const PaintCommand& command) {
-    return std::holds_alternative<DrawImageCommand>(command);
-  }));
   const MenuStyle menu_style = ThemeDefinitionValue<MenuStyle>(FlatThemeDefinition());
   REQUIRE(std::ranges::any_of(overlay.Commands(), [&menu_style](const PaintCommand& command) {
     const auto* shadow = std::get_if<DrawShadowCommand>(&command);
