@@ -17,10 +17,10 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <ranges>
-#include <set>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -82,26 +82,47 @@ std::string CustomFontCachePath(std::string_view family) {
   return (std::filesystem::path(cache_dir) / "huxerui-fonts" / (name + ".ttf")).string();
 }
 
-// Makes registered family bytes resolvable through fontconfig. Fontconfig
-// only loads fonts from files, so the payload is materialized once under the
-// user cache directory and added to the default font map's configuration.
-// The attempted set keeps repeated text draws from copying the registry
-// payload again; every failure silently leaves the family to the system font
-// table, so measurement and painting stay consistent either way.
-void RegisterCustomFont(std::string_view family) {
-  static std::set<std::string, std::less<>> attempted_families;
-  if (attempted_families.find(family) != attempted_families.end()) {
-    return;
+// Internal family name recorded in a font file, or empty when it cannot be
+// read. Fontconfig indexes an application font file under this internal name,
+// while Font values carry the generated registration name.
+std::string FontFileFamilyName(const std::string& filename) {
+  int count = 0;
+  FcPattern* pattern =
+      FcFreeTypeQuery(reinterpret_cast<const FcChar8*>(filename.c_str()), 0, nullptr, &count);
+  if (pattern == nullptr) {
+    return {};
   }
-  attempted_families.emplace(family);
+  FcChar8* family_value = nullptr;
+  std::string family_name;
+  if (FcPatternGetString(pattern, FC_FAMILY, 0, &family_value) == FcResultMatch && family_value != nullptr) {
+    family_name = reinterpret_cast<const char*>(family_value);
+  }
+  FcPatternDestroy(pattern);
+  return family_name;
+}
+
+// Resolves a registered family to the name Pango must use. Fontconfig only
+// loads fonts from files and indexes them under their internal family name,
+// so the payload is materialized once under the user cache directory, added
+// to the default font map's configuration, and the internal name is returned.
+// The attempted map caches generated-to-internal names so repeated text draws
+// never copy the registry payload again; every failure silently keeps the
+// given name, leaving text to the system font table.
+std::string RegisterCustomFont(std::string_view family) {
+  static std::map<std::string, std::string, std::less<>> attempted_families;
+  if (auto attempted = attempted_families.find(family); attempted != attempted_families.end()) {
+    return attempted->second;
+  }
+  std::string resolved(family);
+  attempted_families.emplace(resolved, resolved);
 
   const std::vector<std::byte> data = RegisteredFontData(family);
   if (data.empty()) {
-    return;
+    return resolved;
   }
   const std::string filename = CustomFontCachePath(family);
   if (filename.empty()) {
-    return;
+    return resolved;
   }
   const std::filesystem::path path(filename);
   std::error_code error;
@@ -110,32 +131,39 @@ void RegisterCustomFont(std::string_view family) {
     error.clear();
     std::filesystem::create_directories(path.parent_path(), error);
     if (error) {
-      return;
+      return resolved;
     }
     std::ofstream file(path, std::ios::binary | std::ios::trunc);
     if (!file) {
-      return;
+      return resolved;
     }
     file.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
     file.flush();
     if (!file) {
-      return;
+      return resolved;
     }
   }
 
   PangoFontMap* font_map = pango_cairo_font_map_get_default();
   if (font_map == nullptr || !PANGO_IS_FC_FONT_MAP(font_map)) {
-    return;
+    return resolved;
   }
   PangoFcFontMap* fc_font_map = PANGO_FC_FONT_MAP(font_map);
   FcConfig* config = pango_fc_font_map_get_config(fc_font_map);
   if (config == nullptr) {
-    return;
+    return resolved;
   }
   if (!FcConfigAppFontAddFile(config, reinterpret_cast<const FcChar8*>(filename.c_str()))) {
-    return;
+    return resolved;
   }
   pango_fc_font_map_config_changed(fc_font_map);
+
+  std::string internal_name = FontFileFamilyName(filename);
+  if (internal_name.empty()) {
+    internal_name = resolved;
+  }
+  attempted_families[resolved] = internal_name;
+  return internal_name;
 }
 
 PangoFontDescription* CreateFontDescription(const Font& font) {
@@ -148,8 +176,7 @@ PangoFontDescription* CreateFontDescription(const Font& font) {
     pango_font_description_set_family(description, "monospace");
     break;
   case FontFamilyKind::Named: {
-    const std::string family(font.FamilyName());
-    RegisterCustomFont(family);
+    const std::string family = RegisterCustomFont(font.FamilyName());
     pango_font_description_set_family(description, family.c_str());
     break;
   }
