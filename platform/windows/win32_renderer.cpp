@@ -681,6 +681,9 @@ struct Win32Renderer::State {
     // this address while the collection lives; std::map nodes never relocate.
     std::shared_ptr<const RegisteredFontBytes> data;
     ComPtr<IDWriteFontCollection> collection;
+    // DirectWrite matches text formats by the font's internal family name, which
+    // differs from the generated registry key the collection was built for.
+    std::wstring family_name;
   };
 
   ~State() {
@@ -880,21 +883,60 @@ struct Win32Renderer::State {
     );
   }
 
-  // Returns the custom collection for a family registered through
-  // huxerui::RegisterFont, or null when the system collection must serve it.
-  // Unregistered families are not cached so later registrations are honored.
-  ComPtr<IDWriteFontCollection> CustomFontCollectionFor(const Font& font) {
+  // Reads the internal family name DirectWrite matches text formats against;
+  // prefers the en-us localized name and falls back to the first entry.
+  static std::wstring InternalFamilyName(IDWriteFontCollection& collection) {
+    if (collection.GetFontFamilyCount() == 0) {
+      return {};
+    }
+    ComPtr<IDWriteFontFamily> family;
+    ThrowIfFailed(
+        collection.GetFontFamily(0, family.GetAddressOf()),
+        "HuxerUI could not access a custom DirectWrite font family"
+    );
+    ComPtr<IDWriteLocalizedStrings> names;
+    ThrowIfFailed(
+        family->GetFamilyNames(names.GetAddressOf()),
+        "HuxerUI could not read custom DirectWrite family names"
+    );
+    if (names->GetCount() == 0) {
+      return {};
+    }
+    UINT32 index = 0;
+    BOOL exists = FALSE;
+    static_cast<void>(names->FindLocaleName(L"en-us", &index, &exists));
+    if (exists == FALSE) {
+      index = 0;
+    }
+    UINT32 length = 0;
+    ThrowIfFailed(
+        names->GetStringLength(index, &length),
+        "HuxerUI could not measure a custom DirectWrite family name"
+    );
+    std::wstring name(length, L'\0');
+    ThrowIfFailed(
+        names->GetString(index, name.data(), length + 1),
+        "HuxerUI could not read a custom DirectWrite family name"
+    );
+    return name;
+  }
+
+  // Returns the collection for a family registered through huxerui::RegisterFont
+  // together with the font's internal family name, or an empty match when the
+  // system collection must serve it. Unregistered families are not cached so
+  // later registrations are honored.
+  CustomFontCollection CustomFontCollectionFor(const Font& font) {
     if (font.FamilyKind() != FontFamilyKind::Named) {
-      return nullptr;
+      return {};
     }
     const std::wstring family = Utf8ToWide(font.FamilyName());
     const auto cached = custom_fonts_.find(family);
     if (cached != custom_fonts_.end()) {
-      return cached->second.collection;
+      return cached->second;
     }
     const std::vector<std::byte> payload = RegisteredFontData(font.FamilyName());
     if (payload.empty()) {
-      return nullptr;
+      return {};
     }
     EnsureCustomFontLoaders();
     CustomFontCollection& entry = custom_fonts_[family];
@@ -909,7 +951,14 @@ struct Win32Renderer::State {
         ),
         "HuxerUI could not create a custom DirectWrite font collection"
     );
-    return entry.collection;
+    entry.family_name = InternalFamilyName(*entry.collection.Get());
+    if (entry.family_name.empty()) {
+      // A collection without family names cannot match text formats; drop the
+      // entry so lookups keep falling back to the system collection.
+      custom_fonts_.erase(family);
+      return {};
+    }
+    return entry;
   }
 
   // Collections must be released before their loaders are unregistered.
@@ -935,11 +984,16 @@ struct Win32Renderer::State {
     }
 
     ComPtr<IDWriteTextFormat> format;
-    const std::wstring family = FontFamilyName(font);
+    std::wstring family = FontFamilyName(font);
+    const CustomFontCollection custom = CustomFontCollectionFor(font);
+    if (custom.collection) {
+      // The font is matched by its internal family name, not the registry key.
+      family = custom.family_name;
+    }
     ThrowIfFailed(
         write_factory_->CreateTextFormat(
             family.c_str(),
-            CustomFontCollectionFor(font).Get(),
+            custom.collection.Get(),
             static_cast<DWRITE_FONT_WEIGHT>(font.Weight()),
             font.Slant() == FontSlant::Italic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL,
             DWRITE_FONT_STRETCH_NORMAL,
@@ -1115,14 +1169,15 @@ struct Win32Renderer::State {
     if (cached != font_metrics_.end()) {
       return cached->second;
     }
-    ComPtr<IDWriteFontCollection> collection = CustomFontCollectionFor(font);
+    const CustomFontCollection custom = CustomFontCollectionFor(font);
+    ComPtr<IDWriteFontCollection> collection = custom.collection;
     if (!collection) {
       ThrowIfFailed(
           write_factory_->GetSystemFontCollection(collection.GetAddressOf()),
           "HuxerUI could not access the DirectWrite font collection"
       );
     }
-    const std::wstring family_name = FontFamilyName(font);
+    const std::wstring family_name = custom.collection ? custom.family_name : FontFamilyName(font);
     UINT32 family_index = 0;
     BOOL exists = FALSE;
     ThrowIfFailed(
