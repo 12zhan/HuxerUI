@@ -1,4 +1,5 @@
 #include <huxerui/app.h>
+#include <huxerui/font.h>
 
 #include <android/input.h>
 #include <android/asset_manager.h>
@@ -1653,6 +1654,29 @@ extern "C" JNIEXPORT void JNICALL Java_org_huxerui_HuxerUIView_nativeUpdateResou
   } catch (const std::exception& exception) {
     huxerui::detail::ThrowJavaException(environment, exception.what());
   }
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_org_huxerui_HuxerUIView_nativeGetRegisteredFontBytes(JNIEnv* environment, jclass, jstring family) {
+  std::string name;
+  if (family != nullptr) {
+    const jsize length = environment->GetStringUTFLength(family);
+    if (length > 0) {
+      const char* characters = environment->GetStringUTFChars(family, nullptr);
+      if (characters != nullptr) {
+        name.assign(characters, static_cast<std::size_t>(length));
+        environment->ReleaseStringUTFChars(family, characters);
+      }
+    }
+  }
+  const std::vector<std::byte> data = huxerui::detail::RegisteredFontData(name);
+  jbyteArray result = environment->NewByteArray(static_cast<jsize>(data.size()));
+  if (result != nullptr && !data.empty()) {
+    environment->SetByteArrayRegion(
+        result, 0, static_cast<jsize>(data.size()), reinterpret_cast<const jbyte*>(data.data())
+    );
+  }
+  return result;
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL
