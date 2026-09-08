@@ -11,6 +11,7 @@
 #include <concepts>
 #include <functional>
 #include <limits>
+#include <mutex>
 #include <numbers>
 #include <span>
 #include <stdexcept>
@@ -20,6 +21,8 @@
 #include <utility>
 #include <variant>
 #include <vector>
+
+#include <huxerui/font.h>
 
 #include "ios_external_texture_internal.h"
 #include "graphics/path_internal.h"
@@ -153,6 +156,48 @@ CFStringRef CreateString(std::string_view text) {
   );
 }
 
+// Registered families parse their font bytes once; the derived base font is cached per family
+// because span-level paths call CreateFont without the FontFor cache. The cached base stays
+// size-agnostic: the trait pipeline reapplies the requested size through
+// CTFontCreateCopyWithAttributes on every call.
+CTFontRef CreateRegisteredBase(std::string_view family, CGFloat size) {
+  static std::mutex cache_mutex;
+  static std::unordered_map<std::string, CFRef<CTFontRef>> cache;
+  const std::lock_guard lock(cache_mutex);
+  std::string key(family);
+  const auto cached = cache.find(key);
+  if (cached != cache.end()) {
+    return static_cast<CTFontRef>(CFRetain(cached->second.Get()));
+  }
+
+  const std::vector<std::byte> data = RegisteredFontData(family);
+  if (data.empty()) {
+    return nullptr;
+  }
+  // The registry buffer is local, so the provider only wraps it while Core Foundation copies the bytes.
+  CGDataProviderRef provider = CGDataProviderCreateWithData(nullptr, data.data(), data.size(), nullptr);
+  CFDataRef font_data = provider == nullptr ? nullptr : CGDataProviderCopyData(provider);
+  if (provider != nullptr) {
+    CFRelease(provider);
+  }
+  // CGDataProvider is toll-free bridged with CFData, and the CGFont retains the data it needs.
+  CGFontRef graphics_font =
+      font_data == nullptr ? nullptr : CGFontCreateWithDataProvider((__bridge CGDataProviderRef)font_data);
+  if (font_data != nullptr) {
+    CFRelease(font_data);
+  }
+  if (graphics_font == nullptr) {
+    return nullptr;
+  }
+  CTFontRef base_font = CTFontCreateWithGraphicsFont(graphics_font, size, nullptr, nullptr);
+  CFRelease(graphics_font);
+  if (base_font == nullptr) {
+    return nullptr;
+  }
+  cache.emplace(std::move(key), CFRef<CTFontRef>(static_cast<CTFontRef>(CFRetain(base_font))));
+  return base_font;
+}
+
 CTFontRef CreateFont(const Font& font) {
   CTFontRef base = nullptr;
   switch (font.FamilyKind()) {
@@ -163,9 +208,13 @@ CTFontRef CreateFont(const Font& font) {
     base = CTFontCreateWithName(CFSTR("Menlo"), static_cast<CGFloat>(font.Size()), nullptr);
     break;
   case FontFamilyKind::Named: {
-    CFStringRef family = CreateString(font.FamilyName());
-    base = CTFontCreateWithName(family, static_cast<CGFloat>(font.Size()), nullptr);
-    CFRelease(family);
+    // Registered custom fonts supply the base font; unregistered families keep the system lookup.
+    base = CreateRegisteredBase(font.FamilyName(), static_cast<CGFloat>(font.Size()));
+    if (base == nullptr) {
+      CFStringRef family = CreateString(font.FamilyName());
+      base = CTFontCreateWithName(family, static_cast<CGFloat>(font.Size()), nullptr);
+      CFRelease(family);
+    }
     break;
   }
   }
