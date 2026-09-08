@@ -20,7 +20,16 @@ namespace huxerui {
 
 namespace detail {
 struct InternalAccess;
-}
+
+/// Immutable font-file bytes carried by Font values created from RawAsset data or file paths.
+/// Family is the stable generated name every platform resolves before its system family table,
+/// and bytes hold the complete font file. Payloads are shared between copies of one Font value,
+/// so payload comparison by instance identity is intentional.
+struct FontData {
+  std::string family;
+  std::vector<std::byte> bytes;
+};
+} // namespace detail
 
 /// An offset measured in UTF-16 code units, not UTF-8 bytes or grapheme clusters.
 ///
@@ -145,20 +154,25 @@ public:
   /// @throws std::invalid_argument If family is empty or size is not finite and positive.
   static Font Named(std::string family, float size = 14.0F);
   /// Creates a font from raw font-file bytes (ttf/otf) carried by a RawAsset.
-  /// The payload registers into the process font registry under a stable
-  /// generated family name, so every platform renderer resolves it before the
-  /// system family table; identical payload bytes share one registration.
+  /// The bytes are retained as shared immutable payload data, and every
+  /// platform renderer resolves the generated family before the system family
+  /// table. The payload lives exactly as long as the Font values referencing
+  /// it; separately created values with identical bytes share the generated
+  /// family name but remain distinct values.
   /// @param data RawAsset carrying the font file bytes.
   /// @param size Finite, positive font size in logical units.
-  /// @return A regular, upright font request for the registered payload.
+  /// @return A regular, upright named font request whose family is generated
+  /// from the payload content.
   /// @throws std::invalid_argument If the payload cannot be read, is empty, or
   /// size is not finite and positive.
   static Font FromRawAsset(const RawAsset& data, float size = 14.0F);
   /// Creates a font from a font file on the local filesystem. The file is read
-  /// when this factory runs; identical file contents share one registration.
+  /// once when this factory runs; the bytes are retained exactly like
+  /// FromRawAsset payload data.
   /// @param path Readable font file path.
   /// @param size Finite, positive font size in logical units.
-  /// @return A regular, upright font request for the registered payload.
+  /// @return A regular, upright named font request whose family is generated
+  /// from the file contents.
   /// @throws std::invalid_argument If the file cannot be read, is empty, or
   /// size is not finite and positive.
   static Font FromFile(std::string_view path, float size = 14.0F);
@@ -203,16 +217,25 @@ public:
     return slant_;
   }
 
+  /// Request properties compare by value. Payload fonts compare equal only while they share one
+  /// payload instance: copies of a payload font stay equal, while separately created fonts with
+  /// identical bytes compare unequal. A shared family name alone never makes two payloads equal.
   bool operator==(const Font&) const = default;
 
 private:
   Font(FontFamilyKind family_kind, std::string family_name, float size);
+  Font(FontFamilyKind family_kind, std::string family_name, float size,
+      std::shared_ptr<const detail::FontData> data);
 
   FontFamilyKind family_kind_ = FontFamilyKind::System;
   std::string family_name_;
   float size_ = 14.0F;
   FontWeight weight_ = FontWeight::Regular;
   FontSlant slant_ = FontSlant::Normal;
+  /// Shared font-file payload; empty for System, Monospace, and ordinary Named fonts.
+  std::shared_ptr<const detail::FontData> data_;
+
+  friend struct detail::InternalAccess;
 };
 
 /// Composable character-decoration flags; combine them with operator|.

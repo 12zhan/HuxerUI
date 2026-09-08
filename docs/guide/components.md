@@ -23,14 +23,15 @@ TextMeasurer has no implicit Environment lookup; pass a locale explicitly when c
 ### Custom fonts
 
 `Font::FromRawAsset` and `Font::FromFile` create font values from font file bytes, and every platform renderer resolves them before the system family table.
-Data comes from a `RawAsset` or a readable file path, and construction reads the payload immediately; identical payload bytes share one registration, and the registration is process-wide for the app lifetime.
+Data comes from a `RawAsset` or a readable file path, and construction reads the payload immediately; the `Font` value retains the bytes as shared immutable payload data, so the payload lives exactly as long as the Font values referencing it.
+Each value carries a stable generated family name derived from the payload content, and copies of one value stay equal while separately created values with identical bytes remain distinct values.
 
 ```cpp
 auto raw = UseRawResource(RawResource("app", "raw/fonts/MapleMono.ttf"));
 return Text("Maple").Style(TextStyle{.font = Font::FromRawAsset(raw, 14.0F)});
 ```
 
-Unregistered families keep the per-platform system lookup.
+Families without payload data keep the per-platform system lookup.
 
 ### Attributed paragraphs and links
 
