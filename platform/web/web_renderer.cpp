@@ -21,8 +21,6 @@
 
 #include <emscripten.h>
 
-#include <huxerui/font.h>
-
 #include "graphics/path_internal.h"
 #include "graphics/paint_internal.h"
 #include "resources/resource_internal.h"
@@ -162,23 +160,22 @@ EM_JS(
 );
 // clang-format on
 
-// Registered font bytes load asynchronously through the FontFace API, and
-// RegisteredFontData copies the whole payload, so each family is offered to the
-// browser exactly once; the ready notification flushes layouts that were
-// measured against fallback metrics.
-void RequestRegisteredWebFont(std::string_view family) {
+// Registered font bytes load asynchronously through the FontFace API, and the payload buffer is read
+// from the Font value each time, so each family is offered to the browser exactly once; the ready
+// notification flushes layouts that were measured against fallback metrics.
+void RequestRegisteredWebFont(const Font& font) {
   static std::mutex mutex;
   static std::unordered_set<std::string> attempted;
-  const std::string name(family);
+  const std::string name(font.FamilyName());
   {
     const std::lock_guard<std::mutex> lock(mutex);
     if (!attempted.insert(name).second) {
       return;
     }
   }
-  const std::vector<std::byte> data = huxerui::detail::RegisteredFontData(name);
-  if (!data.empty()) {
-    RequestWebFontLoad(name.c_str(), data.data(), data.size());
+  const FontData* payload = InternalAccess::FontPayload(font);
+  if (payload != nullptr && !payload->bytes.empty()) {
+    RequestWebFontLoad(name.c_str(), payload->bytes.data(), payload->bytes.size());
   }
 }
 
@@ -210,7 +207,7 @@ std::string CssFont(const Font& font) {
     break;
   case FontFamilyKind::Named:
     // Kick the FontFace load before the font string names the family; the first paint falls back until it is ready.
-    RequestRegisteredWebFont(font.FamilyName());
+    RequestRegisteredWebFont(font);
     family.reserve(font.FamilyName().size() + 2);
     family.push_back('"');
     for (const char value : font.FamilyName()) {

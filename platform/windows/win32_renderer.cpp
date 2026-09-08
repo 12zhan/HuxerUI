@@ -32,8 +32,6 @@
 #include <variant>
 #include <vector>
 
-#include <huxerui/font.h>
-
 #include "graphics/path_internal.h"
 #include "graphics/paint_internal.h"
 #include "resources/resource_internal.h"
@@ -921,10 +919,9 @@ struct Win32Renderer::State {
     return name;
   }
 
-  // Returns the collection for a family registered through huxerui::RegisterFont
-  // together with the font's internal family name, or an empty match when the
-  // system collection must serve it. Unregistered families are not cached so
-  // later registrations are honored.
+  // Returns the collection for a font carrying payload bytes, together with the font's internal
+  // family name, or an empty match when the system collection must serve it. Families without
+  // payloads are not cached so later payload fonts are honored.
   CustomFontCollection CustomFontCollectionFor(const Font& font) {
     if (font.FamilyKind() != FontFamilyKind::Named) {
       return {};
@@ -934,13 +931,13 @@ struct Win32Renderer::State {
     if (cached != custom_fonts_.end()) {
       return cached->second;
     }
-    const std::vector<std::byte> payload = RegisteredFontData(font.FamilyName());
-    if (payload.empty()) {
+    const FontData* payload = InternalAccess::FontPayload(font);
+    if (payload == nullptr) {
       return {};
     }
     EnsureCustomFontLoaders();
     CustomFontCollection& entry = custom_fonts_[family];
-    entry.data = std::make_shared<const RegisteredFontBytes>(std::move(payload));
+    entry.data = std::make_shared<const RegisteredFontBytes>(payload->bytes);
     // The key carries the payload holder address; the loaders decode it in
     // CreateEnumeratorFromKey and CreateStreamFromKey.
     const void* key = &entry.data;

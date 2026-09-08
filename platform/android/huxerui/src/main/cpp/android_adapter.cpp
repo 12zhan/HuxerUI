@@ -1,7 +1,7 @@
 #include <huxerui/app.h>
-#include <huxerui/font.h>
 
 #include <android/input.h>
+#include <android/log.h>
 #include <android/asset_manager.h>
 #include <android/asset_manager_jni.h>
 #include <android/keycodes.h>
@@ -41,6 +41,7 @@
 #include "io/stream_internal.h"
 #include "text/text_input_internal.h"
 #include "text/text_internal.h"
+#include "text/font_registry_internal.h"
 
 namespace huxerui::detail {
 
@@ -1134,6 +1135,9 @@ public:
   }
 
   void RequestShow(TextInputSessionId session_id) override {
+    // TEMPORARY DIAGNOSTIC (scroll-triggers-keyboard investigation): remove after root-causing.
+    __android_log_print(ANDROID_LOG_INFO, "HuxerUIFontDbg", "SHOW KEYBOARD session=%lld",
+        static_cast<long long>(static_cast<jlong>(session_id)));
     JNIEnv* environment = Environment();
     if (environment != nullptr && view_ != nullptr) {
       environment->CallVoidMethod(view_, request_show_text_input_, static_cast<jlong>(session_id));
@@ -1330,6 +1334,9 @@ public:
 
   void Pointer(PointerEventType type, PointerDeviceKind device_kind, std::int64_t pointer_id, float x, float y,
       PointerButton changed_button, PointerButton pressed_buttons, KeyModifiers modifiers) {
+    // TEMPORARY DIAGNOSTIC (scroll-triggers-keyboard investigation): remove after root-causing.
+    __android_log_print(ANDROID_LOG_INFO, "HuxerUIFontDbg", "POINTER type=%d x=%.0f y=%.0f",
+        static_cast<int>(type), x, y);
     runtime_.HandlePointerEvent({
         type,
         pointer_id,
@@ -1669,11 +1676,14 @@ Java_org_huxerui_HuxerUIView_nativeGetRegisteredFontBytes(JNIEnv* environment, j
       }
     }
   }
-  const std::vector<std::byte> data = huxerui::detail::RegisteredFontData(name);
-  jbyteArray result = environment->NewByteArray(static_cast<jsize>(data.size()));
-  if (result != nullptr && !data.empty()) {
+  // Java resolves custom families by name; the payload is borrowed from the live Font values that
+  // recorded it in the transport bridge, so reclaimed payloads fall back to the system family table.
+  const std::shared_ptr<const huxerui::detail::FontData> payload = huxerui::detail::FindFontPayload(name);
+  const std::size_t length = payload != nullptr ? payload->bytes.size() : 0;
+  jbyteArray result = environment->NewByteArray(static_cast<jsize>(length));
+  if (result != nullptr && length > 0) {
     environment->SetByteArrayRegion(
-        result, 0, static_cast<jsize>(data.size()), reinterpret_cast<const jbyte*>(data.data())
+        result, 0, static_cast<jsize>(length), reinterpret_cast<const jbyte*>(payload->bytes.data())
     );
   }
   return result;

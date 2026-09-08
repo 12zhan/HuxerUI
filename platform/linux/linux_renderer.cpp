@@ -31,8 +31,6 @@
 #include <variant>
 #include <vector>
 
-#include <huxerui/font.h>
-
 #include "graphics/external_texture_internal.h"
 #include "linux_external_texture_internal.h"
 #include "graphics/path_internal.h"
@@ -101,23 +99,24 @@ std::string FontFileFamilyName(const std::string& filename) {
   return family_name;
 }
 
-// Resolves a registered family to the name Pango must use. Fontconfig only
+// Resolves a payload-carrying family to the name Pango must use. Fontconfig only
 // loads fonts from files and indexes them under their internal family name,
 // so the payload is materialized once under the user cache directory, added
 // to the default font map's configuration, and the internal name is returned.
 // The attempted map caches generated-to-internal names so repeated text draws
-// never copy the registry payload again; every failure silently keeps the
-// given name, leaving text to the system font table.
-std::string RegisterCustomFont(std::string_view family) {
+// never touch the payload again; every failure silently keeps the given name,
+// leaving text to the system font table.
+std::string RegisterCustomFont(const Font& font) {
   static std::map<std::string, std::string, std::less<>> attempted_families;
+  const std::string family(font.FamilyName());
   if (auto attempted = attempted_families.find(family); attempted != attempted_families.end()) {
     return attempted->second;
   }
   std::string resolved(family);
   attempted_families.emplace(resolved, resolved);
 
-  const std::vector<std::byte> data = RegisteredFontData(family);
-  if (data.empty()) {
+  const FontData* payload = InternalAccess::FontPayload(font);
+  if (payload == nullptr) {
     return resolved;
   }
   const std::string filename = CustomFontCachePath(family);
@@ -127,7 +126,7 @@ std::string RegisterCustomFont(std::string_view family) {
   const std::filesystem::path path(filename);
   std::error_code error;
   const std::uintmax_t existing_size = std::filesystem::file_size(path, error);
-  if (error || existing_size != data.size()) {
+  if (error || existing_size != payload->bytes.size()) {
     error.clear();
     std::filesystem::create_directories(path.parent_path(), error);
     if (error) {
@@ -137,7 +136,10 @@ std::string RegisterCustomFont(std::string_view family) {
     if (!file) {
       return resolved;
     }
-    file.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+    file.write(
+        reinterpret_cast<const char*>(payload->bytes.data()),
+        static_cast<std::streamsize>(payload->bytes.size())
+    );
     file.flush();
     if (!file) {
       return resolved;
@@ -176,7 +178,7 @@ PangoFontDescription* CreateFontDescription(const Font& font) {
     pango_font_description_set_family(description, "monospace");
     break;
   case FontFamilyKind::Named: {
-    const std::string family = RegisterCustomFont(font.FamilyName());
+    const std::string family = RegisterCustomFont(font);
     pango_font_description_set_family(description, family.c_str());
     break;
   }
