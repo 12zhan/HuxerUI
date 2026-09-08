@@ -2226,6 +2226,17 @@ public final class HuxerUIView extends ViewGroup {
         }
     }
 
+    private Typeface resolveNamedTypeface(String familyName) {
+        // Named families resolve against bundled assets first (fonts/<family>.ttf)
+        // and fall back to the system family table, so applications can ship
+        // custom fonts without platform integration.
+        try {
+            return Typeface.createFromAsset(getContext().getAssets(), "fonts/" + familyName + ".ttf");
+        } catch (Exception ignored) {
+            return Typeface.create(familyName, Typeface.NORMAL);
+        }
+    }
+
     private Typeface resolveTypeface(int familyKind, String familyName, int weight, int slant) {
         FontKey key = new FontKey(familyKind, familyName, weight, slant);
         Typeface typeface = fontCache.get(key);
@@ -2234,7 +2245,7 @@ public final class HuxerUIView extends ViewGroup {
             if (familyKind == FONT_FAMILY_MONOSPACE) {
                 base = Typeface.MONOSPACE;
             } else if (familyKind == FONT_FAMILY_NAMED) {
-                base = Typeface.create(familyName, Typeface.NORMAL);
+                base = resolveNamedTypeface(familyName);
             } else {
                 base = Typeface.DEFAULT;
             }
