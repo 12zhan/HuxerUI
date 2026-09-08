@@ -2,10 +2,17 @@
 
 #include <array>
 #include <cstdint>
+#include <fstream>
+#include <ostream>
+#include <random>
 #include <stdexcept>
 #include <string>
 
 #include "process_runner.h"
+
+#include <cmrc/cmrc.hpp>
+
+CMRC_DECLARE(huxerui_cli_installers);
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -136,6 +143,105 @@ std::filesystem::path ResolveHuxerUISource(const std::filesystem::path& path) {
     throw std::runtime_error("HuxerUI source checkout is invalid: " + source.string());
   }
   return source;
+}
+
+void ValidateSdkUpdate(const SdkLocation& sdk, const std::filesystem::path& executable_path) {
+  if (!sdk.home.empty() && IsSourceHome(sdk.home)) {
+    throw std::runtime_error("HuxerUI source checkouts must be updated through the source workflow");
+  }
+  if (sdk.home.empty() || !IsInstalledHome(sdk.home)) {
+    throw std::runtime_error("HuxerUI update requires an installed SDK");
+  }
+#if defined(_WIN32)
+  constexpr std::string_view executable_name = "huxerui.exe";
+#else
+  constexpr std::string_view executable_name = "huxerui";
+#endif
+  std::error_code error;
+  if (!std::filesystem::equivalent(executable_path, sdk.home / "bin" / executable_name, error) || error) {
+    throw std::runtime_error("HuxerUI CLI and HUXERUI_HOME select different installations; use the selected SDK's "
+                             "bin/huxerui or correct HUXERUI_HOME");
+  }
+}
+
+int UpdateSdk(const SdkLocation& sdk, std::string_view target_version, bool check_only, bool assume_yes,
+              std::ostream& output) {
+  ValidateSdkUpdate(sdk, ExecutablePath({}));
+  std::random_device random;
+  std::filesystem::path directory;
+  for (int attempt = 0; attempt < 16; ++attempt) {
+    const auto candidate = std::filesystem::temp_directory_path() / ("huxerui-update-" + std::to_string(random()));
+    if (std::filesystem::create_directory(candidate)) {
+      directory = candidate;
+      break;
+    }
+  }
+  if (directory.empty()) {
+    throw std::runtime_error("HuxerUI cannot create an updater temporary directory");
+  }
+  bool handed_off = false;
+  const auto cleanup = [&] {
+    if (!handed_off) {
+      std::error_code error;
+      std::filesystem::remove_all(directory, error);
+    }
+  };
+  try {
+    std::filesystem::permissions(directory, std::filesystem::perms::owner_all);
+#if defined(_WIN32)
+    constexpr std::string_view script_name = "install.ps1";
+    ProcessCommand command{"powershell.exe", {"-NoProfile", "-ExecutionPolicy", "Bypass", "-File"}, directory};
+#else
+    constexpr std::string_view script_name = "install.sh";
+    ProcessCommand command{"sh", {}, directory};
+#endif
+    const auto resource = cmrc::huxerui_cli_installers::get_filesystem().open(std::string(script_name));
+    const auto script = directory / script_name;
+    std::ofstream stream(script, std::ios::binary);
+    stream.write(resource.begin(), resource.end() - resource.begin());
+    stream.close();
+    if (!stream) {
+      throw std::runtime_error("HuxerUI cannot write the temporary installer");
+    }
+    command.arguments.push_back(script.string());
+#if defined(_WIN32)
+    command.arguments.insert(command.arguments.end(), {"-Update", "-Prefix", sdk.home.string(), "-WaitForCli",
+                                                       std::to_string(GetCurrentProcessId())});
+    if (check_only) {
+      command.arguments.push_back("-Check");
+    }
+    if (assume_yes) {
+      command.arguments.push_back("-Yes");
+    }
+    if (!target_version.empty()) {
+      command.arguments.insert(command.arguments.end(), {"-Version", std::string(target_version)});
+    }
+#else
+    command.arguments.insert(command.arguments.end(), {"--update", "--prefix", sdk.home.string()});
+    if (check_only) {
+      command.arguments.push_back("--check");
+    }
+    if (assume_yes) {
+      command.arguments.push_back("--yes");
+    }
+    if (!target_version.empty()) {
+      command.arguments.insert(command.arguments.end(), {"--version", std::string(target_version)});
+    }
+#endif
+    output.flush();
+    const int result = RunProcess(command);
+#if defined(_WIN32)
+    if (result == 10) {
+      handed_off = true;
+      output << "HuxerUI update handed off; final result: " << (directory / "update.log").string() << '\n';
+    }
+#endif
+    cleanup();
+    return handed_off ? 0 : result;
+  } catch (...) {
+    cleanup();
+    throw;
+  }
 }
 
 std::filesystem::path ResolveApplicationDevelopmentSkill(const std::filesystem::path& huxerui_home) {

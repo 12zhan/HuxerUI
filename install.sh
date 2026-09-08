@@ -12,6 +12,10 @@ profile=""
 archive=""
 assume_yes=false
 uninstall=false
+update=false
+check=false
+explicit_version=false
+lock_directory=""
 temporary_directory=""
 staging_directory=""
 backup_directory=""
@@ -22,6 +26,7 @@ usage() {
 Usage:
   install.sh [--version <version>] [--prefix <path>] [--profile <path>] [--archive <path>] [--yes]
   install.sh --uninstall [--prefix <path>] [--profile <path>] [--yes]
+  install.sh --update --prefix <path> [--version <version>] [--check] [--yes]
 EOF
 }
 
@@ -48,6 +53,9 @@ cleanup() {
       printf 'HuxerUI installer: previous SDK remains at %s\n' "$backup_directory" >&2
     fi
   fi
+  if [ -n "$lock_directory" ]; then
+    rmdir "$lock_directory" || true
+  fi
 }
 
 trap cleanup EXIT
@@ -62,6 +70,7 @@ while [ "$#" -gt 0 ]; do
   --version)
     require_value "$@"
     version=$2
+    explicit_version=true
     shift 2
     ;;
   --prefix)
@@ -87,6 +96,14 @@ while [ "$#" -gt 0 ]; do
     uninstall=true
     shift
     ;;
+  --update)
+    update=true
+    shift
+    ;;
+  --check)
+    check=true
+    shift
+    ;;
   --help | -h)
     usage
     exit 0
@@ -96,6 +113,14 @@ while [ "$#" -gt 0 ]; do
     ;;
   esac
 done
+
+if [ "$check" = true ] && [ "$update" != true ]; then
+  fail "--check requires --update"
+fi
+if [ "$update" = true ]; then
+  [ -n "$prefix" ] || fail "--update requires --prefix"
+  [ "$uninstall" = false ] || fail "--update cannot be combined with --uninstall"
+fi
 
 if [ "$uninstall" = true ] && { [ -n "$version" ] || [ -n "$archive" ]; }; then
   fail "--uninstall cannot be combined with --version or --archive"
@@ -211,6 +236,28 @@ is_sdk() {
     [ -f "$sdk_root/share/huxerui/resources/huxerui/resources.bin" ]
 }
 
+acquire_lock() {
+  [ ! -L "$prefix" ] || fail "installation prefix must not be a symbolic link: $prefix"
+  mkdir "$prefix.huxerui-lock" 2>/dev/null ||
+    fail "another installer may be using this SDK; inspect $prefix.huxerui-lock before retrying"
+  lock_directory="$prefix.huxerui-lock"
+}
+
+sdk_version() {
+  sdk_output=$(HUXERUI_HOME="$1" "$1/bin/huxerui" --version) || fail "SDK CLI cannot run: $1"
+  case "$sdk_output" in
+  "huxerui "*) printf '%s\n' "${sdk_output#huxerui }" ;;
+  *) fail "SDK CLI returned an invalid version: $1" ;;
+  esac
+}
+
+validate_version() {
+  printf '%s\n' "$1" | LC_ALL=C awk '
+    /^[0-9]+\.[0-9]+\.[0-9]+$/ { valid = 1 }
+    END { exit !valid }
+  ' || fail "expected a major.minor.patch release version: $1"
+}
+
 shell_quote() {
   printf "'"
   printf '%s' "$1" | sed "s/'/'\\\\''/g"
@@ -290,6 +337,7 @@ if [ "$uninstall" = true ]; then
   is_sdk "$prefix" || fail "refusing to remove a directory that is not a HuxerUI SDK: $prefix"
   printf 'Uninstall HuxerUI SDK\n  SDK: %s\n  Profile: %s\n' "$prefix" "$profile"
   confirm
+  acquire_lock
   remove_owned_profile_environment
   rm -rf "$prefix"
   printf 'HuxerUI SDK removed from %s\n' "$prefix"
@@ -298,6 +346,12 @@ fi
 
 if [ -d "$prefix" ] && ! is_sdk "$prefix"; then
   fail "installation prefix exists but is not a HuxerUI SDK: $prefix"
+fi
+if [ "$update" = true ]; then
+  is_sdk "$prefix" || fail "--update requires an installed HuxerUI SDK: $prefix"
+  [ ! -f "$prefix/CMakeLists.txt" ] || fail "refusing to update a source checkout"
+  current_version=$(sdk_version "$prefix")
+  validate_version "$current_version"
 fi
 
 release_tag=""
@@ -335,8 +389,42 @@ huxerui-sdk-*-$host_system-$host_architecture.tar.gz) ;;
 *) fail "archive does not match this host: $archive_name" ;;
 esac
 
-printf 'Install HuxerUI SDK\n  Archive: %s\n  SDK: %s\n  Profile: %s\n' "$archive_display" "$prefix" "$profile"
+if [ "$update" = true ]; then
+  version=${archive_name#huxerui-sdk-}
+  version=${version%-$host_system-$host_architecture.tar.gz}
+  validate_version "$version"
+  printf 'Update HuxerUI SDK\n  SDK: %s\n  Current: %s\n  Target: %s\n  Package: %s-%s\n' \
+    "$prefix" "$current_version" "$version" "$host_system" "$host_architecture"
+  if [ "$version" = "$current_version" ]; then
+    printf 'HuxerUI SDK is already at the requested version.\n'
+    exit 0
+  fi
+  if [ "$explicit_version" = false ] && [ -z "$archive" ] &&
+    awk -v current="$current_version" -v target="$version" 'BEGIN {
+      split(current, a, "."); split(target, b, ".")
+      for (i = 1; i <= 3; ++i) {
+        if (a[i] + 0 > b[i] + 0) exit 0
+        if (a[i] + 0 < b[i] + 0) exit 1
+      }
+      exit 1
+    }'; then
+    printf 'The installed SDK is newer; use --version to explicitly downgrade.\n'
+    exit 0
+  fi
+  if [ "$check" = true ]; then
+    printf 'HuxerUI SDK update available.\n'
+    exit 0
+  fi
+  printf 'The entire SDK will be replaced, including local modifications. Stop SDK builds and tools first.\n'
+else
+  printf 'Install HuxerUI SDK\n  Archive: %s\n  SDK: %s\n  Profile: %s\n' "$archive_display" "$prefix" "$profile"
+fi
 confirm
+if [ "$update" = true ]; then
+  normalize_prefix
+  acquire_lock
+  [ "$(sdk_version "$prefix")" = "$current_version" ] || fail "SDK changed during the update check; retry"
+fi
 
 temporary_directory=$(mktemp -d "${TMPDIR:-/tmp}/huxerui-sdk.XXXXXX")
 if [ -z "$archive" ]; then
@@ -378,9 +466,37 @@ extract_directory="$temporary_directory/extract"
 mkdir -p "$extract_directory"
 tar -xzf "$archive" -C "$extract_directory" || fail "archive extraction failed"
 extracted_sdk="$extract_directory/$archive_root"
+extracted_sdk=$(cd "$extracted_sdk" && pwd -P) || fail "archive SDK directory is missing"
+find "$extracted_sdk" -type l -exec sh -c '
+  root=$1
+  failures=$2
+  shift 2
+  for link do
+    target=$(readlink "$link") || { printf "invalid link\n" >>"$failures"; continue; }
+    case "$target" in
+    /*) printf "absolute link\n" >>"$failures"; continue ;;
+    esac
+    if [ -d "$link" ]; then
+      resolved=$(cd "$link" && pwd -P) || resolved=""
+    else
+      resolved=$(cd "$(dirname "$link")/$(dirname "$target")" && pwd -P) || resolved=""
+    fi
+    case "$resolved/" in
+    "$root/"*) ;;
+    *) printf "escaping link\n" >>"$failures" ;;
+    esac
+  done
+' sh "$extracted_sdk" "$temporary_directory/invalid-links" {} +
+[ ! -f "$temporary_directory/invalid-links" ] || fail "archive contains an unsafe symbolic link"
 is_sdk "$extracted_sdk" || fail "archive does not contain a complete HuxerUI SDK"
+if [ "$update" = true ]; then
+  [ "$(sdk_version "$extracted_sdk")" = "$version" ] || fail "archive SDK version does not match $version"
+fi
 
 normalize_prefix
+if [ -z "$lock_directory" ]; then
+  acquire_lock
+fi
 staging_directory=$(mktemp -d "$(dirname "$prefix")/.huxerui-install.XXXXXX")
 rmdir "$staging_directory"
 mv "$extracted_sdk" "$staging_directory"
@@ -402,7 +518,9 @@ fi
 staging_directory=""
 published_directory="$prefix"
 
-if ! rewrite_profile add; then
+if [ "$update" = true ]; then
+  [ "$(sdk_version "$prefix")" = "$version" ] || fail "installed SDK version does not match $version"
+elif ! rewrite_profile add; then
   rm -rf "$prefix"
   published_directory=""
   if [ -n "$backup_directory" ] && [ -d "$backup_directory" ]; then
@@ -412,11 +530,17 @@ if ! rewrite_profile add; then
   fail "profile contains an incomplete HuxerUI environment block: $profile"
 fi
 
+# Once publication succeeds, cleanup must not roll back to a partially removed backup.
+published_directory=""
 if [ -n "$backup_directory" ] && [ -d "$backup_directory" ]; then
-  rm -rf "$backup_directory"
+  if ! rm -rf "$backup_directory"; then
+    printf 'HuxerUI installer: could not completely remove old SDK backup; remaining files at %s\n' \
+      "$backup_directory" >&2
+  fi
   backup_directory=""
 fi
-published_directory=""
 
 printf 'HuxerUI SDK installed at %s\n' "$prefix"
-printf 'Restart the terminal or run: . %s\n' "$profile"
+if [ "$update" = false ]; then
+  printf 'Restart the terminal or run: . %s\n' "$profile"
+fi

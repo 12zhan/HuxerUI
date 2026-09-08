@@ -165,6 +165,46 @@ TEST_CASE("HuxerUICliValidatesExplicitSourceCheckouts") {
   REQUIRE_THROWS_AS(huxerui::cli::ResolveHuxerUISource(temporary.Path()), std::runtime_error);
 }
 
+TEST_CASE("HuxerUICliValidatesUpdateOptionsBeforeLocatingSdk") {
+  TemporaryDirectory temporary;
+  REQUIRE(Invoke(temporary.Path(), {"--help"}).output.find("huxerui update") != std::string::npos);
+  for (const auto arguments : {std::initializer_list<std::string_view>{"update", "--version"},
+                               {"update", "--version", ""}, {"update", "--version", "--check"},
+                               {"update", "--check", "--check"}, {"update", "--yes", "--yes"},
+                               {"update", "--prefix", "elsewhere"}, {"update", "--unknown"}}) {
+    REQUIRE(Invoke(temporary.Path(), arguments).result == 2);
+  }
+  const auto missing = Invoke(temporary.Path(), {"update", "--check"});
+  REQUIRE(missing.result == 1);
+  REQUIRE(missing.error.find("requires an installed SDK") != std::string::npos);
+}
+
+TEST_CASE("HuxerUICliUpdateRequiresTheSelectedInstallationsExecutable") {
+  using namespace huxerui::cli;
+  TemporaryDirectory temporary;
+  const auto root = temporary.Path();
+  for (const auto path : {"bin", "include/huxerui", "lib/cmake/HuxerUI", "share/huxerui/tools",
+                          "share/huxerui/resources/huxerui", "share/huxerui/skills/huxerui-app-development"}) {
+    std::filesystem::create_directories(root / path);
+  }
+#if defined(_WIN32)
+  const auto executable = root / "bin/huxerui.exe";
+#else
+  const auto executable = root / "bin/huxerui";
+#endif
+  for (const auto& path : {executable, root / "include/huxerui/huxerui.h",
+                          root / "lib/cmake/HuxerUI/HuxerUIConfig.cmake",
+                          root / "share/huxerui/resources/huxerui/resources.bin"}) {
+    std::ofstream(path) << "fixture";
+  }
+  const SdkLocation sdk{root, SdkLocationSource::Environment};
+  REQUIRE_NOTHROW(ValidateSdkUpdate(sdk, executable));
+  REQUIRE_THROWS_WITH(ValidateSdkUpdate(sdk, ExecutablePath({})),
+                      Catch::Matchers::ContainsSubstring("different installations"));
+  REQUIRE_THROWS_WITH(ValidateSdkUpdate({HUXERUI_TEST_SOURCE_DIRECTORY, SdkLocationSource::Environment}, executable),
+                      Catch::Matchers::ContainsSubstring("source workflow"));
+}
+
 TEST_CASE("HuxerUICliRejectsInvalidSourceBuildOptions") {
   TemporaryDirectory temporary;
   const Invocation missing = Invoke(temporary.Path(), {"build", "windows", "--source"});
@@ -584,6 +624,24 @@ TEST_CASE("HuxerUICliUsesUnqualifiedLibraryTargetsDirectly") {
           std::string::npos);
 }
 
+TEST_CASE("HuxerUICliAllowsHuxerUILibraryTargetPrefixes") {
+  for (const std::string_view target : {"HuxerUI::Camera", "huxerui::Camera", "HUXERUI::Camera"}) {
+    CAPTURE(target);
+    TemporaryDirectory temporary;
+    const Invocation invocation = Invoke(temporary.Path(),
+        {"create", "library", "CameraKit", "--target", target, "--agent", "none"});
+    REQUIRE(invocation.result == 0);
+    const std::filesystem::path library = temporary.Path() / "CameraKit";
+    REQUIRE(std::filesystem::is_regular_file(library / "include/huxerui/camera.h"));
+    REQUIRE(Read(library / "CMakeLists.txt").find(
+                "add_library(" + std::string(target) + " ALIAS huxerui_camera)") != std::string::npos);
+    const auto project_template = huxerui::cli::LoadProjectTemplate(huxerui::cli::DiscoverProject(library));
+    const auto* identity = std::get_if<huxerui::cli::LibraryTemplateContext>(&project_template);
+    REQUIRE(identity != nullptr);
+    REQUIRE(identity->public_target == target);
+  }
+}
+
 TEST_CASE("HuxerUICliRejectsInvalidLibraryPublicIdentitiesBeforePublication") {
   TemporaryDirectory temporary;
   REQUIRE(Invoke(temporary.Path(), {"create", "library", "InvalidNamespace", "--namespace", "class"}).result ==
@@ -595,9 +653,6 @@ TEST_CASE("HuxerUICliRejectsInvalidLibraryPublicIdentitiesBeforePublication") {
   REQUIRE(Invoke(temporary.Path(), {"create", "library", "InvalidTarget", "--target", "Scave::Camera::View"})
               .result == 2);
   REQUIRE_FALSE(std::filesystem::exists(temporary.Path() / "InvalidTarget"));
-  REQUIRE(Invoke(temporary.Path(), {"create", "library", "ReservedTarget", "--target", "HuxerUI::Camera"})
-              .result == 2);
-  REQUIRE_FALSE(std::filesystem::exists(temporary.Path() / "ReservedTarget"));
   REQUIRE(Invoke(temporary.Path(), {"create", "library", "EmptyTarget", "--target", ""}).result == 2);
   REQUIRE_FALSE(std::filesystem::exists(temporary.Path() / "EmptyTarget"));
   REQUIRE(Invoke(temporary.Path(), {"create", "app", "AppNamespace", "--namespace", "app", "--platform", "macos"})

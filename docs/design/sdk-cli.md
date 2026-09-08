@@ -290,6 +290,35 @@ Dependencies that require manual interaction, account acceptance, platform licen
 `setup` does not install, select, upgrade, or remove HuxerUI itself.
 That remains the responsibility of the SDK installer and avoids a recursive dependency in which the installed CLI owns its own installation.
 
+### Update
+
+```text
+huxerui update [--check] [--version <version>] [--yes]
+```
+
+`update` is a project-independent entry point into the SDK installer, not a second installation engine.
+The command uses normal SDK discovery but rejects source checkouts and a selected SDK whose `bin/huxerui` is not the running executable.
+The CLI embeds the repository's installation scripts at build time, extracts the applicable script to a private temporary directory, and invokes it with explicit arguments.
+It does not download executable scripts from a moving latest-release URL or link against the framework HTTP implementation.
+
+The installer owns release resolution, version comparison, confirmation, downloads, checksum and archive checks, staging, publication, and failure recovery.
+Update mode requires an existing SDK and never rewrites persistent environment selection or application files.
+Latest-release selection does not downgrade; explicit `major.minor.patch` versions may downgrade, and the same version does not reinstall.
+`--check` reports the comparison without downloading an archive or writing the installation.
+The current version comes from the selected SDK CLI, not a separate SDK manifest.
+
+Install, update, and uninstall serialize mutation through a per-prefix lock.
+An update verifies the replacement CLI's version before and after publication and preserves the old SDK until publication succeeds.
+The Unix installer ends the rollback phase before deleting the old backup; backup cleanup failure warns about remaining files without reverting a successfully published SDK.
+This provides recovery from handled failures, not atomic recovery from power loss or forced termination.
+The user must stop other SDK tools and builds before updating; the installer does not terminate them.
+
+On Windows, the embedded installer launches a temporary PowerShell worker after confirmation and returns a distinct handoff status.
+The worker waits for the original CLI to exit, uses the already selected release version, and records its result in a transcript beside the temporary script.
+The CLI reports the transcript location and treats a successful handoff separately from a completed update; its zero exit status cannot attest to the worker's eventual installation result.
+The temporary worker directory is retained for diagnosis.
+Other hosts run the installer synchronously and return its result.
+
 ### Devices
 
 Device discovery does not require a project.
@@ -509,9 +538,11 @@ Platform packages may later provide the same SDK-only behavior through operating
 ```text
 install.sh [--version <version>] [--prefix <path>] [--profile <path>] [--archive <path>] [--yes]
 install.sh --uninstall [--prefix <path>] [--profile <path>] [--yes]
+install.sh --update --prefix <path> [--version <version>] [--check] [--yes]
 
 install.ps1 [-Version <version>] [-Prefix <path>] [-Archive <path>] [-Yes]
 install.ps1 -Uninstall [-Prefix <path>] [-Yes]
+install.ps1 -Update -Prefix <path> [-Version <version>] [-Check] [-Yes]
 ```
 
 Without an explicit version, an installer resolves the latest release from `https://github.com/HuxerUI/HuxerUI`.
@@ -687,7 +718,8 @@ For example, `CameraKit`, `camera-kit`, and `camera_kit` derive `camera_kit`; le
 `--namespace` owns the exact C++ namespace used by generated declarations and definitions.
 It accepts one or more non-reserved ASCII C++ identifiers separated by `::` and otherwise preserves the supplied spelling.
 `--target` owns the exact consumer-facing CMake target used by `huxerui_use_library`.
-It accepts either one ASCII letter-and-digit segment or exactly two such segments separated by `::`; a qualified target cannot claim the framework-owned `HuxerUI::` package.
+It accepts either one ASCII letter-and-digit segment or exactly two such segments separated by `::`, including targets such as `HuxerUI::Camera`.
+The CLI does not reserve package prefixes; generated targets must still avoid actual CMake target collisions.
 The default namespace is the project-local snake-case identifier.
 The default public target removes project-name separators and capitalizes lowercase segment starts while preserving intentional capitalization, so `CameraKit` generates `CameraKit::CameraKit` and `HuxerUI-CameraKit` generates `HuxerUICameraKit::HuxerUICameraKit`.
 

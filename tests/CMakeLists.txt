@@ -474,6 +474,12 @@ if (TARGET huxerui_cli_core)
             huxerui_cli_core
     )
     add_test(NAME HuxerUICliTests COMMAND huxerui_cli_tests)
+    if (UNIX AND NOT CMAKE_CROSSCOMPILING)
+        add_test(NAME HuxerUISdkUpdateTests
+                COMMAND sh "${CMAKE_CURRENT_SOURCE_DIR}/scripts/sdk_update.sh"
+                        "${HUXERUI_PROJECT_DIR}/install.sh" "$<TARGET_FILE:huxerui_cli>"
+        )
+    endif ()
 
     if (WIN32)
         set(HUXERUI_GENERATED_LIBRARY_PLATFORM windows)

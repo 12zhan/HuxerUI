@@ -13,8 +13,8 @@ file(MAKE_DIRECTORY "${TEST_ROOT}")
 
 execute_process(
         COMMAND "${CLI_EXECUTABLE}" create library CameraKit
-                --namespace scave::camera
-                --target Scave::Camera
+                --namespace huxerui::camera
+                --target HuxerUI::Camera
                 --platform "${PLATFORM_ID}"
                 --agent none
         WORKING_DIRECTORY "${TEST_ROOT}"
@@ -59,7 +59,7 @@ if (NOT EXISTS "${LIBRARY_GRAPH}")
     message(FATAL_ERROR "Generated library Preview did not emit its library graph")
 endif ()
 file(READ "${LIBRARY_GRAPH}" LIBRARY_GRAPH_CONTENT)
-string(FIND "${LIBRARY_GRAPH_CONTENT}" "\"target\": \"Scave::Camera\"" TARGET_POSITION)
+string(FIND "${LIBRARY_GRAPH_CONTENT}" "\"target\": \"HuxerUI::Camera\"" TARGET_POSITION)
 if (TARGET_POSITION EQUAL -1)
     message(FATAL_ERROR "Generated library graph did not retain the requested public target")
 endif ()

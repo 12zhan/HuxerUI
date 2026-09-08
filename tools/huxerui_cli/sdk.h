@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <iosfwd>
 #include <string_view>
 
 namespace huxerui::cli {
@@ -37,6 +38,22 @@ struct SdkLocation {
 /// @return The selected SDK location, or a location with source `Missing` when no SDK is available.
 /// @throws std::runtime_error if `HUXERUI_HOME` is defined but does not name a valid HuxerUI SDK or source checkout.
 [[nodiscard]] SdkLocation LocateHuxerUIHome(const std::filesystem::path& executable_path);
+
+/// Rejects source checkouts, missing installations, and a CLI belonging to another SDK.
+/// @param sdk Selected SDK location.
+/// @param executable_path Running CLI executable, resolved independently of HUXERUI_HOME.
+/// @throws std::runtime_error if replacing the selected SDK would be ambiguous or unsafe.
+void ValidateSdkUpdate(const SdkLocation& sdk, const std::filesystem::path& executable_path);
+
+/// Runs the embedded SDK installer without changing persistent environment selection.
+/// @param sdk Installed SDK selected by the running CLI.
+/// @param target_version Explicit release version, or empty for the latest stable release.
+/// @param check_only Query versions without replacing the SDK.
+/// @param assume_yes Skip the installer's interactive confirmation.
+/// @param output Destination for process handoff diagnostics; the installer inherits standard streams.
+/// @return Installer exit code, or zero after a successful Windows updater handoff.
+int UpdateSdk(const SdkLocation& sdk, std::string_view target_version, bool check_only, bool assume_yes,
+              std::ostream& output);
 
 /// Resolves and validates an explicit HuxerUI source checkout.
 /// @param path Repository root, either absolute or relative to the current working directory.

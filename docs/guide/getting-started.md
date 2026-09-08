@@ -180,6 +180,7 @@ Its sibling `HuxerUIProject.cmake` contains the generated project plan, SDK disc
 
 Library names remain repository and display identities.
 `--namespace` selects the exact generated C++ namespace, while `--target` selects an unqualified or single-package-qualified public CMake target.
+Package prefixes such as `HuxerUI::` are allowed; the generated targets must not collide with existing CMake targets.
 For example, `--namespace scave::camera --target Scave::Camera` generates `<scave/camera.h>`, `scave::camera::Install`, and the consumer target `Scave::Camera`.
 When omitted, both values retain the name-derived defaults.
 

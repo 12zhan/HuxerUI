@@ -117,21 +117,6 @@ bool IsAsciiDigit(char character) noexcept {
   return character >= '0' && character <= '9';
 }
 
-bool AsciiCaseEqual(std::string_view left, std::string_view right) noexcept {
-  if (left.size() != right.size()) {
-    return false;
-  }
-  for (std::size_t index = 0; index < left.size(); ++index) {
-    const char left_character = IsAsciiUpper(left[index]) ? static_cast<char>(left[index] - 'A' + 'a') : left[index];
-    const char right_character =
-        IsAsciiUpper(right[index]) ? static_cast<char>(right[index] - 'A' + 'a') : right[index];
-    if (left_character != right_character) {
-      return false;
-    }
-  }
-  return true;
-}
-
 std::string AsciiLower(std::string_view value) {
   std::string result(value);
   for (char& character : result) {
@@ -225,7 +210,7 @@ bool IsValidLibraryPublicTarget(std::string_view value) noexcept {
     return false;
   }
   const std::string_view package = value.substr(0, separator);
-  return !AsciiCaseEqual(package, "huxerui") && IsValidLibraryTargetSegment(package) &&
+  return IsValidLibraryTargetSegment(package) &&
          IsValidLibraryTargetSegment(value.substr(separator + 2));
 }
 
@@ -535,7 +520,7 @@ LibraryTemplateContext MakeLibraryTemplateContext(std::string_view project_name,
       public_target.empty() ? product + "::" + product : std::string(public_target);
   if (!IsValidLibraryPublicTarget(resolved_target)) {
     throw std::invalid_argument("library target must contain one or two ASCII letter-and-digit segments "
-                                "separated by :: and must not use the HuxerUI package namespace");
+                                "separated by ::");
   }
   return {std::move(project), resolved_namespace, resolved_target};
 }

@@ -54,6 +54,7 @@ void PrintHelp(std::ostream& output) {
          << "  huxerui platform add <platform-list>\n"
          << "  huxerui doctor [platform-list]\n"
          << "  huxerui setup <platform-list> [--yes]\n"
+         << "  huxerui update [--check] [--version <version>] [--yes]\n"
          << "  huxerui devices [platform]\n"
          << "  huxerui build [platform-list] [--device <id>] [--profile debug|release] [--generator <name>] "
             "[--source <path>] [--java-home <path>]\n"
@@ -1068,6 +1069,28 @@ int RunOpen(std::span<const std::string_view> arguments, const std::filesystem::
   return 0;
 }
 
+int RunUpdate(std::span<const std::string_view> arguments, const SdkLocation& sdk, std::ostream& output) {
+  bool check = false;
+  bool yes = false;
+  std::string_view target_version;
+  for (std::size_t index = 1; index < arguments.size(); ++index) {
+    const auto argument = arguments[index];
+    if (argument == "--check" && !check) {
+      check = true;
+    } else if (argument == "--yes" && !yes) {
+      yes = true;
+    } else if (argument == "--version" && target_version.empty()) {
+      if (++index == arguments.size() || arguments[index].empty() || arguments[index].starts_with('-')) {
+        throw UsageError("update --version requires a release version");
+      }
+      target_version = arguments[index];
+    } else {
+      throw UsageError("unknown or repeated update option: " + std::string(argument));
+    }
+  }
+  return UpdateSdk(sdk, target_version, check, yes, output);
+}
+
 } // namespace
 
 int Run(std::span<const std::string_view> arguments, const std::filesystem::path& working_directory,
@@ -1092,6 +1115,9 @@ int Run(std::span<const std::string_view> arguments, const std::filesystem::path
     }
     if (arguments[0] == "setup") {
       return RunSetup(arguments, sdk, input, output);
+    }
+    if (arguments[0] == "update") {
+      return RunUpdate(arguments, sdk, output);
     }
     if (arguments[0] == "devices") {
       return RunDevices(arguments, output);

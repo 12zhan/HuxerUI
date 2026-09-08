@@ -15,6 +15,12 @@ cmrc_add_resource_library(huxerui_cli_template_resources
         WHENCE "${CMAKE_CURRENT_SOURCE_DIR}/templates"
         ${HUXERUI_CLI_TEMPLATE_FILES}
 )
+cmrc_add_resource_library(huxerui_cli_installer_resources
+        NAMESPACE huxerui_cli_installers
+        WHENCE "${CMAKE_CURRENT_SOURCE_DIR}/../.."
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../install.sh"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../install.ps1"
+)
 
 add_library(huxerui_cli_core STATIC
         cli.cpp
@@ -37,7 +43,7 @@ target_compile_definitions(huxerui_cli_core PRIVATE
 target_include_directories(huxerui_cli_core PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}"
 )
-target_link_libraries(huxerui_cli_core PRIVATE huxerui_cli_template_resources)
+target_link_libraries(huxerui_cli_core PRIVATE huxerui_cli_template_resources huxerui_cli_installer_resources)
 target_compile_options(huxerui_cli_core PRIVATE
         "$<$<CXX_COMPILER_ID:MSVC>:/W4>"
         "$<$<CXX_COMPILER_ID:MSVC>:/permissive->"
