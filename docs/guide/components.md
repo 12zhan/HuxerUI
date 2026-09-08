@@ -22,12 +22,12 @@ TextMeasurer has no implicit Environment lookup; pass a locale explicitly when c
 
 ### Custom fonts
 
-`RegisterFont` makes font file bytes available to `Font::Named` on every platform renderer before the system family table.
-Data comes from a `RawAsset` or a readable file path, and registration reads the payload immediately; the registration is process-wide and lives for the app lifetime.
+`Font::FromRawAsset` and `Font::FromFile` create font values from font file bytes, and every platform renderer resolves them before the system family table.
+Data comes from a `RawAsset` or a readable file path, and construction reads the payload immediately; identical payload bytes share one registration, and the registration is process-wide for the app lifetime.
 
 ```cpp
-RegisterFont("MapleMono", UseRawResource(RawResource("app", "raw/fonts/MapleMono.ttf")));
-return Text("Maple").Style(TextStyle{.font = Font::Named("MapleMono", 14.0F)});
+auto raw = UseRawResource(RawResource("app", "raw/fonts/MapleMono.ttf"));
+return Text("Maple").Style(TextStyle{.font = Font::FromRawAsset(raw, 14.0F)});
 ```
 
 Unregistered families keep the per-platform system lookup.

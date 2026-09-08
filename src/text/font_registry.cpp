@@ -1,11 +1,14 @@
-#include <huxerui/font.h>
+#include "font_registry_internal.h"
+
 #include <huxerui/data.h>
+#include <huxerui/font.h>
 #include <huxerui/resource.h>
+#include <huxerui/text.h>
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <fstream>
-#include <iterator>
 #include <map>
 #include <mutex>
 #include <stdexcept>
@@ -41,7 +44,28 @@ std::vector<std::byte> ReadFileBytes(std::string_view path) {
   }
   return bytes;
 }
+
+// FNV-1a over the payload; collisions collapse distinct fonts onto one name,
+// which 64 bits makes negligible for application font sets.
+std::uint64_t HashBytes(const std::vector<std::byte>& bytes) {
+  std::uint64_t hash = 14695981039346656037ULL;
+  for (const std::byte byte : bytes) {
+    hash ^= static_cast<std::uint64_t>(byte);
+    hash *= 1099511628211ULL;
+  }
+  return hash;
+}
 }  // namespace
+
+std::string InternFontBytes(std::vector<std::byte> bytes) {
+  if (bytes.empty()) {
+    throw std::invalid_argument("HuxerUI font payload must not be empty");
+  }
+  const std::string name = "huxerui-font-" + std::to_string(HashBytes(bytes));
+  const std::scoped_lock lock(g_font_registry_mutex);
+  g_font_registry.insert_or_assign(name, std::move(bytes));
+  return name;
+}
 
 std::vector<std::byte> RegisteredFontData(std::string_view family) {
   const std::scoped_lock lock(g_font_registry_mutex);
@@ -55,38 +79,25 @@ std::vector<std::byte> RegisteredFontData(std::string_view family) {
 
 namespace huxerui {
 
-bool RegisterFont(std::string_view family, const RawAsset& data) {
-  if (family.empty()) {
-    throw std::invalid_argument("HuxerUI RegisterFont family must not be empty");
-  }
+Font Font::FromRawAsset(const RawAsset& data, float size) {
   Bytes bytes;
   try {
     bytes = data.ReadBytes(true);
-  } catch (const std::exception&) {
-    return false;
+  } catch (const std::exception& exception) {
+    throw std::invalid_argument(std::string("HuxerUI Font::FromRawAsset could not read font data: ") + exception.what());
   }
   if (bytes.empty()) {
-    return false;
+    throw std::invalid_argument("HuxerUI Font::FromRawAsset font data must not be empty");
   }
-  const std::scoped_lock lock(detail::g_font_registry_mutex);
-  detail::g_font_registry.insert_or_assign(std::string(family), std::move(bytes));
-  return true;
+  return Named(detail::InternFontBytes(std::move(bytes)), size);
 }
 
-bool RegisterFont(std::string_view family, std::string_view path) {
-  if (family.empty()) {
-    throw std::invalid_argument("HuxerUI RegisterFont family must not be empty");
-  }
-  if (path.empty()) {
-    throw std::invalid_argument("HuxerUI RegisterFont path must not be empty");
-  }
+Font Font::FromFile(std::string_view path, float size) {
   std::vector<std::byte> bytes = detail::ReadFileBytes(path);
   if (bytes.empty()) {
-    return false;
+    throw std::invalid_argument("HuxerUI Font::FromFile could not read a non-empty font file");
   }
-  const std::scoped_lock lock(detail::g_font_registry_mutex);
-  detail::g_font_registry.insert_or_assign(std::string(family), std::move(bytes));
-  return true;
+  return Named(detail::InternFontBytes(std::move(bytes)), size);
 }
 
 }  // namespace huxerui

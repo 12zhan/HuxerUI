@@ -119,6 +119,11 @@ enum class FontSlant {
 /// const Font title = Font::Named("Inter", 28.0F).WithWeight(FontWeight::Bold);
 /// const Font code = Font::Monospace(14.0F).WithSlant(FontSlant::Italic);
 /// @endcode
+/// Font file payload carrier; defined in resource.h. Referenced here so font
+/// values can be created directly from registered resource data.
+class RawAsset;
+
+/// A text font request: family, size, weight, and slant.
 class Font {
 public:
   Font() = default;
@@ -139,6 +144,24 @@ public:
   /// @return A regular, upright named font request.
   /// @throws std::invalid_argument If family is empty or size is not finite and positive.
   static Font Named(std::string family, float size = 14.0F);
+  /// Creates a font from raw font-file bytes (ttf/otf) carried by a RawAsset.
+  /// The payload registers into the process font registry under a stable
+  /// generated family name, so every platform renderer resolves it before the
+  /// system family table; identical payload bytes share one registration.
+  /// @param data RawAsset carrying the font file bytes.
+  /// @param size Finite, positive font size in logical units.
+  /// @return A regular, upright font request for the registered payload.
+  /// @throws std::invalid_argument If the payload cannot be read, is empty, or
+  /// size is not finite and positive.
+  static Font FromRawAsset(const RawAsset& data, float size = 14.0F);
+  /// Creates a font from a font file on the local filesystem. The file is read
+  /// when this factory runs; identical file contents share one registration.
+  /// @param path Readable font file path.
+  /// @param size Finite, positive font size in logical units.
+  /// @return A regular, upright font request for the registered payload.
+  /// @throws std::invalid_argument If the file cannot be read, is empty, or
+  /// size is not finite and positive.
+  static Font FromFile(std::string_view path, float size = 14.0F);
 
   /// Returns a resized request, preserving family, weight, and slant.
   /// @param size Finite, positive font size in logical units.
