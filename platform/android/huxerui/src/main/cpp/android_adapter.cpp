@@ -1,7 +1,6 @@
 #include <huxerui/app.h>
 
 #include <android/input.h>
-#include <android/log.h>
 #include <android/asset_manager.h>
 #include <android/asset_manager_jni.h>
 #include <android/keycodes.h>
@@ -1135,9 +1134,6 @@ public:
   }
 
   void RequestShow(TextInputSessionId session_id) override {
-    // TEMPORARY DIAGNOSTIC (scroll-triggers-keyboard investigation): remove after root-causing.
-    __android_log_print(ANDROID_LOG_INFO, "HuxerUIFontDbg", "SHOW KEYBOARD session=%lld",
-        static_cast<long long>(static_cast<jlong>(session_id)));
     JNIEnv* environment = Environment();
     if (environment != nullptr && view_ != nullptr) {
       environment->CallVoidMethod(view_, request_show_text_input_, static_cast<jlong>(session_id));
@@ -1334,9 +1330,6 @@ public:
 
   void Pointer(PointerEventType type, PointerDeviceKind device_kind, std::int64_t pointer_id, float x, float y,
       PointerButton changed_button, PointerButton pressed_buttons, KeyModifiers modifiers) {
-    // TEMPORARY DIAGNOSTIC (scroll-triggers-keyboard investigation): remove after root-causing.
-    __android_log_print(ANDROID_LOG_INFO, "HuxerUIFontDbg", "POINTER type=%d x=%.0f y=%.0f",
-        static_cast<int>(type), x, y);
     runtime_.HandlePointerEvent({
         type,
         pointer_id,
