@@ -168,9 +168,6 @@ public:
     return remaining;
   }
 
-  // The payload is shared memory, so pinning the stream itself keeps fragments valid.
-  void STDMETHODCALLTYPE AddRefStream() override { AddRef(); }
-
   HRESULT STDMETHODCALLTYPE ReadFileFragment(const void** fragment_start, UINT64 file_offset, UINT64 fragment_size,
       void** fragment_context) override {
     if (!fragment_start || !fragment_context) {
