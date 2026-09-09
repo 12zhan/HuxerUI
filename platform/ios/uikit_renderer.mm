@@ -179,9 +179,12 @@ CTFontRef CreateRegisteredBase(const Font& font, CGFloat size) {
   if (provider != nullptr) {
     CFRelease(provider);
   }
-  // CGDataProvider is toll-free bridged with CFData, and the CGFont retains the data it needs.
-  CGFontRef graphics_font =
-      font_data == nullptr ? nullptr : CGFontCreateWithDataProvider((__bridge CGDataProviderRef)font_data);
+  // CGDataProviderCreateWithCFData wraps the copied bytes, and the CGFont retains the provider it needs.
+  CGDataProviderRef data_provider = font_data == nullptr ? nullptr : CGDataProviderCreateWithCFData(font_data);
+  CGFontRef graphics_font = data_provider == nullptr ? nullptr : CGFontCreateWithDataProvider(data_provider);
+  if (data_provider != nullptr) {
+    CFRelease(data_provider);
+  }
   if (font_data != nullptr) {
     CFRelease(font_data);
   }
