@@ -1,19 +1,21 @@
 #pragma once
 
-#include <cstddef>
-#include <string>
+#include <memory>
 #include <string_view>
-#include <vector>
+
+#include <huxerui/text.h>
 
 namespace huxerui::detail {
 
-/// Registers payload bytes under a stable generated family name and returns
-/// it. Identical payload bytes share one registration and one name; the
-/// registry is process-wide and lives until shutdown.
-std::string InternFontBytes(std::vector<std::byte> bytes);
+/// Family-name transport for hosts whose renderer resolves custom fonts outside C++: the Android
+/// renderer passes generated family names to Java, and Java pulls the matching bytes through a JNI
+/// export. This is not a font cache; entries hold weak handles, so payload bytes stay owned by live
+/// Font values and are reclaimed with them. Every other renderer reads the payload directly from the
+/// Font value through InternalAccess::FontPayload and never consults this table.
+void TrackFontPayload(const std::shared_ptr<const FontData>& payload);
 
-/// Returns the payload registered under family, or an empty buffer when the
-/// name is not registered.
-std::vector<std::byte> RegisteredFontData(std::string_view family);
+/// Returns the live payload recorded under family, or nullptr when the name is unknown or its
+/// payload was reclaimed together with the last Font values referencing it.
+[[nodiscard]] std::shared_ptr<const FontData> FindFontPayload(std::string_view family);
 
 }  // namespace huxerui::detail

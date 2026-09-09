@@ -22,8 +22,6 @@
 #include <variant>
 #include <vector>
 
-#include <huxerui/font.h>
-
 #include "macos_external_texture_internal.h"
 #include "graphics/path_internal.h"
 #include "graphics/paint_internal.h"
@@ -160,22 +158,23 @@ CFStringRef CreateString(std::string_view text) {
 // because span-level paths call CreateFont without the FontFor cache. The cached base stays
 // size-agnostic: the trait pipeline reapplies the requested size through
 // CTFontCreateCopyWithAttributes on every call.
-CTFontRef CreateRegisteredBase(std::string_view family, CGFloat size) {
+CTFontRef CreateRegisteredBase(const Font& font, CGFloat size) {
   static std::mutex cache_mutex;
   static std::unordered_map<std::string, CFRef<CTFontRef>> cache;
   const std::lock_guard lock(cache_mutex);
-  std::string key(family);
+  std::string key(font.FamilyName());
   const auto cached = cache.find(key);
   if (cached != cache.end()) {
     return static_cast<CTFontRef>(CFRetain(cached->second.Get()));
   }
 
-  const std::vector<std::byte> data = RegisteredFontData(family);
-  if (data.empty()) {
+  const FontData* payload = InternalAccess::FontPayload(font);
+  if (payload == nullptr) {
     return nullptr;
   }
-  // The registry buffer is local, so the provider only wraps it while Core Foundation copies the bytes.
-  CGDataProviderRef provider = CGDataProviderCreateWithData(nullptr, data.data(), data.size(), nullptr);
+  // The payload buffer is shared and immutable, so the provider only wraps it while Core Foundation copies the bytes.
+  CGDataProviderRef provider =
+      CGDataProviderCreateWithData(nullptr, payload->bytes.data(), payload->bytes.size(), nullptr);
   CFDataRef font_data = provider == nullptr ? nullptr : CGDataProviderCopyData(provider);
   if (provider != nullptr) {
     CFRelease(provider);
@@ -208,8 +207,8 @@ CTFontRef CreateFont(const Font& font) {
     base = CTFontCreateWithName(CFSTR("Menlo"), static_cast<CGFloat>(font.Size()), nullptr);
     break;
   case FontFamilyKind::Named: {
-    // Registered custom fonts supply the base font; unregistered families keep the system lookup.
-    base = CreateRegisteredBase(font.FamilyName(), static_cast<CGFloat>(font.Size()));
+    // Payload-carrying fonts supply the base font; families without payloads keep the system lookup.
+    base = CreateRegisteredBase(font, static_cast<CGFloat>(font.Size()));
     if (base == nullptr) {
       CFStringRef family = CreateString(font.FamilyName());
       base = CTFontCreateWithName(family, static_cast<CGFloat>(font.Size()), nullptr);
