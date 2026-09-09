@@ -17,7 +17,6 @@
 #include "runtime/mounted_node_internal.h"
 #include "internal_access.h"
 #include "graphics/paint_internal.h"
-#include "font_registry_internal.h"
 #include "text_internal.h"
 
 namespace huxerui {
@@ -42,12 +41,11 @@ std::uint64_t HashFontBytes(const std::vector<std::byte>& bytes) {
 
 // Builds the shared immutable payload under a content-derived family name so every platform resolves
 // the value before its system family table. Each construction owns a distinct payload instance even
-// when the bytes are identical; the weak transport record lets name-resolving hosts find the payload.
+// when the bytes are identical; hosts that resolve fonts by name receive the payload bytes through
+// their own per-view transport keyed by this family name.
 std::shared_ptr<const detail::FontData> MakeFontPayload(std::vector<std::byte> bytes) {
   const std::string family = "huxerui-font-" + std::to_string(HashFontBytes(bytes));
-  const auto payload = std::make_shared<const detail::FontData>(detail::FontData{family, std::move(bytes)});
-  detail::TrackFontPayload(payload);
-  return payload;
+  return std::make_shared<const detail::FontData>(detail::FontData{family, std::move(bytes)});
 }
 
 std::vector<std::byte> ReadFontFileBytes(std::string_view path) {

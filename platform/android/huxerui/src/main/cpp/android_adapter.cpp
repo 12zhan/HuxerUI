@@ -40,7 +40,6 @@
 #include "io/stream_internal.h"
 #include "text/text_input_internal.h"
 #include "text/text_internal.h"
-#include "text/font_registry_internal.h"
 
 namespace huxerui::detail {
 
@@ -781,6 +780,7 @@ public:
     if (environment == nullptr || view_ == nullptr) {
       return {};
     }
+    renderer_.DeliverFontData(environment, view_, font);
     jbyteArray family = ToByteArray(environment, font.FamilyName());
     if (family == nullptr) {
       return {};
@@ -825,6 +825,7 @@ public:
     if (environment == nullptr || view_ == nullptr) {
       return {};
     }
+    renderer_.DeliverFontData(environment, view_, style.font);
     jbyteArray bytes = ToByteArray(environment, text);
     jbyteArray family = ToByteArray(environment, style.font.FamilyName());
     jbyteArray locale = ToByteArray(environment, options.locale);
@@ -892,7 +893,8 @@ public:
     if (environment == nullptr || view_ == nullptr) {
       return {};
     }
-    auto attributes = AndroidTextAttributes(environment, text, style);
+    renderer_.DeliverFontData(environment, view_, style.font);
+    auto attributes = AndroidTextAttributes(environment, renderer_, view_, text, style);
     if (!attributes) {
       return {};
     }
@@ -951,7 +953,8 @@ public:
     if (environment == nullptr || view_ == nullptr) {
       return {};
     }
-    auto attributes = AndroidTextAttributes(environment, text, style);
+    renderer_.DeliverFontData(environment, view_, style.font);
+    auto attributes = AndroidTextAttributes(environment, renderer_, view_, text, style);
     if (!attributes) {
       return {};
     }
@@ -1654,32 +1657,6 @@ extern "C" JNIEXPORT void JNICALL Java_org_huxerui_HuxerUIView_nativeUpdateResou
   } catch (const std::exception& exception) {
     huxerui::detail::ThrowJavaException(environment, exception.what());
   }
-}
-
-extern "C" JNIEXPORT jbyteArray JNICALL
-Java_org_huxerui_HuxerUIView_nativeGetRegisteredFontBytes(JNIEnv* environment, jclass, jstring family) {
-  std::string name;
-  if (family != nullptr) {
-    const jsize length = environment->GetStringUTFLength(family);
-    if (length > 0) {
-      const char* characters = environment->GetStringUTFChars(family, nullptr);
-      if (characters != nullptr) {
-        name.assign(characters, static_cast<std::size_t>(length));
-        environment->ReleaseStringUTFChars(family, characters);
-      }
-    }
-  }
-  // Java resolves custom families by name; the payload is borrowed from the live Font values that
-  // recorded it in the transport bridge, so reclaimed payloads fall back to the system family table.
-  const std::shared_ptr<const huxerui::detail::FontData> payload = huxerui::detail::FindFontPayload(name);
-  const std::size_t length = payload != nullptr ? payload->bytes.size() : 0;
-  jbyteArray result = environment->NewByteArray(static_cast<jsize>(length));
-  if (result != nullptr && length > 0) {
-    environment->SetByteArrayRegion(
-        result, 0, static_cast<jsize>(length), reinterpret_cast<const jbyte*>(payload->bytes.data())
-    );
-  }
-  return result;
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL

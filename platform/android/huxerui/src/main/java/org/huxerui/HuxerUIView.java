@@ -58,7 +58,9 @@ import java.io.FileOutputStream;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 
 public final class HuxerUIView extends ViewGroup {
@@ -168,6 +170,7 @@ public final class HuxerUIView extends ViewGroup {
     private final Path scratchPath = new Path();
     private final LruCache<PathKey, Path> pathCache = new LruCache<>(128);
     private final LruCache<FontKey, Typeface> fontCache = new LruCache<>(32);
+    private final Map<String, byte[]> registeredFontData = new HashMap<>();
     private static final int PARAGRAPH_CACHE_BUDGET = 8 * 1024 * 1024;
     private final LruCache<ParagraphKey, HuxerUITextLayout> paragraphCache =
             new LruCache<ParagraphKey, HuxerUITextLayout>(PARAGRAPH_CACHE_BUDGET) {
@@ -2230,11 +2233,19 @@ public final class HuxerUIView extends ViewGroup {
         }
     }
 
+    // Called from C++ when the scene references a data-carrying Font: payload bytes arrive once per
+    // generated family and stay available for this view's lifetime.
+    private void registerFontData(String family, byte[] data) {
+        if (family != null && data != null && data.length > 0) {
+            registeredFontData.put(family, data);
+        }
+    }
+
     private Typeface resolveNamedTypeface(String familyName) {
-        // Families registered through huxerui::RegisterFont resolve through
-        // the framework font registry; unregistered names fall back to the
-        // system family table.
-        byte[] data = nativeGetRegisteredFontBytes(familyName);
+        // Families pushed from data-carrying Font values resolve through the
+        // per-view payload transport; unknown names fall back to the system
+        // family table.
+        byte[] data = registeredFontData.get(familyName);
         if (data != null && data.length > 0) {
             Typeface registered = createTypefaceFromData(familyName, data);
             if (registered != null) {
@@ -2392,8 +2403,6 @@ public final class HuxerUIView extends ViewGroup {
             long handle, float width, float height, float safeLeft, float safeTop, float safeRight, float safeBottom);
 
     private static native void nativeUpdateResourceConfiguration(long handle, byte[] languageTag, float displayScale);
-
-    private static native byte[] nativeGetRegisteredFontBytes(String family);
 
     private static native byte[] nativeCommitFrame(long handle);
 
