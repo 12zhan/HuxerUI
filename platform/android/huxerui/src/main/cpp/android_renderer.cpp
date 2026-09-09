@@ -210,7 +210,7 @@ void AndroidRenderer::DeliverFontData(JNIEnv* environment, jobject view, const F
   }
   // Generated family names are ASCII, so NewStringUTF round-trips them exactly.
   jstring family = environment->NewStringUTF(payload->family.c_str());
-  auto data = android::BytesToJavaByteArray(environment, ByteSpan(payload->bytes));
+  auto data = android::BytesToJavaByteArray(environment, payload->bytes);
   if (family == nullptr || !data) {
     delivered_font_families_.erase(payload->family);
     if (family != nullptr) {
